@@ -137,6 +137,7 @@ pub struct Orchestrator {
     pub(crate) status: crate::status::StatusState,
     pub(crate) forge: super::forge::ForgeState,
     pub(crate) cli: super::cli::CliState,
+    pub(crate) automations: super::automations::AutomationsState,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -187,6 +188,7 @@ impl Orchestrator {
             status: Default::default(),
             forge: Default::default(),
             cli: Default::default(),
+            automations: Default::default(),
         }
     }
 
@@ -415,6 +417,7 @@ impl Orchestrator {
             }
         }
         self.rearm_quota_resets();
+        self.automations_recover();
     }
 
     pub fn store(&self) -> &Store {
@@ -498,6 +501,7 @@ impl Orchestrator {
     /// agent processes.
     pub fn tick(&mut self) {
         self.status_tick();
+        self.automations_tick();
         let now = Instant::now();
         for runtime in self.runtimes.values_mut() {
             let idle = runtime.turn.is_none() && !runtime.checkpointing && runtime.held_prompt.is_none();
@@ -746,6 +750,7 @@ impl Orchestrator {
             | Command::RunInTerminal { .. }
             | Command::ReadTerminal { .. }
             | Command::ListTerminals) => self.cli_command(command),
+            Command::Automation(command) => self.automation_command(command),
         }
     }
 
