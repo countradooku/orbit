@@ -113,6 +113,9 @@ pub enum DiffScope {
     Base(String),
     /// Uncommitted changes in the working tree.
     Uncommitted,
+    /// Everything from before the given turn to the working tree now: what
+    /// restoring to before that turn would undo.
+    SinceTurn(u32),
 }
 
 /// A field-wise update to a thread; `None` leaves the field unchanged.
@@ -167,9 +170,15 @@ pub enum Command {
     /// turn and everything after it); the current state is snapshotted
     /// first so the restore itself can be undone.
     RestoreCheckpoint { thread: ThreadId, turn: u32 },
+    /// Undo the thread's last restore (itself undoable: it swaps back).
+    UndoRestore { thread: ThreadId },
     Commit { thread: ThreadId, message: String, push: bool },
     CreatePullRequest { thread: ThreadId, title: String, body: String },
     Branches { project: ProjectId },
+    /// Merge the thread's branch into `into` locally, without a pull
+    /// request. Uncommitted work is committed first with `message`. With
+    /// `dry_run` nothing changes and the reply previews the merge.
+    MergeLocal { thread: ThreadId, into: String, message: String, dry_run: bool },
 
     Search { query: String, limit: u32 },
     /// Store bytes in the blob store; returns [`Reply::Blob`].
@@ -197,6 +206,28 @@ pub enum Reply {
     Blob(Attachment),
     Terminal(TermId),
     PullRequest { url: String },
+    Merge(MergeInfo),
+}
+
+/// A local merge of a thread's branch, previewed or done.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+pub struct MergeInfo {
+    /// The thread's branch.
+    pub source: String,
+    /// The branch it merges into.
+    pub target: String,
+    /// Commits on `source` that `target` does not have yet.
+    pub commits: u32,
+    /// Files with uncommitted changes, committed before merging.
+    pub uncommitted: u32,
+    /// What the merge changes on `target`.
+    pub files: Vec<FileChange>,
+    /// Paths both branches changed in ways git cannot combine.
+    pub conflicts: Vec<String>,
+    /// `target` only moves forward; no merge commit is needed.
+    pub fast_forward: bool,
+    /// The new tip of `target` once merged.
+    pub merged: Option<String>,
 }
 
 /// A path that more than one thread's worktree changed.

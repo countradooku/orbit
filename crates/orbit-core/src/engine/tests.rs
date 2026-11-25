@@ -8,6 +8,8 @@ use orbit_proto::*;
 use super::*;
 use crate::provider::{AgentEvent, BlockKind, SessionHandle, SessionInput, TurnOutcome};
 
+mod review;
+
 /// A fake agent whose behavior is chosen by the prompt text:
 /// `ask` raises an approval, `crash` exits mid-turn, `slow` streams until
 /// interrupted, anything else answers `echo: <text>`.

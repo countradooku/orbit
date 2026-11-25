@@ -37,6 +37,8 @@ pub enum Internal {
     SnoozeEnded { thread: ThreadId, until: u64 },
     /// A thread's worktree finished setting up (or failed to).
     WorktreeReady { thread: ThreadId, result: Result<Workspace, String>, setup_log: Option<String> },
+    /// Review engine results (live refresh, conflicts).
+    Review(super::review::ReviewInternal),
 }
 
 /// Starts provider sessions. Tests replace it with scripted fakes.
@@ -120,6 +122,7 @@ pub struct Orchestrator {
     pub(crate) open: HashSet<ThreadId>,
     pub(crate) git: Git,
     pub(crate) terminals: Terminals,
+    pub(crate) review: super::review::ReviewState,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -166,6 +169,7 @@ impl Orchestrator {
             open: HashSet::new(),
             git,
             terminals: Terminals::new(terminal_output, terminal_exits),
+            review: Default::default(),
         }
     }
 
@@ -231,6 +235,10 @@ impl Orchestrator {
                 Some(base) => Some((base, None)),
                 None => return Outcome::Ready(Err("Nothing has run in this thread yet.".into())),
             },
+            DiffScope::SinceTurn(n) => match self.since_turn_range(thread, *n) {
+                Some(range) => Some(range),
+                None => return Outcome::Ready(Err("This turn has no snapshot to compare.".into())),
+            },
             _ => None,
         };
         Outcome::Deferred(Box::pin(async move {
@@ -294,6 +302,7 @@ impl Orchestrator {
                     Ok(Reply::Branches { current, all: branches.into_iter().map(|b| b.name).collect() })
                 }))
             }
+            command @ (Command::UndoRestore { .. } | Command::MergeLocal { .. }) => self.review_command(command),
             other => Outcome::Ready(self.handle_command(other)),
         }
     }
@@ -570,6 +579,9 @@ impl Orchestrator {
                             self.notice(thread, NoticeLevel::Warning, format!("The setup script failed:\n{log}"));
                         }
                         self.start_next_queued(thread);
+                        if self.open.contains(&thread) {
+                            self.watch_workspace(thread);
+                        }
                     }
                     Err(message) => {
                         self.notice(thread, NoticeLevel::Error, message.clone());
@@ -602,6 +614,7 @@ impl Orchestrator {
                     self.start_next_queued(thread);
                 }
             }
+            Internal::Review(msg) => self.handle_review(msg),
         }
     }
 
@@ -617,7 +630,9 @@ impl Orchestrator {
             | Command::RestoreCheckpoint { .. }
             | Command::Commit { .. }
             | Command::CreatePullRequest { .. }
-            | Command::Branches { .. }) => self.git_command(command),
+            | Command::Branches { .. }
+            | Command::UndoRestore { .. }
+            | Command::MergeLocal { .. }) => self.git_command(command),
             command => Outcome::Ready(self.handle_command(command)),
         }
     }
@@ -648,6 +663,7 @@ impl Orchestrator {
             Command::OpenThread { id } => self.open_thread(id),
             Command::CloseThread { id } => {
                 self.open.remove(&id);
+                self.unwatch_workspace(id);
                 let busy = self.runtimes.get(&id).is_some_and(|r| r.turn.is_some());
                 if !busy {
                     self.flush_thread(id);
@@ -683,7 +699,9 @@ impl Orchestrator {
             | Command::RestoreCheckpoint { .. }
             | Command::Commit { .. }
             | Command::CreatePullRequest { .. }
-            | Command::Branches { .. } => futures_block_on(match self.git_command(command) {
+            | Command::Branches { .. }
+            | Command::UndoRestore { .. }
+            | Command::MergeLocal { .. } => futures_block_on(match self.git_command(command) {
                 Outcome::Ready(result) => return result,
                 Outcome::Deferred(future) => future,
             }),
@@ -894,6 +912,7 @@ impl Orchestrator {
             session.send(SessionInput::Shutdown);
         }
         self.open.remove(&id);
+        self.unwatch_workspace(id);
         self.dirty.retain(|(t, _)| *t != id);
         self.emit(Event::ThreadRemoved(id));
         if let Err(err) = self.store.collect_garbage() {
@@ -945,6 +964,7 @@ impl Orchestrator {
             return Err("That thread no longer exists.".into());
         }
         self.open.insert(id);
+        self.watch_workspace(id);
         let items = self.store.load_timeline(id).map_err(|e| e.to_string())?.items().to_vec();
         // Everything emitted before this mark is in `items`.
         let mark = next_raw_id();

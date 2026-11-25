@@ -96,6 +96,8 @@ impl Git {
     /// * `Thread`: the thread's first checkpoint → working tree.
     /// * `Base(rev)`: merge-base of `rev` and HEAD → working tree.
     /// * `Uncommitted`: HEAD → working tree.
+    /// * `SinceTurn(n)`: checkpoint `n-1` → working tree (what a restore to
+    ///   before turn `n` would undo).
     pub async fn scope_range(&self, repo: &Path, thread: ThreadId, scope: &DiffScope) -> Result<(TreeId, Option<TreeId>)> {
         match scope {
             DiffScope::Turn(n) => {
@@ -121,6 +123,13 @@ impl Git {
                 Ok((TreeId::new(base), None))
             }
             DiffScope::Uncommitted => Ok((self.head_tree(repo).await?, None)),
+            DiffScope::SinceTurn(n) => {
+                if *n == 0 {
+                    return Err(GitError::Invalid("turns are numbered from 1".into()));
+                }
+                let from = self.checkpoint_tree(repo, thread, n - 1).await?;
+                Ok((from, None))
+            }
         }
     }
 

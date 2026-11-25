@@ -9,6 +9,8 @@
 mod bus;
 pub use bus::Bus;
 mod orchestrator;
+mod review;
+pub use review::ReviewInternal;
 
 #[cfg(test)]
 mod tests;
