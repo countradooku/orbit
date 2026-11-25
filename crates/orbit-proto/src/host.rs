@@ -45,6 +45,15 @@ pub enum HostCommand {
     /// The interactive terminals the host keeps. Replies
     /// [`HostReply::Terminals`].
     Terminals,
+    /// Answered at once with `Done`: a client measures its round trip to
+    /// the host (the latency a remote host's status shows).
+    Ping,
+    /// A folder anywhere on the host's file system, for picking a project
+    /// folder on a host the client cannot browse itself (a remote or WSL
+    /// host). An empty `path` is the user's home folder. Hidden entries are
+    /// listed; nothing is filtered by ignore files. Replies
+    /// [`HostReply::Dir`].
+    ListDir { path: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
@@ -54,6 +63,26 @@ pub enum HostReply {
     /// The attached terminal and the output to replay into a fresh screen.
     Terminal { session: TermSession, scrollback: Vec<u8> },
     Terminals(Vec<TermSession>),
+    Dir(DirListing),
+}
+
+/// A folder on the host, as [`HostCommand::ListDir`] lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
+pub struct DirListing {
+    /// The folder, absolute and normalized, as the host writes paths.
+    pub path: String,
+    /// Its parent; `None` at a root.
+    pub parent: Option<String>,
+    /// The user's home folder on the host.
+    pub home: String,
+    /// The host's operating system (`linux`, `macos`, `windows`).
+    pub os: String,
+    /// Sub-folders first, then files, each sorted by name; at most
+    /// [`crate::MAX_DIR_ENTRIES`].
+    pub entries: Vec<crate::workspace::DirEntry>,
+    /// Whether the folder is a git repository's top level.
+    pub repo: bool,
 }
 
 /// When a requested restart happens.

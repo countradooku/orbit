@@ -713,6 +713,12 @@ impl Orchestrator {
             Command::Bots(command) => self.bots_command(command),
             Command::Team(command) => self.team_command(*command),
             Command::Workspace(command) => self.workspace_command(command),
+            Command::Host(HostCommand::ListDir { path }) => Outcome::Deferred(Box::pin(async move {
+                tokio::task::spawn_blocking(move || super::host::list_host_dir(&path))
+                    .await
+                    .map_err(|e| format!("Couldn’t read the folder: {e}"))?
+                    .map(|listing| Reply::Host(HostReply::Dir(listing)))
+            })),
             command if super::forge::pushes(&command) => self.forge_after_push(command),
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
             Command::SearchFiles { thread, project, query, limit } => {
@@ -1936,7 +1942,7 @@ fn merge_file_change(files: &mut Vec<FileChange>, change: FileChange) {
 
 /// `canonicalize` without Windows' `\\?\` prefix, so paths stay readable and
 /// work with tools that do not understand verbatim paths.
-fn dunce_canonical(path: &Path) -> std::io::Result<PathBuf> {
+pub(crate) fn dunce_canonical(path: &Path) -> std::io::Result<PathBuf> {
     let canonical = std::fs::canonicalize(path)?;
     #[cfg(windows)]
     {

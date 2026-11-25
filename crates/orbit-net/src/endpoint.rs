@@ -139,10 +139,9 @@ pub fn process_alive(pid: u32) -> bool {
     }
 }
 
-#[cfg_attr(not(any(test, feature = "engine")), allow(dead_code))]
 /// Writes `contents` to `path` atomically (temp file and rename) so a
 /// reader never sees half a file, readable by the owner only on Unix.
-fn write_private(path: &Path, contents: &str) -> io::Result<()> {
+pub(crate) fn write_private(path: &Path, contents: &str) -> io::Result<()> {
     let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     {
         use std::io::Write as _;

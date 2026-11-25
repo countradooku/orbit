@@ -16,7 +16,7 @@
 //! * **Files** are read on the blocking pool, bounded, and never outside
 //!   the root (see [`fs`]).
 
-mod fs;
+pub(crate) mod fs;
 mod import;
 
 use std::collections::HashMap;

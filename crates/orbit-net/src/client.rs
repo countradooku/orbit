@@ -28,6 +28,8 @@ use crate::{ConnectionStatus, PendingReply, Update, ready};
 enum Outgoing {
     /// Boxed: a command can be large (settings) and the queue holds many.
     Call { command: Box<Command>, reply: TxOneshot<Result<Reply, String>> },
+    /// Stop waiting out the backoff and try now.
+    Reconnect,
     Close,
 }
 
@@ -94,12 +96,20 @@ impl RemoteClient {
     pub fn close(&self) {
         let _ = self.outgoing.send(Outgoing::Close);
     }
+
+    /// While disconnected, try again now instead of after the backoff (a
+    /// "Reconnect" button). Does nothing while connected.
+    pub fn reconnect_now(&self) {
+        let _ = self.outgoing.send(Outgoing::Reconnect);
+    }
 }
 
 /// One connection's halves, whichever the transport.
 enum Reader {
     Ws(ws_lite::Reader),
     Local(FrameReader),
+    /// A program's stdout (`exec:`); the program lives as long as this.
+    Exec(FrameReader, Box<transport::ExecChild>),
 }
 
 enum Writer {
@@ -112,11 +122,23 @@ impl Reader {
     async fn next(&mut self) -> Result<Incoming, String> {
         match self {
             Reader::Ws(r) => r.next().await,
-            Reader::Local(r) => match r.next().await {
+            Reader::Local(r) | Reader::Exec(r, _) => match r.next().await {
                 Ok(Some(frame)) => Ok(Incoming::Binary(frame)),
                 Ok(None) => Ok(Incoming::Close),
                 Err(e) => Err(e.to_string()),
             },
+        }
+    }
+
+    /// Why the other side closed: for a program, what it said on stderr
+    /// (SSH's "Permission denied", orbitd's own message).
+    async fn closed(&mut self) -> String {
+        match self {
+            Reader::Exec(_, child) => {
+                let (status, stderr) = child.stderr_after_exit(Duration::from_secs(2)).await;
+                crate::remote::explain_exit(&stderr, status)
+            }
+            _ => "The host closed the connection.".to_owned(),
         }
     }
 }
@@ -145,6 +167,10 @@ impl Writer {
 }
 
 async fn open(url: &str) -> Result<(Reader, Writer), String> {
+    if let Some(argv) = transport::exec_argv(url) {
+        let (r, w, child) = transport::spawn_exec(&argv).map_err(|e| crate::remote::explain_spawn(&argv[0], &e))?;
+        return Ok((Reader::Exec(r, Box::new(child)), Writer::Local(w)));
+    }
     if transport::is_local(url) {
         let (r, w) = transport::connect(url).await.map_err(|e| e.to_string())?;
         Ok((Reader::Local(r), Writer::Local(w)))
@@ -152,6 +178,15 @@ async fn open(url: &str) -> Result<(Reader, Writer), String> {
         let (r, w) = ws_lite::connect(url, WS_SUBPROTOCOL).await?;
         Ok((Reader::Ws(r), Writer::Ws(w)))
     }
+}
+
+/// [`open`], and a program started per attempt (SSH) is tried less often
+/// than a pipe.
+async fn open_counting(url: &str, max_backoff: &mut Duration) -> Result<(Reader, Writer), String> {
+    if transport::exec_argv(url).is_some() {
+        *max_backoff = Duration::from_secs(30);
+    }
+    open(url).await
 }
 
 /// Sends one frame and returns the first frame of the answer (a control
@@ -166,7 +201,7 @@ pub(crate) async fn exchange_once(url: &str, frame: &[u8]) -> std::io::Result<Ve
                 return Ok(data.to_vec());
             }
             Incoming::Ping(data) => writer.pong(&data).await.map_err(std::io::Error::other)?,
-            Incoming::Close => return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "the host closed the connection")),
+            Incoming::Close => return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, reader.closed().await)),
         }
     }
 }
@@ -180,6 +215,7 @@ async fn run(
     let mut epoch = 0u64;
     let mut since = 0u64;
     let mut backoff = Duration::from_millis(250);
+    let mut max_backoff = Duration::from_secs(5);
     let mut pending: HashMap<u32, TxOneshot<Result<Reply, String>>> = HashMap::new();
     let mut next_id = 1u32;
     loop {
@@ -187,7 +223,7 @@ async fn run(
         let target = resolve();
         let reason = match target {
             Err(why) => why,
-            Ok((url, token)) => match open(&url).await {
+            Ok((url, token)) => match open_counting(&url, &mut max_backoff).await {
                 Err(e) => format!("Couldn’t reach the host: {e}"),
                 Ok((mut reader, mut writer)) => {
                     backoff = Duration::from_millis(250);
@@ -209,7 +245,7 @@ async fn run(
                                             }
                                             continue;
                                         }
-                                        Ok(Incoming::Close) => break "The host closed the connection.".to_string(),
+                                        Ok(Incoming::Close) => break reader.closed().await,
                                         Err(e) => break format!("Connection lost: {e}"),
                                     };
                                     match link.message(&data) {
@@ -258,6 +294,7 @@ async fn run(
                                             }
                                         }
                                     }
+                                    Ok(Outgoing::Reconnect) => {}
                                     Ok(Outgoing::Close) | Err(_) => {
                                         writer.close().await;
                                         return;
@@ -283,11 +320,15 @@ async fn run(
                     _ = &mut deadline => break,
                     out = outgoing.recv() => match out {
                         Ok(Outgoing::Call { reply, .. }) => reply.send(Err("Not connected to the host.".into())),
+                        Ok(Outgoing::Reconnect) => {
+                            backoff = Duration::from_millis(250);
+                            break;
+                        }
                         Ok(Outgoing::Close) | Err(_) => return,
                     },
                 }
             }
-            backoff = (backoff * 2).min(Duration::from_secs(5));
+            backoff = (backoff * 2).min(max_backoff);
         }
     }
 }

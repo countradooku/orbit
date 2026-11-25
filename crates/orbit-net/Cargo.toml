@@ -16,7 +16,7 @@ engine = ["dep:orbit-core", "dep:getrandom"]
 orbit-proto = { workspace = true }
 orbit-core = { workspace = true, optional = true }
 crossfire = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-std"] }
 sockudo-ws = { workspace = true }
 log = { workspace = true }
 dirs = { workspace = true }

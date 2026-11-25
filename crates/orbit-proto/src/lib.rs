@@ -71,8 +71,9 @@ pub use workspace::*;
 /// `RunChanged`, `Command::Workspace`, `Reply::Workspace`); version 11,
 /// quota and usage (`Snapshot::quota`, `Event::Quota`, `Command::Usage`,
 /// `Reply::Usage`); version 12, the background host (`Command::Host`,
-/// `Reply::Host`, `Event::TerminalSleep`; see [`host`]).
-pub const PROTOCOL_VERSION: u16 = 12;
+/// `Reply::Host`, `Event::TerminalSleep`; see [`host`]); version 13,
+/// remote hosts (`HostCommand::Ping` and `ListDir`, `HostReply::Dir`).
+pub const PROTOCOL_VERSION: u16 = 13;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

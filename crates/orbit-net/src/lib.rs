@@ -12,6 +12,7 @@ pub mod host;
 #[cfg(feature = "engine")]
 pub mod server;
 pub mod state;
+pub mod remote;
 pub mod transport;
 mod ws_lite;
 
