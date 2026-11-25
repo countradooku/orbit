@@ -9,11 +9,13 @@
 mod bus;
 pub use bus::Bus;
 mod orchestrator;
+mod review;
 mod sessions;
 mod settings;
 mod textgen;
 mod timeline;
 
+pub use review::ReviewInternal;
 pub use sessions::{CLEAR_COMMANDS, HANDOFF_TOKENS, build_handoff};
 
 #[cfg(test)]
