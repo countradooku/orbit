@@ -97,9 +97,11 @@ impl HomeView {
         let branch = project.and_then(|p| p.base_branch.clone());
         // Worktrees need a project; the choice only shows when one is picked.
         let choice = project.map(|_| self.worktree);
+        let mentions = project.map(|p| p.id);
         self.composer.update(cx, |c, cx| {
             c.set_context(context, branch, cx);
             c.set_worktree_choice(choice, cx);
+            c.set_project(mentions, cx);
         });
     }
 
@@ -141,7 +143,8 @@ impl HomeView {
                 Err(message) => {
                     let _ = this.update_in(cx, |this, window, cx| {
                         this.sending = false;
-                        Composer::set_text(&this.composer.clone(), &text, window, cx);
+                        // Put the whole message back, attachments too.
+                        Composer::restore(&this.composer.clone(), &text, attachments, window, cx);
                         window.push_notification(
                             gpui_kit::component::notification::Notification::error(message).title("Couldn’t start the thread"),
                             cx,

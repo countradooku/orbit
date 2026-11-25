@@ -260,7 +260,7 @@ pub fn top<T>(candidates: impl IntoIterator<Item = (i32, T)>, limit: usize) -> V
         return Vec::new();
     }
     // Min-heap on (score, -order): the weakest entry is on top.
-    let mut heap: BinaryHeap<Reverse<(i32, Reverse<usize>, Slot<T>)>> = BinaryHeap::with_capacity(limit + 1);
+    let mut heap: BinaryHeap<Reverse<Ranked<T>>> = BinaryHeap::with_capacity(limit + 1);
     for (order, (score, value)) in candidates.into_iter().enumerate() {
         if heap.len() == limit
             && let Some(Reverse((weakest, Reverse(weak_order), _))) = heap.peek()
@@ -277,6 +277,9 @@ pub fn top<T>(candidates: impl IntoIterator<Item = (i32, T)>, limit: usize) -> V
     out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     out.into_iter().map(|(_, _, v)| v).collect()
 }
+
+/// (score, earlier-is-greater order, value): a heap entry.
+type Ranked<T> = (i32, std::cmp::Reverse<usize>, Slot<T>);
 
 /// Lets any value ride in the heap; ordering ignores it.
 struct Slot<T>(T);
