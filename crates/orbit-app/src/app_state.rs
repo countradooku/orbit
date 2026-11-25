@@ -28,6 +28,8 @@ pub enum AppEvent {
     TerminalExited { term: TermId, code: Option<i32> },
     /// A composer's saved draft changed (here or on another client).
     Draft(DraftTarget),
+    /// A team or race changed (`crate::teams` views listen).
+    Teams,
 }
 
 pub struct AppState {
@@ -97,6 +99,9 @@ impl AppState {
         }
         for target in changes.drafts {
             cx.emit(AppEvent::Draft(target));
+        }
+        if changes.teams || changes.reset {
+            cx.emit(AppEvent::Teams);
         }
         if shell {
             cx.notify();
