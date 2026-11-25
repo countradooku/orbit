@@ -93,10 +93,11 @@ pub fn init(cx: &mut App) {
     ]);
     #[cfg(not(target_os = "macos"))]
     bindings.extend([
-        KeyBinding::new("ctrl-shift-c", Copy, ctx),
+        // The last binding of an action is the one menus show.
         KeyBinding::new("ctrl-insert", Copy, ctx),
-        KeyBinding::new("ctrl-shift-v", Paste, ctx),
+        KeyBinding::new("ctrl-shift-c", Copy, ctx),
         KeyBinding::new("shift-insert", Paste, ctx),
+        KeyBinding::new("ctrl-shift-v", Paste, ctx),
         KeyBinding::new("ctrl-shift-k", Clear, ctx),
         KeyBinding::new("ctrl-shift-a", SelectAll, ctx),
     ]);

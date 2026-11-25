@@ -811,7 +811,9 @@ impl ThreadView {
 
     /// Runs `ORBIT_DEBUG_THREAD` steps: `find:<query>`, `next`, `open-folds`,
     /// `inspect` (the first step with output), `quote` (the last reply),
-    /// `top` (scroll to the top), `questions` (the question panel).
+    /// `top` (scroll to the top), `questions` (the question panel),
+    /// `browser` or `browser:<address>`, `review`, `terminal`, `edit`,
+    /// `settings`.
     fn run_debug_steps(&mut self, steps: &str, window: &mut Window, cx: &mut Context<Self>) {
         for step in steps.split(';') {
             let items: Vec<Item> = self.app.read(cx).state().timeline(self.id).map(|t| t.items().to_vec()).unwrap_or_default();
@@ -852,6 +854,25 @@ impl ThreadView {
                     self.debug_questions = true;
                     if let Some(q) = &self.questions {
                         q.focus(window, cx);
+                    }
+                }
+                // The preview browser: `browser` opens it, `browser:<address>`
+                // opens it on an address.
+                _ if step == "browser" => self.toggle_browser(window, cx),
+                Some(("browser", address)) => {
+                    if let Ok(url) = orbit_browser::parse_address(address) {
+                        self.open_preview(url, window, cx);
+                    }
+                }
+                _ if step == "review" => crate::review::open(self.app.clone(), self.id, window, cx),
+                _ if step == "terminal" => self.toggle_terminal(window, cx),
+                _ if step == "settings" => window.dispatch_action(Box::new(crate::actions::OpenSettings), cx),
+                // Edit and resend the first message (the dialog only).
+                _ if step == "edit" => {
+                    if let Some(item) = items.iter().find(|i| matches!(i.body, ItemBody::User(_)))
+                        && let ItemBody::User(m) = &item.body
+                    {
+                        crate::review::edit_message(self.app.clone(), self.id, item.id, item.turn, m.text.clone(), window, cx);
                     }
                 }
                 _ if step == "quote" => {
@@ -1251,7 +1272,7 @@ impl Focusable for ThreadView {
 
 impl Render for ThreadView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.loaded && !self.rows.is_empty() && let Some(steps) = self.debug_steps.take() {
+        if self.loaded && let Some(steps) = self.debug_steps.take() {
             let view = cx.entity();
             window.defer(cx, move |window, cx| view.update(cx, |this, cx| this.run_debug_steps(&steps, window, cx)));
         }

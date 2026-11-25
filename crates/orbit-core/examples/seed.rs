@@ -215,6 +215,8 @@ fn main() {
     let mut waiting_items = vec![
         item(1, ItemBody::User(UserMessage { text: "Add Playwright tests for the checkout flow: cart, address, payment and the confirmation page.".into(), ..Default::default() })),
         item(1, tool(ToolKind::Read, "Read", "tests/e2e/cart.spec.ts", "", vec![])),
+        // A dev server the preview browser offers ("Open preview localhost:5173").
+        item(1, tool(ToolKind::Command, "Bash", "npm run dev", "\n  VITE v6.0.3  ready in 412 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  Network: use --host to expose\n", vec![])),
         item(1, ItemBody::Assistant { text: "Before I write the specs, two choices change how they run:".into() }),
     ];
     for (id, request) in &question_items {

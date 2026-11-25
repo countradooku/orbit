@@ -172,7 +172,13 @@ impl TerminalPanel {
 impl Render for TerminalPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let label = self.title.clone().unwrap_or_else(|| self.cwd.clone());
+        // Shells on Windows title the window with their own executable's
+        // path, which says nothing; the folder does.
+        let label = self
+            .title
+            .clone()
+            .filter(|t| !t.trim().is_empty() && !t.to_ascii_lowercase().ends_with(".exe"))
+            .unwrap_or_else(|| self.cwd.clone());
         let ended = self.exited.is_some() || self.error.is_some();
         let view = self.view.clone();
         v_flex()

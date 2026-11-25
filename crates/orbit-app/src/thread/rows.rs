@@ -1181,8 +1181,8 @@ fn render_request(
     // keeps a one-line record.
     if let RequestKind::Question { question, .. } = &request.kind {
         let answer = match &request.resolution {
-            Some(Decision::Answer { text }) => Some(text.replace('\n', ", ")),
-            Some(_) => Some("Dismissed".to_owned()),
+            Some(Decision::Answer { text }) => Some(format!("Answered: {}", text.replace('\n', ", "))),
+            Some(_) => Some("Not answered".to_owned()),
             None => None,
         };
         let pending = answer.is_none();
@@ -1198,7 +1198,7 @@ fn render_request(
                     .child(div().min_w_0().child(marked(question.clone().into(), hits, theme))),
             )
             .child(div().pl_5().text_color(theme.muted_foreground).child(match answer {
-                Some(answer) => format!("Answered: {answer}"),
+                Some(answer) => answer,
                 None => "Waiting for your answer below".to_owned(),
             }))
             .into_any_element();
