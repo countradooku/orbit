@@ -196,6 +196,14 @@ pub enum Command {
     /// worktree locations) and broadcasts [`Event::SettingsChanged`].
     UpdateSettings { settings: Settings },
 
+    /// One-shot text generation (titles, commit messages, pull request
+    /// text) on the thread's instance in a cheap mode, or on any available
+    /// one when `thread` is `None`. Replies [`Reply::Text`].
+    GenerateText { thread: Option<ThreadId>, task: TextTask, input: String },
+    /// End the thread's agent session; the next message starts a fresh one
+    /// in the same thread (what `/clear` does).
+    NewSession { thread: ThreadId },
+
     // ── Automation (the `orbit` CLI and MCP server) ──────────────────────
     /// Create a thread and, when `prompt` is set, send it as the first
     /// message in the same step. Returns [`Reply::Thread`].
@@ -216,6 +224,19 @@ pub enum Command {
     /// Ask the desktop client to come to the front (and show `thread`).
     /// Broadcasts [`Event::FocusRequested`].
     Focus { thread: Option<ThreadId> },
+}
+
+/// What [`Command::GenerateText`] writes.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub enum TextTask {
+    /// A short thread title from the conversation in `input`.
+    ThreadTitle,
+    /// A commit message for the changes (diff and context) in `input`.
+    CommitMessage,
+    /// A pull request title on the first line, then its body.
+    PullRequest,
+    /// Free-form: `instructions` applied to `input`.
+    Custom { instructions: String },
 }
 
 /// Everything needed to start a thread in one step.
@@ -258,6 +279,7 @@ pub enum Reply {
     Blob(Attachment),
     Terminal(TermId),
     PullRequest { url: String },
+    Text(String),
     /// Raw output (with escape sequences); `dropped` bytes were older than
     /// what is kept.
     TerminalTail { info: TerminalInfo, data: Vec<u8>, dropped: u64 },

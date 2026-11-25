@@ -65,7 +65,7 @@ impl Row {
                 }
                 ItemBody::Plan { .. } => Row::Plan(item.id),
                 ItemBody::Request(_) => Row::Request(item.id),
-                ItemBody::Notice { .. } => Row::Notice(item.id),
+                ItemBody::Notice { .. } | ItemBody::Handoff(_) => Row::Notice(item.id),
                 ItemBody::TurnEnd(_) => Row::TurnEnd(item.id),
             };
             rows.push(row);
@@ -362,7 +362,24 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
         }
         Row::Notice(id) => {
             let Some(item) = item(*id) else { return div().into_any_element() };
-            let ItemBody::Notice { level, text } = &item.body else { return div().into_any_element() };
+            let handoff;
+            let (level, text) = match &item.body {
+                ItemBody::Notice { level, text } => (level, text),
+                // The full context is in the item; the row says what happened.
+                ItemBody::Handoff(h) => {
+                    handoff = format!(
+                        "Context handed off from {} to {}: {} turn{} in full{}, about {} tokens.",
+                        h.from,
+                        h.to,
+                        h.turns,
+                        if h.turns == 1 { "" } else { "s" },
+                        if h.condensed > 0 { format!(", {} condensed", h.condensed) } else { String::new() },
+                        h.tokens
+                    );
+                    (&NoticeLevel::Info, &handoff)
+                }
+                _ => return div().into_any_element(),
+            };
             let (icon, color) = match level {
                 NoticeLevel::Info => (Icon::new(IconName::Info), theme.muted_foreground),
                 NoticeLevel::Warning => (Icon::new(IconName::TriangleAlert), theme.warning),

@@ -266,8 +266,14 @@ impl ClientState {
         self.timelines.keys().copied()
     }
 
+    /// The built-in instance of a runtime.
     pub fn provider(&self, kind: ProviderKind) -> Option<&ProviderInfo> {
-        self.providers.iter().find(|p| p.kind == kind)
+        self.providers.iter().find(|p| p.kind == kind && p.instance_id() == kind.id())
+    }
+
+    /// The instance a thread config runs on.
+    pub fn provider_for(&self, config: &ThreadConfig) -> Option<&ProviderInfo> {
+        self.providers.iter().find(|p| p.serves(config))
     }
 
     /// The best-known usage of a thread: live while a turn runs.

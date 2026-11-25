@@ -10,7 +10,11 @@ mod bus;
 pub use bus::Bus;
 mod cli;
 mod orchestrator;
+mod sessions;
 mod settings;
+mod textgen;
+
+pub use sessions::{CLEAR_COMMANDS, HANDOFF_TOKENS, build_handoff};
 
 #[cfg(test)]
 mod tests;
@@ -67,11 +71,16 @@ pub struct EngineHandle {
 impl EngineHandle {
     /// Opens the store and starts the engine thread.
     pub fn start(options: EngineOptions) -> std::io::Result<Self> {
-        Self::start_with(options, Box::new(provider::start))
+        Self::spawn(options, Box::new(provider::start), true)
     }
 
     /// Starts the engine with a custom session launcher (tests, benchmarks).
+    /// One-shot text generation then runs through the launcher too.
     pub fn start_with(options: EngineOptions, launcher: Launcher) -> std::io::Result<Self> {
+        Self::spawn(options, launcher, false)
+    }
+
+    fn spawn(options: EngineOptions, launcher: Launcher, native_text: bool) -> std::io::Result<Self> {
         let store = Store::open(&options.data_dir)?;
         let (calls, call_rx) = mpsc::unbounded_async::<Call>();
         std::thread::Builder::new()
@@ -82,7 +91,7 @@ impl EngineHandle {
                     .enable_all()
                     .build()
                     .expect("engine runtime");
-                runtime.block_on(run(store, call_rx, launcher, options.probe_providers));
+                runtime.block_on(run(store, call_rx, launcher, options.probe_providers, native_text));
             })?;
         Ok(Self { calls })
     }
@@ -118,13 +127,16 @@ impl EngineHandle {
     }
 }
 
-async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher: Launcher, probe: bool) {
+async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher: Launcher, probe: bool, native_text: bool) {
     let (agent_tx, agent_rx) = mpsc::unbounded_async::<(ThreadId, provider::AgentEvent)>();
     let (internal_tx, internal_rx) = mpsc::unbounded_async::<Internal>();
     let (term_tx, term_rx) =
         mpsc::bounded_blocking_async::<(TermId, Vec<u8>)>(crate::terminal::OUTPUT_CAPACITY);
     let (exit_tx, exit_rx) = mpsc::unbounded_async::<(TermId, Option<i32>)>();
     let mut orchestrator = Orchestrator::new(store, agent_tx, internal_tx, launcher, term_tx, exit_tx);
+    if !native_text {
+        orchestrator.generator = textgen::Generator::Launcher;
+    }
     orchestrator.recover();
     if probe {
         orchestrator.refresh_providers();
