@@ -167,7 +167,9 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
     let (term_tx, term_rx) =
         mpsc::bounded_blocking_async::<(TermId, Vec<u8>)>(crate::terminal::OUTPUT_CAPACITY);
     let (exit_tx, exit_rx) = mpsc::unbounded_async::<(TermId, Option<i32>)>();
-    let mut orchestrator = Orchestrator::new(store, agent_tx, internal_tx, launcher, term_tx, exit_tx);
+    // This crate's unit tests probe only when they ask to (see `Orchestrator::probes`).
+    let probes = probe || !cfg!(test);
+    let mut orchestrator = Orchestrator::with_probes(store, agent_tx, internal_tx, launcher, term_tx, exit_tx, probes);
     if !native_text {
         orchestrator.generator = textgen::Generator::Launcher;
     }

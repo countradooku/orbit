@@ -76,6 +76,9 @@ impl Orchestrator {
     }
 
     pub(crate) fn probe_instance(&self, instance: &ProviderInstance) {
+        if !self.probes {
+            return;
+        }
         let launch = self.launch_of(instance);
         let tx = self.internal_tx.clone();
         tokio::spawn(async move {
