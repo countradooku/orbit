@@ -51,6 +51,8 @@ pub enum Node {
     Heading {
         text: String,
     },
+    /// Takes the free space in a row (pushes what follows to the end).
+    Spacer {},
     Button {
         label: String,
         action: Action,

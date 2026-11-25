@@ -121,13 +121,17 @@ impl HomeView {
         Composer::focus(&self.composer.clone(), window, cx);
     }
 
+    pub fn composer(&self) -> &Entity<crate::composer::Composer> {
+        &self.composer
+    }
+
     pub fn focus_composer(home: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let composer = home.read(cx).composer.clone();
         Composer::focus(&composer, window, cx);
     }
 
     /// The picked project, else the one used most recently, else the first.
-    fn project(&self, cx: &App) -> Option<ProjectId> {
+    pub(crate) fn project(&self, cx: &App) -> Option<ProjectId> {
         if let Some(picked) = self.picked {
             return picked;
         }

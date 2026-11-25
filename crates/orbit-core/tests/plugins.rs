@@ -97,7 +97,8 @@ models = [{{ id = "fake-model", name = "Fake model", default = true }}]
     let folder = InstallSource::Folder { path: manifest_dir.path().display().to_string(), dev: false };
     let PluginReply::Preview { plugin: preview, replaces } = plugin(&engine, PluginCommand::Preview(folder.clone())).unwrap() else { panic!() };
     assert_eq!((preview.capabilities.as_slice(), replaces), ([Capability::Agents].as_slice(), None));
-    assert_eq!(preview.ui.agents.len(), 0, "a preview carries no contributions");
+    assert_eq!(preview.ui.agents.len(), 1, "a preview lists the programs it would run");
+    assert!(preview.ui.themes.is_empty() && preview.ui.commands.is_empty(), "and nothing else");
 
     let PluginReply::Installed(info) = plugin(&engine, PluginCommand::Install { source: folder, grant: vec![Capability::Agents] }).unwrap() else {
         panic!()

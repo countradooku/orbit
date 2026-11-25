@@ -41,6 +41,25 @@ const KNOWN_CONTEXTS: &[&str] = &[
     "GridLayout", "Carousel", "AppMenuBar",
 ];
 
+/// Marks the bindings plugins add (`crate::plugins`): after Orbit's
+/// defaults, before the user's file, so the user's rules still win.
+const PLUGIN_META: KeyBindingMetaIndex = KeyBindingMetaIndex(0x0B17_0002);
+
+/// Replaces the plugins' bindings.
+pub fn set_plugin_bindings(bindings: Vec<KeyBinding>, cx: &mut App) {
+    {
+        let keymap = cx.key_bindings();
+        let mut keymap = keymap.borrow_mut();
+        let (user, rest): (Vec<KeyBinding>, Vec<KeyBinding>) =
+            keymap.bindings().filter(|b| b.meta() != Some(PLUGIN_META)).cloned().partition(|b| b.meta() == Some(USER_META));
+        keymap.clear();
+        keymap.add_bindings(rest);
+        keymap.add_bindings(bindings.into_iter().map(|b| b.with_meta(PLUGIN_META)));
+        keymap.add_bindings(user);
+    }
+    cx.refresh_windows();
+}
+
 /// The outcome of reading the file.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Report {

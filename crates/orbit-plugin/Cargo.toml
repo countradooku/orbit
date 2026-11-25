@@ -11,6 +11,7 @@ default = []
 # The host side: the WebAssembly sandbox (wasmi) and the system keychain.
 # The CLI and the app only read manifests, panels and themes.
 host = [
+    "dep:parking_lot",
     "dep:wasmi",
     "dep:keyring-core",
     "dep:windows-native-keyring-store",
@@ -25,7 +26,7 @@ orbit-proto = { workspace = true }
 serde = { workspace = true }
 sonic-rs = { workspace = true }
 log = { workspace = true }
-parking_lot = { workspace = true }
+parking_lot = { workspace = true, optional = true }
 # Manifests and panels (already linked through orbit-core and GPUI Kit).
 toml = "1"
 semver = "1"

@@ -37,6 +37,7 @@ mod keymap;
 mod notify;
 mod onboarding;
 mod palette;
+mod plugins;
 mod prefs;
 mod project;
 mod review;
@@ -262,10 +263,18 @@ fn main() {
                 if let Some(reason) = fallback {
                     let _ = window.update(cx, |_, window, cx| host::show_fallback(&reason, window, cx));
                 }
-                cx.subscribe(&host_app, move |app, event: &app_state::AppEvent, cx| {
-                    if let app_state::AppEvent::Host(notice) = event {
+                cx.subscribe(&host_app, move |app, event: &app_state::AppEvent, cx| match event {
+                    app_state::AppEvent::Host(notice) => {
                         let _ = window.update(cx, |_, window, cx| host::show(notice, &app, window, cx));
                     }
+                    app_state::AppEvent::PluginNotice { title, body } => {
+                        let _ = window.update(cx, |_, window, cx| {
+                            use gpui_kit::component::WindowExt as _;
+                            let note = gpui_kit::component::notification::Notification::info(body.clone()).title(title.clone());
+                            window.push_notification(note, cx);
+                        });
+                    }
+                    _ => {}
                 })
                 .detach();
                 // This launch's own arguments, then later launches' as they come.

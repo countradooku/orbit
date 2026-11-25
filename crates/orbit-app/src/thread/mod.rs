@@ -299,6 +299,20 @@ impl ThreadView {
         &self.app
     }
 
+    pub fn composer(&self) -> &Entity<Composer> {
+        &self.composer
+    }
+
+    /// Types `text` into the thread's terminal, opening it first.
+    pub fn run_in_terminal(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal.is_none() {
+            self.show_terminal(false, window, cx);
+        }
+        if let Some(terminal) = &self.terminal {
+            terminal.update(cx, |t, cx| t.type_text(text, cx));
+        }
+    }
+
     pub fn focus_composer(view: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let composer = view.read(cx).composer.clone();
         Composer::focus(&composer, window, cx);

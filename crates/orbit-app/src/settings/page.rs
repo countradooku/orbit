@@ -43,6 +43,8 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         Some(gpui_kit::component::setting::SelectIndex { page_ix: PROJECTS_PAGE, group_ix: None })
     } else if crate::hosts::page::take_request(cx) {
         Some(gpui_kit::component::setting::SelectIndex { page_ix: crate::hosts::page::PAGE, group_ix: None })
+    } else if crate::plugins::page::take_request(cx) {
+        Some(gpui_kit::component::setting::SelectIndex { page_ix: crate::plugins::page::PAGE, group_ix: None })
     } else {
         target
     };
@@ -63,6 +65,7 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         notifications(),
         keyboard(),
         crate::hosts::page::page(&app, cx),
+        crate::plugins::page::page(&app, cx),
         data(cx),
         crate::update::settings_page(cx),
         about(cx),

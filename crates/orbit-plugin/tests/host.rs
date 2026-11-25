@@ -383,3 +383,44 @@ fn settings_are_declared_and_typed() {
     assert_eq!(host.setting("cfg", "token", None).unwrap(), "(set)", "secrets are never read back");
     assert_eq!(host.state().secrets, "file");
 }
+
+/// Writes a signed local catalog of the bundled examples, for trying the
+/// plugin browser by hand (docs/PLUGINS.md, "Trying a catalog locally"):
+///
+/// ```text
+/// ORBIT_FIXTURE_DIR=<out> cargo test -p orbit-plugin --test host make_catalog_fixture -- --ignored
+/// ```
+///
+/// It writes `catalog.toml`, its signature, one `.orbitplugin` per example
+/// and `public-key.txt` (the test key to add the catalog with).
+#[test]
+#[ignore = "writes a fixture for manual checks"]
+fn make_catalog_fixture() {
+    let dir = PathBuf::from(std::env::var("ORBIT_FIXTURE_DIR").expect("set ORBIT_FIXTURE_DIR"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let key = TestKey::new(77);
+    let mut listing = String::from("name = \"Orbit examples\"\n");
+    for name in ["midnight-theme", "agents", "guard-rm"] {
+        let root = examples().join(name);
+        let loaded = package::load(&root).unwrap();
+        let m = &loaded.validated.manifest;
+        let file = format!("{}-{}.orbitplugin", m.id, m.version);
+        std::fs::write(dir.join(&file), package::pack(&root).unwrap()).unwrap();
+        let caps: Vec<String> = loaded.validated.capabilities.iter().map(|c| format!("\"{}\"", c.key())).collect();
+        listing.push_str(&format!(
+            "\n[[plugins]]\nid = \"{}\"\nname = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\npublisher = \"{}\"\ncategories = [{}]\ntier = \"{}\"\ncapabilities = [{}]\nhash = \"{}\"\nsource = {{ archive = \"{file}\" }}\n",
+            m.id,
+            m.name,
+            m.version,
+            m.description,
+            m.publisher,
+            m.categories.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", "),
+            loaded.validated.tier.label().to_lowercase().replace("webassembly", "wasm"),
+            caps.join(", "),
+            loaded.hash
+        ));
+    }
+    std::fs::write(dir.join("catalog.toml"), &listing).unwrap();
+    std::fs::write(dir.join("catalog.toml.minisig"), key.sign(listing.as_bytes(), "orbit-catalog examples")).unwrap();
+    std::fs::write(dir.join("public-key.txt"), key.public_base64()).unwrap();
+}

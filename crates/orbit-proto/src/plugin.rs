@@ -177,7 +177,25 @@ pub struct PluginInfo {
     pub installed_ms: u64,
     /// What it adds, for the plugin's row ("2 themes · 1 agent").
     pub summary: String,
+    /// The settings it declares, with their values.
+    pub settings: Vec<PluginSetting>,
     pub ui: PluginUi,
+}
+
+/// A setting a plugin declares, as the settings dialog shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
+pub struct PluginSetting {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    /// `text`, `toggle`, `number`, `choice` or `secret`.
+    pub kind: String,
+    pub choices: Vec<String>,
+    /// The value; for a secret, empty, with `set` saying whether one is
+    /// stored (secrets never leave the host).
+    pub value: String,
+    pub set: bool,
 }
 
 /// A plugin's contributions to the app, as data. Empty while the plugin is
@@ -440,6 +458,9 @@ pub enum PluginCommand {
     RemoveCatalog { name: String },
     /// Reads every catalog again.
     RefreshCatalogs,
+    /// Writes a plugin's project template as the project's `orbit.toml`
+    /// (refused when it already has one). Replies `Message`.
+    ApplyTemplate { id: String, template: String, project: crate::ids::ProjectId },
     /// Reads or writes a plugin setting declared in its manifest. `None`
     /// reads.
     Setting { id: String, key: String, value: Option<String> },

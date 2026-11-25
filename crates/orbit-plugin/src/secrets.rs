@@ -44,7 +44,10 @@ pub struct Secrets {
     /// `<data>/plugins/data`.
     dir: PathBuf,
     service: String,
-    store: Option<Arc<CredentialStore>>,
+    keychain: bool,
+    /// The keychain, found on first use (asking it can take a moment on a
+    /// host without one, so not at start).
+    store: std::sync::OnceLock<Option<Arc<CredentialStore>>>,
 }
 
 impl Secrets {
@@ -52,12 +55,20 @@ impl Secrets {
     /// few seconds; otherwise secrets go to files under `dir`.
     pub fn open(dir: &Path, keychain: bool) -> Self {
         let service = format!("Orbit plugins {}", &blake3::hash(dir.display().to_string().as_bytes()).to_hex()[..12]);
-        let store = if keychain { probe(&service) } else { None };
-        Self { dir: dir.to_owned(), service, store }
+        Self { dir: dir.to_owned(), service, keychain, store: std::sync::OnceLock::new() }
     }
 
-    pub fn protection(&self) -> Protection {
-        if self.store.is_some() { Protection::Keychain } else { Protection::File }
+    fn store(&self) -> &Option<Arc<CredentialStore>> {
+        self.store.get_or_init(|| if self.keychain { probe(&self.service) } else { None })
+    }
+
+    /// Where secrets go, once known (`None` until the keychain was first
+    /// needed).
+    pub fn protection(&self) -> Option<Protection> {
+        if !self.keychain {
+            return Some(Protection::File);
+        }
+        self.store.get().map(|s| if s.is_some() { Protection::Keychain } else { Protection::File })
     }
 
     fn file(&self, plugin: &str) -> PathBuf {
@@ -84,8 +95,14 @@ impl Secrets {
         std::fs::rename(&tmp, path).map_err(|e| e.to_string())
     }
 
+    /// Whether a secret is stored, without reading it (from the key index,
+    /// so the keychain isn't asked).
+    pub fn has(&self, plugin: &str, key: &str) -> bool {
+        Self::read_map(&self.index(plugin)).contains_key(key) || Self::read_map(&self.file(plugin)).contains_key(key)
+    }
+
     pub fn get(&self, plugin: &str, key: &str) -> Result<Option<String>, String> {
-        match &self.store {
+        match self.store() {
             Some(store) => {
                 let (store, service, user) = (store.clone(), self.service.clone(), format!("{plugin}/{key}"));
                 off_thread(move || match Entry::new_in_store(&store, &service, &user).and_then(|e| e.get_password()) {
@@ -102,7 +119,7 @@ impl Secrets {
         if value.len() > 16 * 1024 {
             return Err("A secret can be at most 16 KiB.".into());
         }
-        match &self.store {
+        match self.store() {
             Some(store) => {
                 let (store, service, user, value) = (store.clone(), self.service.clone(), format!("{plugin}/{key}"), value.to_owned());
                 off_thread(move || {
@@ -121,7 +138,7 @@ impl Secrets {
     }
 
     pub fn delete(&self, plugin: &str, key: &str) -> Result<(), String> {
-        match &self.store {
+        match self.store() {
             Some(store) => {
                 let (store, service, user) = (store.clone(), self.service.clone(), format!("{plugin}/{key}"));
                 off_thread(move || match Entry::new_in_store(&store, &service, &user).and_then(|e| e.delete_credential()) {
@@ -229,7 +246,7 @@ mod tests {
     fn file_secrets_round_trip_and_are_forgotten() {
         let dir = tempfile::tempdir().unwrap();
         let secrets = Secrets::open(dir.path(), false);
-        assert_eq!(secrets.protection(), Protection::File);
+        assert_eq!(secrets.protection(), Some(Protection::File));
         assert_eq!(secrets.get("p", "token").unwrap(), None);
         secrets.set("p", "token", "s3cret").unwrap();
         assert_eq!(secrets.get("p", "token").unwrap().as_deref(), Some("s3cret"));
@@ -247,7 +264,8 @@ mod tests {
     fn keychain_secrets_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let secrets = Secrets::open(dir.path(), true);
-        assert_eq!(secrets.protection(), Protection::Keychain);
+        secrets.set("p", "probe", "x").unwrap();
+        assert_eq!(secrets.protection(), Some(Protection::Keychain));
         secrets.set("p", "token", "s3cret").unwrap();
         assert_eq!(secrets.get("p", "token").unwrap().as_deref(), Some("s3cret"));
         secrets.forget("p");

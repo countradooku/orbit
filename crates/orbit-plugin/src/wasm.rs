@@ -176,11 +176,12 @@ impl Sandbox {
     }
 
     fn invoke_inner(&mut self, entry: &str, input: &str, api: Box<dyn HostApi>) -> Result<Option<String>, CallError> {
-        if self.instance.is_none() && self.has(entry) {
-            if let Err(e) = self.instantiate() {
-                self.store.data_mut().api = Some(api);
-                return Err(e);
-            }
+        if self.instance.is_none()
+            && self.has(entry)
+            && let Err(e) = self.instantiate()
+        {
+            self.store.data_mut().api = Some(api);
+            return Err(e);
         }
         self.store.data_mut().api = Some(api);
         if !self.has(entry) {
@@ -348,8 +349,11 @@ mod tests {
     (call $call (i32.const 64) (i32.const 11) (i32.const 96) (i32.const 11))))
 "#;
 
+    /// Host calls (method, params) and log lines a module made.
+    type Seen = Arc<Mutex<(Vec<(String, String)>, Vec<String>)>>;
+
     #[derive(Clone, Default)]
-    struct Recorder(Arc<Mutex<(Vec<(String, String)>, Vec<String>)>>);
+    struct Recorder(Seen);
 
     impl HostApi for Recorder {
         fn call(&mut self, method: &str, params: &str) -> Result<String, ApiError> {

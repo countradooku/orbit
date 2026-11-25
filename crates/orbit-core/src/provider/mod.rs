@@ -58,10 +58,12 @@ pub struct SessionSpec {
     pub tool_policy: ToolPolicy,
 }
 
+type ToolCheck = dyn Fn(&RequestKind) -> Option<String> + Send + Sync;
+
 /// A veto on tool calls: answers why a call must not run, or `None`.
 #[derive(Clone, Default)]
 pub struct ToolPolicy {
-    check: Option<std::sync::Arc<dyn Fn(&RequestKind) -> Option<String> + Send + Sync>>,
+    check: Option<std::sync::Arc<ToolCheck>>,
     every_tool: bool,
 }
 

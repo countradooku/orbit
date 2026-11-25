@@ -1,6 +1,6 @@
 # The guard-rm example's WebAssembly module. Not part of the workspace:
-# build it with `scripts/build-example-plugins.sh` (or the command in
-# README.md) and commit the resulting `guard.wasm`.
+# build it as docs/PLUGINS.md ("Building a module") says and commit the
+# resulting `guard.wasm`.
 [package]
 name = "orbit-example-guard-rm"
 version = "1.0.0"

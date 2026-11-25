@@ -193,6 +193,13 @@ impl AutomationsView {
         self.selected.and_then(|id| state.automation(id)).and_then(|a| a.spec.project).or_else(|| state.projects.first().map(|p| p.id))
     }
 
+    /// A plugin's recipe: the editor filled in, like a built-in one.
+    pub fn open_plugin_recipe(&mut self, recipe: &PluginRecipe, window: &mut Window, cx: &mut Context<Self>) {
+        let defaults = self.app.read(cx).state().defaults.clone();
+        let spec = crate::plugins::recipe_spec(recipe, self.default_project(cx), &defaults);
+        editor::open(self.app.clone(), None, spec, self.on_saved(cx), window, cx);
+    }
+
     pub fn open_recipe(&mut self, recipe: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(recipe) = orbit_core::automations::recipes::find(recipe) else { return };
         let defaults = self.app.read(cx).state().defaults.clone();

@@ -261,7 +261,7 @@ impl PluginHost {
         PluginsState {
             plugins: inner.plugins.values().map(|p| inner.info(p)).collect(),
             catalogs: inner.catalogs.values().cloned().collect(),
-            secrets: inner.secrets.protection().key().into(),
+            secrets: inner.secrets.protection().map(|p| p.key().to_owned()).unwrap_or_default(),
         }
     }
 
@@ -288,7 +288,9 @@ impl PluginHost {
                 if bytes.len() as u64 > crate::manifest::limits::PLUGIN_BYTES {
                     return Err("The archive is too large.".into());
                 }
-                Resolved { fetch: Fetch::Archive(bytes), expected_hash: None, origin: format!("Archive {name}") }
+                // A folder packed by a client keeps its folder's name.
+                let origin = if name.ends_with(&format!(".{}", package::EXTENSION)) { format!("Archive {name}") } else { format!("Folder {name}") };
+                Resolved { fetch: Fetch::Archive(bytes), expected_hash: None, origin }
             }
             InstallSource::Git { url, commit, hash } => {
                 if !package::is_git_url(&url) {
@@ -382,7 +384,8 @@ impl PluginHost {
         };
         let plugin = Plugin { record, loaded: Ok(staged.loaded.clone()), storage: Value::new_object(), sandbox: None };
         let mut info = inner.info(&plugin);
-        info.ui = PluginUi::default();
+        // What consent needs: the programs it would run, nothing else.
+        info.ui = PluginUi { agents: staged.loaded.ui.agents.clone(), ..Default::default() };
         (info, existing.map(|p| p.record.version.clone()))
     }
 
@@ -534,7 +537,7 @@ impl PluginHost {
         };
         let secret = entry.kind == "secret";
         match value {
-            None if secret => Ok(if inner.secrets.get(id, &format!("setting.{key}"))?.is_some() { "(set)".into() } else { String::new() }),
+            None if secret => Ok(if inner.secrets.has(id, &format!("setting.{key}")) { "(set)".into() } else { String::new() }),
             None => Ok(inner.settings(id).get(key).cloned().unwrap_or(entry.default.clone())),
             Some(v) if secret => {
                 if v.is_empty() {
@@ -980,7 +983,9 @@ impl Inner {
         match &plugin.loaded {
             Ok(loaded) => {
                 let m = &loaded.validated.manifest;
-                let mut ui = if status.is_active() { loaded.ui.clone() } else { PluginUi::default() };
+                // An inactive plugin contributes nothing; its agents' command
+                // lines stay listed for the consent dialog.
+                let mut ui = if status.is_active() { loaded.ui.clone() } else { PluginUi { agents: loaded.ui.agents.clone(), ..Default::default() } };
                 if status.is_active() {
                     ui.storage = plugin.storage.to_string();
                     if !granted.contains(&Capability::Agents) {
@@ -1003,6 +1008,7 @@ impl Inner {
                     hash: loaded.hash.clone(),
                     installed_ms: plugin.record.installed_ms,
                     summary: loaded.summary(),
+                    settings: self.setting_infos(&plugin.record.id, m),
                     ui,
                 }
             }
@@ -1019,6 +1025,29 @@ impl Inner {
                 ..Default::default()
             },
         }
+    }
+
+    fn setting_infos(&self, id: &str, manifest: &crate::Manifest) -> Vec<PluginSetting> {
+        if manifest.settings.is_empty() {
+            return Vec::new();
+        }
+        let values = self.settings(id);
+        manifest
+            .settings
+            .iter()
+            .map(|s| {
+                let secret = s.kind == "secret";
+                PluginSetting {
+                    key: s.key.clone(),
+                    label: s.label.clone(),
+                    description: s.description.clone(),
+                    kind: s.kind.clone(),
+                    choices: s.choices.clone(),
+                    value: if secret { String::new() } else { values.get(&s.key).cloned().unwrap_or_default() },
+                    set: secret && self.secrets.has(id, &format!("setting.{}", s.key)),
+                }
+            })
+            .collect()
     }
 
     /// Calls into a plugin's module with a fresh API object holding what
@@ -1108,7 +1137,7 @@ impl Inner {
         {
             let keep = old.len() / 2;
             let cut = old[keep..].find('\n').map_or(old.len(), |i| keep + i + 1);
-            let _ = write_atomic(&path, old[cut..].as_bytes());
+            let _ = write_atomic(&path, &old.as_bytes()[cut..]);
         }
         use std::io::Write as _;
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {

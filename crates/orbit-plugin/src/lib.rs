@@ -44,6 +44,7 @@ pub use package::Loaded;
 pub const ORBIT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Milliseconds since the Unix epoch.
+#[cfg(feature = "host")]
 pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }

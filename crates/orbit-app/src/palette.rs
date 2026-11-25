@@ -88,6 +88,7 @@ fn commands() -> Vec<CommandDef> {
         command("Edit keybindings…", Lucide::Keyboard, "keymap shortcuts json", OpenKeybindings),
         command("Reload keybindings", IconName::RefreshCw, "keymap", ReloadKeybindings),
         command("Settings…", IconName::Settings, "preferences", OpenSettings),
+        command("Plugins", Lucide::Puzzle, "extensions add-ons themes agents install catalog", crate::plugins::ManagePlugins),
         command("Zoom in", IconName::Plus, "bigger", ZoomIn),
         command("Zoom out", IconName::Minus, "smaller", ZoomOut),
         command("Actual size", IconName::Frame, "zoom reset", ResetZoom),
@@ -373,11 +374,29 @@ fn build(workspace: &WeakEntity<Workspace>, query: &str, commands: &[CommandDef]
             .collect()
     };
 
+    // What plugins add: their commands, panels and snippets.
+    let plugin_rows = |query: &str| -> Rows {
+        crate::plugins::palette_commands(cx)
+            .into_iter()
+            .filter(|(label, _, _)| score(query, label).is_some())
+            .map(|(label, icon, action)| {
+                let label: SharedString = label.into();
+                let shown = label.clone();
+                let item = CommandItem::new().label(label.clone()).child(move |_, cx| {
+                    row(icon.clone().size_4().into_any_element(), shown.clone(), None, None, cx)
+                });
+                let action: Rc<dyn Fn() -> Box<dyn Action>> = Rc::new(move || action.boxed_clone());
+                (item, Target::Action(action))
+            })
+            .collect()
+    };
+
     match query.chars().next() {
         Some('>') => {
             let q = query[1..].trim().to_lowercase();
             let mut rows = target_rows(&q);
             rows.extend(command_rows(&q, usize::MAX));
+            rows.extend(plugin_rows(&q));
             groups.push(("Commands".into(), rows));
         }
         Some('#') => {
@@ -476,6 +495,7 @@ fn build(workspace: &WeakEntity<Workspace>, query: &str, commands: &[CommandDef]
             }
             let mut commands = target_rows(&q);
             commands.extend(command_rows(&q, 6));
+            commands.extend(plugin_rows(&q).into_iter().take(6));
             if !commands.is_empty() {
                 groups.push(("Commands".into(), commands));
             }

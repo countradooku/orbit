@@ -38,6 +38,10 @@ const REFRESH: Duration = Duration::from_secs(6 * 3600);
 const RETRY: Duration = Duration::from_secs(15 * 60);
 /// Dev folders settle this long after a change before reloading.
 const DEV_SETTLE: Duration = Duration::from_millis(300);
+/// Threads one plugin may start in [`THREADS_WINDOW`]: a hook that starts a
+/// thread when one finishes can't start a chain reaction.
+const THREADS_PER_WINDOW: usize = 10;
+const THREADS_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 pub(crate) struct PluginRuntime {
     pub(crate) host: PluginHost,
@@ -48,6 +52,8 @@ pub(crate) struct PluginRuntime {
     watches: HashMap<String, DevWatch>,
     threads_seq: u64,
     next_refresh: Instant,
+    /// When each plugin last started threads.
+    started: HashMap<String, std::collections::VecDeque<Instant>>,
 }
 
 struct DevWatch {
@@ -64,6 +70,7 @@ impl PluginRuntime {
             watches: HashMap::new(),
             threads_seq: u64::MAX,
             next_refresh: Instant::now() + Duration::from_secs(20),
+            started: HashMap::new(),
         }
     }
 }
@@ -190,8 +197,14 @@ impl Orchestrator {
             PluginCommand::Reload { id } => host.reload(id.as_deref()).map(|_| PluginReply::Done),
             PluginCommand::RemoveCatalog { name } => host.remove_catalog(&name).map(|_| PluginReply::Done),
             PluginCommand::Logs { id, limit } => return reply(PluginReply::Logs(host.logs(id.as_deref(), limit.clamp(1, 5000) as usize))),
-            PluginCommand::Setting { id, key, value } => return host.setting(&id, &key, value.as_deref()).and_then(|v| reply(PluginReply::Setting(v))),
+            PluginCommand::Setting { id, key, value: None } => return host.setting(&id, &key, None).and_then(|v| reply(PluginReply::Setting(v))),
+            PluginCommand::Setting { id, key, value: Some(value) } => {
+                let saved = host.setting(&id, &key, Some(&value))?;
+                self.plugins_changed();
+                return reply(PluginReply::Setting(saved));
+            }
             PluginCommand::RunCommand { id, command } => return self.run_plugin_command(&id, &command),
+            PluginCommand::ApplyTemplate { id, template, project } => return self.apply_plugin_template(&id, &template, project),
             PluginCommand::PanelAction { id, panel, action, inputs } => {
                 let outcome = host.panel_action(&id, &panel, &action, &inputs)?;
                 let message = outcome.message.clone();
@@ -229,6 +242,20 @@ impl Orchestrator {
         }
     }
 
+    /// Writes a plugin's project template as the project's `orbit.toml`.
+    fn apply_plugin_template(&mut self, id: &str, template: &str, project: ProjectId) -> CommandResult {
+        let state = self.plugins.host.state();
+        let plugin = state.plugin(id).filter(|p| p.status.is_active()).ok_or_else(|| format!("“{id}” isn’t running."))?;
+        let text = plugin.ui.templates.iter().find(|t| t.name == template).map(|t| t.orbit_toml.clone()).ok_or_else(|| format!("“{id}” has no template “{template}”."))?;
+        let root = self.store.project(project).map(|p| PathBuf::from(&p.path)).ok_or("That project no longer exists.")?;
+        let path = root.join("orbit.toml");
+        if path.exists() {
+            return Err("This project already has an orbit.toml; Orbit won’t replace it.".into());
+        }
+        std::fs::write(&path, text).map_err(|e| format!("Couldn’t write {}: {e}", path.display()))?;
+        reply(PluginReply::Message(format!("Wrote {}. Import it in Settings › Projects.", path.display())))
+    }
+
     /// Does what plugins asked (each already checked against its
     /// capability by the host).
     pub(crate) fn apply_plugin_effects(&mut self, effects: Vec<EngineEffect>) {
@@ -237,6 +264,21 @@ impl Orchestrator {
                 EngineEffect::Storage { plugin, json } => self.emit(Event::PluginStorage { plugin, storage: json }),
                 EngineEffect::Notify { plugin, title, body } => self.emit(Event::PluginNotice { plugin, title, body }),
                 EngineEffect::CreateThread { plugin, prompt } => {
+                    let now = Instant::now();
+                    let recent = self.plugins.started.entry(plugin.clone()).or_default();
+                    while recent.front().is_some_and(|t| now.duration_since(*t) > THREADS_WINDOW) {
+                        recent.pop_front();
+                    }
+                    if recent.len() >= THREADS_PER_WINDOW {
+                        log::warn!("plugins: {plugin} started {THREADS_PER_WINDOW} threads in ten minutes; not starting another");
+                        self.emit(Event::PluginNotice {
+                            plugin,
+                            title: String::new(),
+                            body: format!("Stopped starting threads: {THREADS_PER_WINDOW} in ten minutes is the most a plugin may start."),
+                        });
+                        continue;
+                    }
+                    recent.push_back(now);
                     let start = ThreadStart {
                         project: None,
                         config: self.store.defaults().clone(),

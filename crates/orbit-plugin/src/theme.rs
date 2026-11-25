@@ -110,7 +110,7 @@ pub fn check(text: &str) -> Result<CheckedTheme, String> {
             }
         }
         let background = *parsed.get("background").ok_or_else(|| format!("“{name}”: needs a #rrggbb background color."))?;
-        if parsed.get("foreground").is_none() {
+        if !parsed.contains_key("foreground") {
             return Err(format!("“{name}”: needs a #rrggbb foreground color."));
         }
         for &(text_token, surface_token, needed) in PAIRS {

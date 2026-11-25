@@ -134,6 +134,14 @@ impl TerminalPanel {
         self._subscriptions.push(cx.on_focus(&focus, window, |this, _, cx| this.wake(cx)));
     }
 
+    /// Sends `text` as if typed (held until the terminal is open).
+    pub(crate) fn type_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        match self.term {
+            Some(term) => self.app.update(cx, |app, _| app.send(Command::TerminalInput { term, data: text.as_bytes().to_vec() })),
+            None => self.pending.extend_from_slice(text.as_bytes()),
+        }
+    }
+
     pub fn focus(panel: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let view = panel.read(cx).view.clone();
         let handle = view.read(cx).focus_handle(cx);

@@ -17,6 +17,7 @@ macOS and Linux (X11 and Wayland). See [docs/DESIGN.md](docs/DESIGN.md).
 | `orbitd` | Headless host: runs the engine and serves it to remote clients |
 | `orbit-terminal` | The terminal view (alacritty_terminal on GPUI Kit) |
 | `orbit-app` | The desktop app (`orbit` binary) |
+| `orbit-plugin` | Plugins: manifests, consent, signed catalogs, the WebAssembly sandbox ([docs/PLUGINS.md](docs/PLUGINS.md)) |
 | `orbit-bench` | Benchmarks |
 
 ## Build
