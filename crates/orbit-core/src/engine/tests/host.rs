@@ -15,7 +15,11 @@ fn activity(h: &Harness) -> HostActivity {
 }
 
 fn attach(h: &Harness, thread: ThreadId, cwd: &std::path::Path) -> (TermSession, Vec<u8>) {
-    match host(h, HostCommand::AttachTerminal { thread, cwd: cwd.display().to_string(), cols: 100, rows: 30 }) {
+    attach_with(h, thread, cwd, true)
+}
+
+fn attach_with(h: &Harness, thread: ThreadId, cwd: &std::path::Path, wake: bool) -> (TermSession, Vec<u8>) {
+    match host(h, HostCommand::AttachTerminal { thread, cwd: cwd.display().to_string(), cols: 100, rows: 30, wake }) {
         Reply::Host(HostReply::Terminal { session, scrollback }) => (session, scrollback),
         other => panic!("{other:?}"),
     }
@@ -150,7 +154,14 @@ fn a_sleeping_terminal_keeps_its_scrollback_and_wakes_on_input() {
     let a = activity(&h);
     assert_eq!((a.terminals, a.sleeping_terminals), (0, 1), "no shell runs while it sleeps");
 
-    // Input wakes it (as attaching would) and reaches the new shell.
+    // A screen restored at startup shows it asleep, with its scrollback.
+    let (restored, scrollback) = attach_with(&h, thread, dir.path(), false);
+    assert_eq!(restored.term, term);
+    assert!(restored.sleeping);
+    assert!(String::from_utf8_lossy(&scrollback).contains("orbit-asleep"));
+    host(&h, HostCommand::TerminalReady { term });
+
+    // Input wakes it (as focusing or attaching would) and reaches the new shell.
     type_line(&h, term, "echo orbit-awake");
     let woke = output_until(&mut h, term, "orbit-awake", Duration::from_secs(20)).expect("the new shell answers");
     assert!(String::from_utf8_lossy(&woke).contains("Woke from sleep"));

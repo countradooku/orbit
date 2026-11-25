@@ -6206,12 +6206,15 @@ dependencies = [
 name = "orbitd"
 version = "0.1.0"
 dependencies = [
+ "crossfire",
  "env_logger",
  "log",
  "mimalloc",
  "orbit-bots",
  "orbit-core",
  "orbit-net",
+ "orbit-proto",
+ "tempfile",
  "tokio",
 ]
 

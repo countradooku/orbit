@@ -278,7 +278,8 @@ impl Orchestrator {
         }
         let term = self
             .terminals
-            .open_as(id.unwrap_or_else(TermId::new), Path::new(cwd), size, Some(shell))
+            // Not `unwrap_or_default`: a default id is zero, `new` is unique.
+            .open_as(match id { Some(id) => id, None => TermId::new() }, Path::new(cwd), size, Some(shell))
             .map_err(|e| format!("Couldn’t open a terminal in {cwd}: {e}"))?;
         let thread = self.thread_for_folder(cwd);
         self.status.terminals.insert(term, TermWatch::new(term, token, thread));

@@ -28,8 +28,10 @@ pub enum HostCommand {
     /// app starts the new one when it reconnects. Fails in-process.
     Restart { when: RestartWhen },
     /// Re-attach the thread's terminal, or open one in `cwd` when it has
-    /// none. A sleeping terminal is woken. Replies [`HostReply::Terminal`].
-    AttachTerminal { thread: ThreadId, cwd: String, cols: u16, rows: u16 },
+    /// none. With `wake`, a sleeping terminal is woken; without, it stays
+    /// asleep (a screen restored at startup shows it until it is focused).
+    /// Replies [`HostReply::Terminal`].
+    AttachTerminal { thread: ThreadId, cwd: String, cols: u16, rows: u16, wake: bool },
     /// The screen that sent `AttachTerminal` has drawn the scrollback:
     /// send the output held since the reply. (Held so that nothing is lost
     /// or drawn twice between the reply and the screen taking over; it is
@@ -185,7 +187,7 @@ mod tests {
 
     #[test]
     fn host_messages_round_trip() {
-        let cmd = Command::Host(HostCommand::AttachTerminal { thread: ThreadId(3), cwd: "/r".into(), cols: 80, rows: 24 });
+        let cmd = Command::Host(HostCommand::AttachTerminal { thread: ThreadId(3), cwd: "/r".into(), cols: 80, rows: 24, wake: true });
         assert_eq!(decode::<Command>(&encode(&cmd)).unwrap(), cmd);
         let reply = Reply::Host(HostReply::Terminal {
             session: TermSession { term: TermId(4), thread: Some(ThreadId(3)), cwd: "/r".into(), cols: 80, rows: 24, sleeping: false, busy: true },

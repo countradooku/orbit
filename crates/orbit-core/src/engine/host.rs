@@ -82,8 +82,8 @@ impl Orchestrator {
             // to keep alive.
             HostCommand::AttachUi | HostCommand::Hold { .. } => Ok(Reply::Done),
             HostCommand::Restart { .. } => Err("Orbit runs in this process: there is no background host to restart.".into()),
-            HostCommand::AttachTerminal { thread, cwd, cols, rows } => {
-                self.attach_terminal(thread, &cwd, TermSize::new(cols.max(2), rows.max(1)))
+            HostCommand::AttachTerminal { thread, cwd, cols, rows, wake } => {
+                self.attach_terminal(thread, &cwd, TermSize::new(cols.max(2), rows.max(1)), wake)
             }
             HostCommand::TerminalReady { term } => {
                 self.release_held(term);
@@ -233,15 +233,20 @@ impl Orchestrator {
 
     // ── Attach, sleep, wake ──────────────────────────────────────────────
 
-    fn attach_terminal(&mut self, thread: ThreadId, cwd: &str, size: TermSize) -> CommandResult {
+    fn attach_terminal(&mut self, thread: ThreadId, cwd: &str, size: TermSize, wake: bool) -> CommandResult {
         if self.store.thread(thread).is_none() {
             return Err("That thread no longer exists.".into());
         }
         let existing = self.host.sessions.keys().copied().filter(|t| self.session_thread(*t) == Some(thread)).max();
         let term = match existing {
             Some(term) => {
-                let awake = self.host.sessions.get(&term).is_some_and(|s| matches!(s.state, Sleep::Awake));
-                if awake { self.resize_for_attach(term, size) } else { self.wake_terminal(term, size)? }
+                match self.host.sessions.get_mut(&term).map(|s| &mut s.state) {
+                    Some(Sleep::Awake) => self.resize_for_attach(term, size),
+                    _ if wake => self.wake_terminal(term, size)?,
+                    // Asleep: it wakes at this screen's size.
+                    Some(Sleep::Asleep { size: stored, .. }) => *stored = size,
+                    _ => {}
+                }
                 term
             }
             None => {
