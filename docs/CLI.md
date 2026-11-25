@@ -81,6 +81,9 @@ and `orbit agent-context` for a short guide written for agents.
 | `usage stats [--since 7d \| --all] [--by model\|account\|project\|thread\|day] [--project] [--account]` | Tokens and cost of finished turns | `usage_stats` |
 | `usage export [--since \| --all] [--project] [--account] [--out file]` | One CSV row per turn | |
 | `usage failover <thread> <account>`, `usage policy [ask\|auto\|never] [--alerts on\|off]`, `usage pin <account\|none> --project P \| --automation A` | Move a rate-limited thread to another account; set the failover policy; pin a project or automation to an account | `usage_failover`, `usage_policy` |
+| `plugin new <id> [--name] [--dir]`, `plugin validate [path]`, `plugin pack [path] [--out file]` | Start, check (unknown keys, contrast, panels, module; prints the content hash) and pack a plugin folder, without an engine | |
+| `plugin install <folder\|file\|url> [--commit C --hash H] [--catalog NAME] [--yes]`, `plugin dev [path] [--yes]` | Install or update a plugin (folders are packed and sent, so remote hosts work); load one in place, reloading on change. `--yes` grants what it asks for | |
+| `plugin list`, `plugin enable <id> [--yes]`, `plugin disable <id>`, `plugin remove <id>`, `plugin logs [id] [--limit N]` | Installed plugins; turn on (and approve), off, uninstall; the audit log (see [PLUGINS.md](PLUGINS.md)) | `list_plugins`, `plugin_logs` |
 | `open [thread]` | Bring the desktop app forward (starting it if needed) and show the thread | |
 | `agent-context`, `help [--json]`, `completions <shell>` | Self-description | |
 | `mcp`, `mcp install [--client claude\|codex\|all] [--apply]` | MCP server and its registration | |
