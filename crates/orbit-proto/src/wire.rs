@@ -8,10 +8,11 @@ use crate::model::*;
 /// Client → engine.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub enum ClientMsg {
-    /// First message on a connection. `since` is the last event sequence the
-    /// client holds (0 for none); the engine replays everything after it or
-    /// sends a fresh snapshot when the gap is too old.
-    Hello { version: u16, token: String, since: u64 },
+    /// First message on a connection. `epoch` and `since` identify the last
+    /// event the client holds (0 for none). Within the same epoch the engine
+    /// replays everything after `since`; otherwise, or when the gap is too
+    /// old, it sends a fresh snapshot.
+    Hello { version: u16, token: String, epoch: u64, since: u64 },
     Call { id: u32, command: Command },
 }
 
@@ -30,6 +31,8 @@ pub enum ServerMsg {
 /// they are fetched with [`Command::OpenThread`].
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
 pub struct Snapshot {
+    /// The engine's process lifetime; `seq` is only meaningful within it.
+    pub epoch: u64,
     pub seq: u64,
     pub projects: Vec<Project>,
     pub threads: Vec<Thread>,
