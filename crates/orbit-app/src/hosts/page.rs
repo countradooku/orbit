@@ -70,18 +70,21 @@ fn hosts_list(app: &Entity<AppState>, _: &mut Window, cx: &mut App) -> AnyElemen
         .children(rows.into_iter().map(|(entry, summary, ephemeral)| {
             let (tone, status) = status_line(&entry, &summary);
             let shown = entry.id == active;
-            let detail = match &entry.kind {
-                HostKind::Local => "Local".to_owned(),
+            let label = entry.label();
+            // The address, unless the name already is it.
+            let address = match &entry.kind {
+                HostKind::Local => String::new(),
                 HostKind::Ssh { target, port, identity } => {
-                    let mut text = format!("SSH · {target}{}", port.map(|p| format!(":{p}")).unwrap_or_default());
+                    let mut text = format!("{target}{}", port.map(|p| format!(":{p}")).unwrap_or_default());
                     if !identity.is_empty() {
                         text.push_str(&format!(" · {identity}"));
                     }
                     text
                 }
-                HostKind::Wsl { distro } => format!("WSL · {distro}"),
-                HostKind::Url { url, .. } => format!("Direct · {url}"),
+                HostKind::Wsl { distro } => distro.clone(),
+                HostKind::Url { url, .. } => url.clone(),
             };
+            let detail = if address.is_empty() || address == label { entry.kind_label().to_owned() } else { format!("{} · {address}", entry.kind_label()) };
             let version = match &summary.phase {
                 Some(LinkPhase::Ready(info)) => Some(format!("orbitd {}", info.version)),
                 _ => None,
@@ -89,7 +92,7 @@ fn hosts_list(app: &Entity<AppState>, _: &mut Window, cx: &mut App) -> AnyElemen
             let id = SharedString::from(entry.id.clone());
             let (switch_id, rename_id, remove_id) = (id.clone(), entry.id.clone(), entry.id.clone());
             let (rename_app, remove_app) = (app.clone(), app.clone());
-            let name = entry.label();
+            let name = label;
             let removable = !entry.is_local() && !ephemeral;
             h_flex()
                 .w_full()
