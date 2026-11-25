@@ -99,7 +99,7 @@ impl<'a> FrameReader<'a> {
     }
 
     /// The next decoded value.
-    pub fn next<T: for<'de> Decode<'de>>(&mut self) -> Result<T, FrameError> {
+    pub fn read<T: for<'de> Decode<'de>>(&mut self) -> Result<T, FrameError> {
         let start = self.pos;
         let payload = self.next_payload()?;
         bitcode::decode(payload).map_err(|e| {
@@ -128,8 +128,8 @@ mod tests {
         buf.truncate(buf.len() - 2); // simulate a crash mid-write
 
         let mut reader = FrameReader::new(&buf);
-        assert_eq!(reader.next::<Sample>().unwrap(), Sample { a: 1, b: "one".into() });
-        assert!(matches!(reader.next::<Sample>(), Err(FrameError::Incomplete)));
+        assert_eq!(reader.read::<Sample>().unwrap(), Sample { a: 1, b: "one".into() });
+        assert!(matches!(reader.read::<Sample>(), Err(FrameError::Incomplete)));
         assert_eq!(reader.position(), keep);
     }
 
@@ -139,6 +139,6 @@ mod tests {
         write_frame(&Sample { a: 7, b: "seven".into() }, &mut buf);
         let last = buf.len() - 1;
         buf[last] ^= 0xff;
-        assert!(matches!(FrameReader::new(&buf).next::<Sample>(), Err(FrameError::Checksum)));
+        assert!(matches!(FrameReader::new(&buf).read::<Sample>(), Err(FrameError::Checksum)));
     }
 }

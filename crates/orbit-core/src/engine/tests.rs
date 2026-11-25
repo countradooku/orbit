@@ -1,0 +1,296 @@
+//! End-to-end engine tests against a scripted fake agent.
+
+use std::time::{Duration, Instant};
+
+use crossfire::{BlockingTxTrait, mpsc};
+use orbit_proto::*;
+
+use super::*;
+use crate::provider::{AgentEvent, BlockKind, SessionHandle, SessionInput, TurnOutcome};
+
+/// A fake agent whose behavior is chosen by the prompt text:
+/// `ask` raises an approval, `crash` exits mid-turn, `slow` streams until
+/// interrupted, anything else answers `echo: <text>`.
+fn fake_launcher() -> Launcher {
+    Box::new(|_kind, spec, events| {
+        let (input, rx) = mpsc::bounded_blocking_async::<SessionInput>(64);
+        let thread = spec.thread;
+        tokio::spawn(async move {
+            let emit = |e: AgentEvent| {
+                let _ = events.send((thread, e));
+            };
+            emit(AgentEvent::Ready { session_id: "fake-session".into(), model: None });
+            let mut turn = 0;
+            while let Ok(msg) = rx.recv().await {
+                match msg {
+                    SessionInput::Prompt { text, steer: false, .. } => {
+                        turn += 1;
+                        let block = format!("t{turn}");
+                        emit(AgentEvent::TurnStarted { prompt: Some("p".into()) });
+                        match text.as_str() {
+                            "ask" => {
+                                emit(AgentEvent::Request {
+                                    provider_ref: "req-1".into(),
+                                    kind: RequestKind::Command {
+                                        command: "cargo test".into(),
+                                        cwd: ".".into(),
+                                        reason: String::new(),
+                                    },
+                                });
+                                // Wait for the answer.
+                                while let Ok(msg) = rx.recv().await {
+                                    if let SessionInput::Resolve { decision, .. } = msg {
+                                        let text = format!("decision: {decision:?}");
+                                        emit(AgentEvent::BlockDone { block: block.clone(), kind: BlockKind::Text, text });
+                                        break;
+                                    }
+                                }
+                                finish(&emit);
+                            }
+                            "crash" => {
+                                emit(AgentEvent::Exited { error: Some("boom".into()) });
+                                return;
+                            }
+                            "slow" => {
+                                emit(AgentEvent::Delta { block: block.clone(), kind: BlockKind::Text, text: "working".into() });
+                                while let Ok(msg) = rx.recv().await {
+                                    if matches!(msg, SessionInput::Interrupt) {
+                                        emit(AgentEvent::TurnFinished {
+                                            outcome: TurnOutcome::Interrupted,
+                                            usage: Usage::default(),
+                                            duration_ms: 1,
+                                        });
+                                        break;
+                                    }
+                                }
+                            }
+                            _ => {
+                                for piece in ["echo", ": ", &text] {
+                                    emit(AgentEvent::Delta { block: block.clone(), kind: BlockKind::Text, text: piece.to_string() });
+                                }
+                                emit(AgentEvent::BlockDone { block: block.clone(), kind: BlockKind::Text, text: format!("echo: {text}") });
+                                emit(AgentEvent::Checkpoint { provider_message: format!("msg-{turn}") });
+                                finish(&emit);
+                            }
+                        }
+                    }
+                    SessionInput::Shutdown => return,
+                    _ => {}
+                }
+            }
+        });
+        SessionHandle { input }
+    })
+}
+
+fn finish(emit: &impl Fn(AgentEvent)) {
+    emit(AgentEvent::TurnFinished {
+        outcome: TurnOutcome::Completed,
+        usage: Usage { input_tokens: 10, output_tokens: 5, context_tokens: 1000, context_window: 200_000, ..Default::default() },
+        duration_ms: 3,
+    });
+}
+
+struct Harness {
+    engine: EngineHandle,
+    events: EventRx,
+    threads: std::collections::HashMap<ThreadId, Thread>,
+    items: std::collections::HashMap<ItemId, Item>,
+    _dir: Option<tempfile::TempDir>,
+}
+
+impl Harness {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = Self::open(dir.path().to_owned());
+        h._dir = Some(dir);
+        h
+    }
+
+    fn open(path: std::path::PathBuf) -> Self {
+        let engine =
+            EngineHandle::start_with(EngineOptions { data_dir: path, probe_providers: false }, fake_launcher()).unwrap();
+        let sub = engine.subscribe(0, 0).recv().unwrap();
+        let snapshot = sub.snapshot.expect("fresh clients get a snapshot");
+        Self {
+            engine,
+            events: sub.events,
+            threads: snapshot.threads.into_iter().map(|t| (t.id, t)).collect(),
+            items: Default::default(),
+            _dir: None,
+        }
+    }
+
+    fn call(&self, command: Command) -> Reply {
+        self.engine.call(command).recv().unwrap().unwrap()
+    }
+
+    fn new_thread(&self) -> ThreadId {
+        match self.call(Command::CreateThread { project: None, config: ThreadConfig::default(), worktree: false }) {
+            Reply::Thread(id) => id,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn send(&self, thread: ThreadId, text: &str) {
+        self.call(Command::Send { thread, text: text.into(), attachments: vec![], steer: false });
+    }
+
+    /// Applies events until `done` holds or two seconds pass.
+    fn wait(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !done(self) {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            match self.events.try_recv() {
+                Ok(env) => self.apply(env.event),
+                Err(_) => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+    }
+
+    fn apply(&mut self, event: Event) {
+        match event {
+            Event::ThreadUpserted(t) => {
+                self.threads.insert(t.id, t);
+            }
+            Event::ItemUpserted { item, .. } => {
+                self.items.insert(item.id, item);
+            }
+            Event::ItemRemoved { item, .. } => {
+                self.items.remove(&item);
+            }
+            _ => {}
+        }
+    }
+
+    /// The latest state of a thread; a default until its first event lands.
+    fn thread(&self, id: ThreadId) -> Thread {
+        self.threads.get(&id).cloned().unwrap_or_default()
+    }
+
+    fn texts(&self, turn: u32) -> Vec<String> {
+        let mut items: Vec<&Item> = self.items.values().filter(|i| i.turn == turn).collect();
+        items.sort_by_key(|i| i.id);
+        items
+            .iter()
+            .filter_map(|i| match &i.body {
+                ItemBody::User(m) => Some(format!("user: {}", m.text)),
+                ItemBody::Assistant { text } => Some(format!("agent: {text}")),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_message_streams_a_reply_and_settles_the_turn() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "hi there");
+    h.wait("turn to finish", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+    assert_eq!(h.texts(1), vec!["user: hi there", "agent: echo: hi there"]);
+    let t = h.thread(id);
+    assert_eq!(t.title, "hi there");
+    assert_eq!(t.session.as_deref(), Some("fake-session"));
+    assert_eq!(t.usage.output_tokens, 5);
+    assert_eq!(t.usage.context_fill(), Some(0.005));
+    let end = h.items.values().find_map(|i| match &i.body {
+        ItemBody::TurnEnd(s) => Some(s.clone()),
+        _ => None,
+    });
+    assert_eq!(end.unwrap().provider_cursor.as_deref(), Some("msg-1"));
+}
+
+#[test]
+fn messages_sent_during_a_turn_queue_and_run_next() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "slow");
+    h.wait("slow turn to start", |h| h.thread(id).status == ThreadStatus::Running);
+    h.send(id, "second");
+    h.wait("message to queue", |h| h.thread(id).queued == 1);
+    h.call(Command::Interrupt { thread: id });
+    h.wait("queued turn to finish", |h| h.thread(id).turns == 2 && h.thread(id).status == ThreadStatus::Idle);
+    assert_eq!(h.thread(id).queued, 0);
+    assert_eq!(h.texts(2), vec!["user: second", "agent: echo: second"]);
+}
+
+#[test]
+fn approvals_reach_the_inbox_and_the_answer_reaches_the_agent() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "ask");
+    h.wait("request", |h| h.thread(id).status == ThreadStatus::Waiting);
+    let pending = h.thread(id).pending.clone();
+    assert_eq!(pending.len(), 1);
+    assert!(matches!(pending[0].request.kind, RequestKind::Command { ref command, .. } if command == "cargo test"));
+    h.call(Command::Resolve { thread: id, request: pending[0].request.id, decision: Decision::Allow });
+    h.wait("turn to finish", |h| h.thread(id).status == ThreadStatus::Idle && h.thread(id).turns == 1);
+    assert!(h.thread(id).pending.is_empty());
+    assert_eq!(h.texts(1).last().unwrap(), "agent: decision: Allow");
+    let request = h.items.values().find_map(|i| match &i.body {
+        ItemBody::Request(r) => Some(r.clone()),
+        _ => None,
+    });
+    assert_eq!(request.unwrap().resolution, Some(Decision::Allow));
+}
+
+#[test]
+fn an_agent_crash_fails_the_turn_with_its_error() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "crash");
+    h.wait("failure", |h| matches!(h.thread(id).status, ThreadStatus::Failed { .. }));
+    assert_eq!(h.thread(id).status, ThreadStatus::Failed { message: "boom".into() });
+    assert!(h.items.values().any(|i| matches!(&i.body, ItemBody::Notice { text, .. } if text == "boom")));
+}
+
+#[test]
+fn history_survives_a_restart_and_stays_unloaded_until_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut h = Harness::open(dir.path().to_owned());
+        id = h.new_thread();
+        h.send(id, "persist me");
+        h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+        h.engine.shutdown();
+    }
+    let h = Harness::open(dir.path().to_owned());
+    assert_eq!(h.thread(id).title, "persist me");
+    match h.call(Command::OpenThread { id }) {
+        Reply::Timeline(items) => {
+            let texts: Vec<_> = items
+                .iter()
+                .filter_map(|i| match &i.body {
+                    ItemBody::Assistant { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(texts, vec!["echo: persist me"]);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn editing_an_earlier_message_replaces_the_rest_of_the_thread() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "first");
+    h.wait("turn 1", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+    h.send(id, "second");
+    h.wait("turn 2", |h| h.thread(id).turns == 2 && h.thread(id).status == ThreadStatus::Idle);
+    let second = h
+        .items
+        .values()
+        .find(|i| matches!(&i.body, ItemBody::User(m) if m.text == "second"))
+        .unwrap()
+        .id;
+    h.call(Command::EditAndResend { thread: id, item: second, text: "rewritten".into() });
+    h.wait("replacement turn", |h| {
+        h.thread(id).status == ThreadStatus::Idle && h.texts(2).contains(&"agent: echo: rewritten".to_string())
+    });
+    assert_eq!(h.texts(2), vec!["user: rewritten", "agent: echo: rewritten"]);
+    assert_eq!(h.texts(1), vec!["user: first", "agent: echo: first"]);
+}

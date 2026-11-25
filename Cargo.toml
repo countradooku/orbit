@@ -16,8 +16,6 @@ orbit-core = { path = "crates/orbit-core" }
 bitcode = "0.6"
 sonic-rs = "0.5"
 serde = { version = "1", features = ["derive"] }
-compact_str = { version = "0.9", features = ["serde", "bitcode"] }
-bytes = "1"
 crc32fast = "1"
 
 # Concurrency / IO
@@ -25,7 +23,6 @@ crossfire = { version = "3.1", features = ["tokio"] }
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "net", "io-util", "process", "time", "macros", "sync", "fs"] }
 sockudo-ws = { version = "3.1", default-features = false, features = ["simd", "tokio-runtime", "fastrand"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-parking_lot = "0.12"
 portable-pty = "0.9"
 
 # Misc
@@ -33,7 +30,6 @@ mimalloc = { version = "0.1", default-features = false }
 log = "0.4"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 dirs = "6"
-similar = { version = "2", features = ["inline"] }
 memchr = "2"
 
 [profile.release]

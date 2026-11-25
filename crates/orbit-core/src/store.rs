@@ -56,7 +56,7 @@ impl Log {
         let mut reader = FrameReader::new(&bytes);
         let mut out = Vec::new();
         loop {
-            match reader.next::<T>() {
+            match reader.read::<T>() {
                 Ok(record) => out.push(record),
                 Err(FrameError::Incomplete) if reader.position() == bytes.len() => break,
                 Err(err) => {
@@ -406,7 +406,7 @@ impl Store {
 
     // ── Blobs ────────────────────────────────────────────────────────────
 
-    fn blob_path(&self, hash: &str) -> PathBuf {
+    pub fn blob_path(&self, hash: &str) -> PathBuf {
         self.dir.join("blobs").join(&hash[..2]).join(hash)
     }
 
