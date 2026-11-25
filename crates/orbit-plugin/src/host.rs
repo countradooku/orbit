@@ -113,6 +113,8 @@ struct Inner {
     releases: BTreeMap<String, (String, Catalog)>,
     secrets: Arc<Secrets>,
     threads: Arc<String>,
+    /// What hooks called from sessions asked for, until the engine takes it.
+    pending: Vec<EngineEffect>,
 }
 
 /// A source made concrete: what to fetch, and what it must hash to.
@@ -239,6 +241,7 @@ impl PluginHost {
             releases: BTreeMap::new(),
             secrets,
             threads: Arc::new("[]".into()),
+            pending: Vec::new(),
         };
         let records = inner.state.plugins.clone();
         for record in records {
@@ -751,7 +754,8 @@ impl PluginHost {
         let mut inner = self.inner.lock();
         let ids: Vec<String> = inner.hooked(hook).collect();
         for id in ids {
-            let (result, _) = inner.invoke(&id, wasm::ENTRY_HOOK, hook, input);
+            let (result, mut effects) = inner.invoke(&id, wasm::ENTRY_HOOK, hook, input);
+            inner.pending.append(&mut effects);
             let plugin = inner.plugins.get(&id).expect("hooked plugins exist");
             let loaded = plugin.loaded.as_ref().expect("hooked plugins load");
             let name = loaded.validated.manifest.name.clone();
@@ -785,6 +789,12 @@ impl PluginHost {
             effects.append(&mut fx);
         }
         effects
+    }
+
+    /// What hooks asked for since the last call (storage changes,
+    /// notifications, threads), for the engine to do.
+    pub fn take_effects(&self) -> Vec<EngineEffect> {
+        std::mem::take(&mut self.inner.lock().pending)
     }
 
     /// Runs a palette command of a WebAssembly plugin.

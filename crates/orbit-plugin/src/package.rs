@@ -278,9 +278,6 @@ pub fn pack(root: &Path) -> Result<Vec<u8>, String> {
         let mut zip = zip::ZipWriter::new(&mut out);
         let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         for (rel, path) in hash::files(root)? {
-            if rel.starts_with("target/") {
-                continue;
-            }
             zip.start_file(rel.as_str(), options).map_err(|e| e.to_string())?;
             let bytes = std::fs::read(&path).map_err(|e| format!("{rel}: {e}"))?;
             std::io::Write::write_all(&mut zip, &bytes).map_err(|e| e.to_string())?;

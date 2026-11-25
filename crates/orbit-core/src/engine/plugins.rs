@@ -308,7 +308,10 @@ impl Orchestrator {
             return Ok(());
         }
         let ctx = self.hook_context(thread);
-        match self.plugins.host.prompt_before(&ctx, text) {
+        let verdict = self.plugins.host.prompt_before(&ctx, text);
+        let effects = self.plugins.host.take_effects();
+        self.apply_plugin_effects(effects);
+        match verdict {
             Some(denial) => Err(denial.message()),
             None => Ok(()),
         }
@@ -376,6 +379,11 @@ impl Orchestrator {
     // ── Upkeep ───────────────────────────────────────────────────────────
 
     pub(crate) fn plugins_tick(&mut self) {
+        // What tool hooks asked for from inside sessions.
+        let effects = self.plugins.host.take_effects();
+        if !effects.is_empty() {
+            self.apply_plugin_effects(effects);
+        }
         let seq = self.store.seq();
         if seq != self.plugins.threads_seq && self.plugins.host.wants_threads() {
             self.plugins.threads_seq = seq;

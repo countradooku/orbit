@@ -494,7 +494,8 @@ Removing a plugin deletes its files, storage, settings, secrets and log.
 | A catalog | Settings › Plugins › Browse, or `orbit plugin install <id> --catalog <name>`. |
 
 The **content hash** (`blake3:<hex>`) covers every file's relative path and
-bytes in path order (`.git` excluded), so it is the same on every OS and for
+bytes in path order (`.git` and a top-level `target` build folder are left
+out, of the hash, archives and installs alike), so it is the same on every OS and for
 every way a plugin arrives. `orbit plugin validate` and `pack` print it. An
 installed plugin whose files later change no longer loads ("reinstall it").
 

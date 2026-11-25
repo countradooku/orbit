@@ -2,8 +2,9 @@
 //!
 //! The digest covers every file's relative path (forward slashes) and
 //! bytes, in path order, so it is the same on every OS and for every way a
-//! plugin arrives (folder, archive, git checkout). `.git` is left out;
-//! symbolic links are refused, so a plugin cannot point outside itself.
+//! plugin arrives (folder, archive, git checkout). `.git` and a top-level
+//! `target` (a build folder) are left out; symbolic links are refused, so a
+//! plugin cannot point outside itself.
 
 use std::path::Path;
 
@@ -27,7 +28,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, std::path::PathBuf)>, to
         let entry = entry.map_err(|e| format!("Couldn’t read {}: {e}", dir.display()))?;
         let name = entry.file_name();
         let name = name.to_str().ok_or_else(|| format!("{}: file names must be UTF-8.", dir.display()))?;
-        if name == ".git" {
+        if name == ".git" || (name == "target" && dir == root) {
             continue;
         }
         let path = entry.path();
@@ -87,8 +88,15 @@ mod tests {
         }
         std::fs::create_dir_all(b.path().join(".git")).unwrap();
         std::fs::write(b.path().join(".git/HEAD"), "ref").unwrap();
+        std::fs::create_dir_all(b.path().join("target/release")).unwrap();
+        std::fs::write(b.path().join("target/release/big.rlib"), "build output").unwrap();
         let ha = content_hash(a.path()).unwrap();
-        assert_eq!(ha, content_hash(b.path()).unwrap(), ".git is left out");
+        assert_eq!(ha, content_hash(b.path()).unwrap(), ".git and the build folder are left out");
+        // Only the top-level build folder: one deeper is the plugin's own.
+        std::fs::create_dir_all(a.path().join("themes/target")).unwrap();
+        std::fs::write(a.path().join("themes/target/x.json"), "{}").unwrap();
+        assert_ne!(ha, content_hash(a.path()).unwrap());
+        std::fs::remove_dir_all(a.path().join("themes/target")).unwrap();
         assert!(matches(&ha.to_uppercase().replace("BLAKE3:", "blake3:"), &ha));
         std::fs::write(b.path().join("themes/a.json"), "{ }").unwrap();
         assert_ne!(ha, content_hash(b.path()).unwrap());

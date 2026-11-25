@@ -396,6 +396,8 @@ impl Manifest {
         for (what, path) in paths {
             if !is_relative_path(path) {
                 bad(format!("{what} “{path}” must be a relative path inside the plugin, with forward slashes."));
+            } else if path.starts_with("target/") {
+                bad(format!("{what} “{path}” is in target/, a build folder that isn’t part of the plugin; copy it out."));
             }
         }
 
