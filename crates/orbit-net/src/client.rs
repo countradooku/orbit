@@ -54,7 +54,7 @@ impl RemoteClient {
 
     /// The update stream. Returns `None` after the first call: a remote
     /// connection has exactly one consumer.
-    pub(crate) fn updates(&self) -> Option<AsyncRx<mpsc::List<Update>>> {
+    pub fn updates(&self) -> Option<AsyncRx<mpsc::List<Update>>> {
         self.updates.lock().unwrap().take()
     }
 

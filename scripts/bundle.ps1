@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Builds Orbit in release mode and packages it for Windows:
-  dist/orbit-<version>-<target>.zip with orbit.exe, orbitd.exe and README.md.
+  dist/orbit-<version>-<target>.zip with orbit-desktop.exe (the app), orbit.exe (the CLI), orbitd.exe and README.md.
 
 .EXAMPLE
   ./scripts/bundle.ps1
@@ -27,7 +27,7 @@ $targetDir = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).ta
 $bin = Join-Path $targetDir "$Target/release"
 
 if (-not $NoBuild) {
-    cargo build --release --locked --target $Target -p orbit-app --bin orbit -p orbitd --bin orbitd
+    cargo build --release --locked --target $Target -p orbit-app --bin orbit-desktop -p orbit-cli --bin orbit -p orbitd --bin orbitd
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
 }
 
@@ -37,7 +37,7 @@ $dir = Join-Path $stage $name
 New-Item -ItemType Directory -Force $dir | Out-Null
 New-Item -ItemType Directory -Force $Out | Out-Null
 try {
-    Copy-Item (Join-Path $bin 'orbit.exe'), (Join-Path $bin 'orbitd.exe'), README.md $dir
+    Copy-Item (Join-Path $bin 'orbit-desktop.exe'), (Join-Path $bin 'orbit.exe'), (Join-Path $bin 'orbitd.exe'), README.md $dir
     $archive = Join-Path (Resolve-Path $Out) "$name.zip"
     if (Test-Path $archive) { Remove-Item $archive -Confirm:$false }
     Compress-Archive -Path $dir -DestinationPath $archive

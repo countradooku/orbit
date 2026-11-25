@@ -6051,12 +6051,18 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "crossfire",
+ "dirs 6.0.0",
+ "getrandom 0.3.4",
+ "libc",
  "log",
  "orbit-core",
  "orbit-proto",
+ "serde",
+ "serde_json",
  "sockudo-ws",
  "tempfile",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

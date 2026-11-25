@@ -99,6 +99,13 @@ impl Workspace {
                         None => {}
                     }
                 }
+                // `orbit open`: come forward, showing the thread if given.
+                if let Some(focus) = app.update(cx, |app, _| app.take_focus_request()) {
+                    window.activate_window();
+                    if let Some(id) = focus.thread.filter(|id| app.read(cx).state().threads.contains_key(id)) {
+                        this.navigate(Route::Thread(id), window, cx);
+                    }
+                }
                 if let Route::Thread(id) = this.route
                     && !app.read(cx).state().threads.contains_key(&id)
                     && app.read(cx).connection().is_none_or(|c| *c == orbit_net::ConnectionStatus::Connected)

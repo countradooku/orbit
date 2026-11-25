@@ -35,7 +35,7 @@ target_dir="$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_
 bin="$target_dir/$target/release"
 
 if [[ $build == 1 ]]; then
-  cargo build --release --locked --target "$target" -p orbit-app --bin orbit -p orbitd --bin orbitd
+  cargo build --release --locked --target "$target" -p orbit-app --bin orbit-desktop -p orbit-cli --bin orbit -p orbitd --bin orbitd
 fi
 
 mkdir -p "$out"
@@ -47,7 +47,7 @@ case "$target" in
   *-apple-darwin)
     app="$stage/Orbit.app"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-    cp "$bin/orbit" "$bin/orbitd" "$app/Contents/MacOS/"
+    cp "$bin/orbit-desktop" "$bin/orbit" "$bin/orbitd" "$app/Contents/MacOS/"
     cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -55,7 +55,7 @@ case "$target" in
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>Orbit</string>
-  <key>CFBundleExecutable</key><string>orbit</string>
+  <key>CFBundleExecutable</key><string>orbit-desktop</string>
   <key>CFBundleIdentifier</key><string>dev.orbit.Orbit</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Orbit</string>
@@ -89,14 +89,14 @@ EOF
   *-linux-*)
     dir="$stage/$name"
     mkdir -p "$dir"
-    cp "$bin/orbit" "$bin/orbitd" README.md "$dir/"
+    cp "$bin/orbit-desktop" "$bin/orbit" "$bin/orbitd" README.md "$dir/"
     # StartupWMClass matches the window's app_id, so docks group the window.
     cat > "$dir/orbit.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Orbit
 Comment=A native control surface for coding agents
-Exec=orbit
+Exec=orbit-desktop
 Terminal=false
 Categories=Development;
 StartupWMClass=dev.orbit.Orbit

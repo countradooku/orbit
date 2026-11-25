@@ -55,6 +55,14 @@ fn backend() -> std::io::Result<(Backend, settings::Startup)> {
     Ok((backend, startup))
 }
 
+/// Serves the in-process engine to the `orbit` CLI on loopback.
+fn control_endpoint(backend: &Backend, data_dir: &std::path::Path) -> Option<orbit_net::endpoint::LocalEndpoint> {
+    let Backend::Local(engine) = backend else { return None };
+    orbit_net::endpoint::start(engine.clone(), data_dir, "desktop")
+        .inspect_err(|err| log::warn!("no local control endpoint: {err}"))
+        .ok()
+}
+
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let (backend, startup) = match backend() {
@@ -65,6 +73,7 @@ fn main() {
         }
     };
     let shutdown = backend.clone();
+    let endpoint = control_endpoint(&backend, &startup.data_dir);
 
     gpui_kit::application().with_assets(assets::OrbitAssets).run(move |cx| {
         gpui_kit::init(cx);
@@ -88,6 +97,7 @@ fn main() {
         #[cfg(target_os = "macos")]
         cx.set_menus([Menu::new("Orbit").items([MenuItem::action("Quit Orbit", actions::Quit)])]);
         cx.on_app_quit(move |cx| {
+            endpoint.iter().for_each(orbit_net::endpoint::LocalEndpoint::close);
             settings::flush(cx);
             let backend = shutdown.clone();
             async move { backend.shutdown() }

@@ -8,6 +8,7 @@
 
 mod bus;
 pub use bus::Bus;
+mod cli;
 mod orchestrator;
 mod settings;
 

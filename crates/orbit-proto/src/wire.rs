@@ -80,6 +80,9 @@ pub enum Event {
     /// Ephemeral.
     TimelineMark { thread: ThreadId, mark: u64 },
     TerminalExited { term: TermId, code: Option<i32> },
+    /// Someone (the `orbit open` command) asked the desktop client to come
+    /// to the front, showing `thread` when given. Ephemeral.
+    FocusRequested { thread: Option<ThreadId> },
 }
 
 impl Event {
@@ -94,6 +97,7 @@ impl Event {
                 | Event::Providers(_)
                 | Event::TerminalOutput { .. }
                 | Event::TimelineMark { .. }
+                | Event::FocusRequested { .. }
         )
     }
 }
@@ -191,6 +195,54 @@ pub enum Command {
     /// applies what affects it (provider binaries and environment, git and
     /// worktree locations) and broadcasts [`Event::SettingsChanged`].
     UpdateSettings { settings: Settings },
+
+    // ── Automation (the `orbit` CLI and MCP server) ──────────────────────
+    /// Create a thread and, when `prompt` is set, send it as the first
+    /// message in the same step. Returns [`Reply::Thread`].
+    StartThread(ThreadStart),
+    /// A thread's items after `after` (all when `None`), at most `limit`
+    /// of the newest (0 = no limit), without opening the thread or marking
+    /// it read. Returns [`Reply::Timeline`].
+    ReadTimeline { id: ThreadId, after: Option<ItemId>, limit: u32 },
+    /// Run `command` through the user's shell in a new terminal in `cwd`.
+    /// Its output arrives as [`Event::TerminalOutput`] and its exit as
+    /// [`Event::TerminalExited`]. Returns [`Reply::Terminal`].
+    RunInTerminal { cwd: String, command: String, cols: u16, rows: u16 },
+    /// The last `max_bytes` of a terminal's output (0 = all that is kept).
+    /// Returns [`Reply::TerminalTail`].
+    ReadTerminal { term: TermId, max_bytes: u32 },
+    /// Returns [`Reply::Terminals`].
+    ListTerminals,
+    /// Ask the desktop client to come to the front (and show `thread`).
+    /// Broadcasts [`Event::FocusRequested`].
+    Focus { thread: Option<ThreadId> },
+}
+
+/// Everything needed to start a thread in one step.
+#[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+pub struct ThreadStart {
+    pub project: Option<ProjectId>,
+    pub config: ThreadConfig,
+    /// Give the thread its own worktree on a new branch.
+    pub worktree: bool,
+    /// The thread that started this one (an agent delegating work).
+    pub parent: Option<ThreadId>,
+    /// Empty: titled from the first message.
+    pub title: String,
+    /// Sent as the first message; queued until a new worktree is ready.
+    pub prompt: Option<String>,
+}
+
+/// A terminal the engine runs.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub struct TerminalInfo {
+    pub id: TermId,
+    /// The command given to [`Command::RunInTerminal`]; empty for an
+    /// interactive shell.
+    pub command: String,
+    pub cwd: String,
+    pub running: bool,
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -206,6 +258,10 @@ pub enum Reply {
     Blob(Attachment),
     Terminal(TermId),
     PullRequest { url: String },
+    /// Raw output (with escape sequences); `dropped` bytes were older than
+    /// what is kept.
+    TerminalTail { info: TerminalInfo, data: Vec<u8>, dropped: u64 },
+    Terminals(Vec<TerminalInfo>),
 }
 
 /// A path that more than one thread's worktree changed.

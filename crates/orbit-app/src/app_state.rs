@@ -55,6 +55,11 @@ impl AppState {
         &self.state
     }
 
+    /// The pending `orbit open` request, if any; taking it handles it.
+    pub fn take_focus_request(&mut self) -> Option<orbit_net::state::FocusRequest> {
+        self.state.take_focus_request()
+    }
+
     pub fn backend(&self) -> &Backend {
         &self.backend
     }
