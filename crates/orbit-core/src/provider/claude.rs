@@ -317,6 +317,8 @@ impl Session {
         } else {
             args.extend(["--session-id".into(), self.parser.session_id.clone()]);
         }
+        // The instance's own flags last, so they can refine Orbit's.
+        args.extend(self.spec.args.iter().cloned());
         args
     }
 

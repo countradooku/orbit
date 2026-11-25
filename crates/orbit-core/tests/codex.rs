@@ -59,6 +59,7 @@ impl Fake {
             resume: None,
             resume_at: None,
             binary: Some(self.exe.clone()),
+            args: Vec::new(),
             env: vec![("ORBIT_PORT_BASE".into(), "41000".into())],
             extra_dirs: Vec::new(),
         }
@@ -209,7 +210,7 @@ fn str_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
 #[tokio::test]
 async fn probe_reports_a_missing_binary() {
     let dir = tempfile::tempdir().unwrap();
-    let info = provider::probe(ProviderKind::Codex, Some(dir.path().join("nope").join("codex.exe")), Vec::new()).await;
+    let info = provider::probe(provider::Launch::builtin(ProviderKind::Codex, Some(dir.path().join("nope").join("codex.exe")), Vec::new())).await;
     assert!(!info.installed);
     assert_eq!(info.kind, ProviderKind::Codex);
     assert!(info.message.as_deref().unwrap().contains("not found"), "{:?}", info.message);
@@ -227,7 +228,7 @@ async fn probe_reads_version_models_account_and_modes_from_the_server() {
     h.as_object_mut().unwrap().insert("model/list", pages);
     let fake = Fake::new(vec![run_with(h, vec![])]);
     let started = std::time::Instant::now();
-    let info = provider::probe(ProviderKind::Codex, Some(fake.exe.clone()), Vec::new()).await;
+    let info = provider::probe(provider::Launch::builtin(ProviderKind::Codex, Some(fake.exe.clone()), Vec::new())).await;
     assert!(started.elapsed() < Duration::from_secs(20));
     assert!(info.installed, "{info:?}");
     assert_eq!(info.version.as_deref(), Some("0.170.2"));
@@ -259,7 +260,7 @@ async fn probe_reports_a_signed_out_account() {
     let mut h = handlers();
     h.as_object_mut().unwrap().insert("account/read", json!({"account": null, "requiresOpenaiAuth": true}));
     let fake = Fake::new(vec![run_with(h, vec![])]);
-    let info = provider::probe(ProviderKind::Codex, Some(fake.exe.clone()), Vec::new()).await;
+    let info = provider::probe(provider::Launch::builtin(ProviderKind::Codex, Some(fake.exe.clone()), Vec::new())).await;
     assert!(info.installed);
     assert_eq!(info.signed_in, Some(false));
     assert!(info.message.as_deref().unwrap().contains("codex login"));
@@ -268,7 +269,7 @@ async fn probe_reports_a_signed_out_account() {
 #[tokio::test]
 async fn probe_reports_a_server_that_dies_during_the_handshake() {
     let fake = Fake::new(vec![json!({"handlers": {}, "steps": [{"exit": 2, "stderr": "error: unrecognized subcommand 'app-server'"}]})]);
-    let info = provider::probe(ProviderKind::Codex, Some(fake.exe.clone()), Vec::new()).await;
+    let info = provider::probe(provider::Launch::builtin(ProviderKind::Codex, Some(fake.exe.clone()), Vec::new())).await;
     assert!(info.installed);
     assert!(info.message.as_deref().unwrap().contains("unrecognized subcommand"), "{:?}", info.message);
 }
@@ -760,6 +761,7 @@ async fn a_missing_binary_ends_the_session_with_a_helpful_error() {
         resume: None,
         resume_at: None,
         binary: Some(dir.path().join("missing").join("codex.exe")),
+        args: Vec::new(),
         env: Vec::new(),
         extra_dirs: Vec::new(),
     };

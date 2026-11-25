@@ -219,7 +219,7 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 |---|---|---|---|---|---|
 | Seed title from the first prompt | client-runtime/operations/threadTitle.ts | Done | core/engine/orchestrator.rs:832, :1504 | | P1 |
 | Title fallbacks for attachment-only messages ("Attached image", "File: {name}") | client-runtime/operations/threadTitle.ts | Partial | app/thread/mod.rs:360 | Falls back to "New thread". | P2 |
-| Generated title | srv/textGeneration/* | Partial | core/provider/claude/parser.rs:894, core/provider/codex/session.rs:1102, core/engine/orchestrator.rs:1384 | Uses the title the agent itself reports, so no extra model call or quota (#7338 usage complaints). | P1 |
+| Generated title | srv/textGeneration/* | Done | core/engine/textgen.rs, core/provider/oneshot.rs | After the first completed turn, one cheap call (Claude Haiku or Codex at low effort) on the thread's own account; never replaces a title the user or the agent set; off in `agents.generate_titles`. | P1 |
 | Regenerate title (single, bulk) | ct/orchestrationV2.ts (`thread.metadata.update`) | Missing | | | P2 |
 | Rename thread (dialog, empty rejected) | web/components/threadActionMenu.logic.ts | Done | app/thread_menu.rs:54 | | P1 |
 | Inline rename by double-click or F2 | doc/keybindings.md | Missing | | | P2 |
@@ -505,14 +505,14 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 |---|---|---|---|---|---|
 | Codex driver (`codex app-server` JSON-RPC) | packages/effect-codex-app-server | Done | core/provider/codex.rs:1, core/provider/codex/session.rs:24-56 | One supervised app-server per thread with restart and `thread/resume`; T3 shares one, so a crash breaks every thread (#16502, #17045). | P0 |
 | Claude Code driver | srv/orchestration-v2/Adapters/ClaudeAdapterV2.ts | Done | core/provider/claude.rs:1 | CLI stream-json held for the whole session; live `set_model` and `set_permission_mode` (claude.rs:533-546) instead of restarts. | P0 |
-| Cursor driver | `@cursor/sdk` | Missing | | | P2 |
-| OpenCode driver (HTTP + SSE) | `@opencode-ai/sdk` | Missing | | #539 (130 reactions). Expose its Build / Plan agent (#42213). | P1 |
-| Pi driver (`pi --mode rpc`) | provider-pi/server/rpc.ts | Missing | | #402 (198 reactions, the most-wanted provider). | P1 |
-| ACP driver and ACP Registry (any ACP agent, v2 with v1 fallback) | packages/provider-acp*, effect-acp | Missing | | Promised by docs/DESIGN.md; mark cancel only after the agent acknowledges (T3 §3c bug 1). | P1 |
-| Grok, fx, Kiro, Antigravity (ACP flavours, Antigravity managed install and sign-in) | provider-grok/server/acpSupport.ts, provider/acp/Antigravity* | Missing | | Come almost free once ACP exists. | P2 |
+| Cursor driver | `@cursor/sdk` | Partial | core/provider/presets.rs (`cursor-agent acp`) | Native, through Cursor's ACP mode and the ACP adapter; T3's V2 `@cursor/sdk` worker needs Node, so SDK-only rewind and snapshots are not available. | P2 |
+| OpenCode driver (HTTP + SSE) | `@opencode-ai/sdk` | Done | core/provider/opencode.rs, tests/opencode.rs | One `opencode serve` per session on a random loopback port and password; Build / Plan are OpenCode's own agents (#42213); access levels are session permission rules; Stop waits for idle. v2 (`/api/*`) not yet. | P1 |
+| Pi driver (`pi --mode rpc`) | provider-pi/server/rpc.ts | Done | core/provider/pi.rs, tests/pi.rs | Native steering, live model and thinking level, resume by session file; Pi has no approvals, so the thread says so once. | P1 |
+| ACP driver and ACP Registry (any ACP agent, v2 with v1 fallback) | packages/provider-acp*, effect-acp | Partial | core/provider/acp.rs, core/provider/acp/, tests/acp.rs | ACP v1 with resume/load, sign-in, config options, plan mode; cancel ends the turn only when the agent acknowledges (T3 §3c bug 1). No v2 and no registry download yet. | P1 |
+| Grok, fx, Kiro, Antigravity (ACP flavours, Antigravity managed install and sign-in) | provider-grok/server/acpSupport.ts, provider/acp/Antigravity* | Partial | core/provider/presets.rs | Presets for Gemini CLI, Qwen Code, Grok, Kiro, Cursor, Goose and Antigravity appear when installed; flavour quirks (Grok `_meta`, Antigravity eager sign-in and managed install, Kiro steer) not yet. | P2 |
 | Muse Code driver | `@muse-code/sdk` | Missing | | | P2 |
-| Provider instances (name, accent, env with secret refs, enabled, binary path, launch args, config dir, custom models) | ct/providerInstance.ts:74-100 | Partial | core/provider/mod.rs:22-40 (`SessionSpec.binary`, `env`) | Plumbing exists; `binary` is always `None` (core/engine/orchestrator.rs:901) and there is no UI. | P1 |
-| Several accounts per provider (extra `CODEX_HOME` / `CLAUDE_CONFIG_DIR`) | doc/providers-*.md | Missing | | Claude #18435 (1,462 reactions). Avoid Codex writer-lock errors on switch (#8259, #30630). | P1 |
+| Provider instances (name, accent, env with secret refs, enabled, binary path, launch args, config dir, custom models) | ct/providerInstance.ts:74-100 | Partial | proto/settings.rs (`ProviderInstance`), core/engine/sessions.rs, app/composer.rs | Instances in settings with binary, args, config dir, env and enabled; per-runtime settings apply to every instance; probed in parallel; picked in the model popover. No editor UI, accent, secret refs or custom models yet. | P1 |
+| Several accounts per provider (extra `CODEX_HOME` / `CLAUDE_CONFIG_DIR`) | doc/providers-*.md | Done | proto/settings.rs, core/engine/sessions.rs | Claude #18435 (1,462 reactions). An instance's config dir becomes `CLAUDE_CONFIG_DIR` / `CODEX_HOME`; switching ends the old process first, so no writer-lock clash (#8259, #30630), and hands the context off. | P1 |
 | Model selection with generic option descriptors | ct/modelSelection.ts | Done | proto/model.rs:64-178 | Options not reported by the new model are ignored, so a model switch never sends invalid flags. | P0 |
 | Claude options from the CLI catalog (effort, thinking, fast mode, context window) | srv/provider/ClaudeModelCatalog.ts:65-108 | Done | core/provider/claude/catalog.rs:1 | Nothing hard-coded. | P0 |
 | Codex options from `model/list` (reasoning effort, service tier) | srv/provider/CodexProvider.ts:291-334 | Done | core/provider/codex/map.rs:20 | | P0 |
@@ -706,8 +706,8 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 
 | Feature | T3 reference | Orbit status | Orbit location | Better than T3 | Pri |
 |---|---|---|---|---|---|
-| Commit message generation | provider-core/server/textGeneration.ts:122-145 | Missing | | Run without user notify hooks or MCP servers (#41799, #40529). | P1 |
-| PR title and body generation (from the thread's work and checks) | provider-core/server/textGeneration.ts | Missing | | | P1 |
+| Commit message generation | provider-core/server/textGeneration.ts:122-145 | Partial | core/engine/textgen.rs (`Command::GenerateText`) | Engine API: no tools, hooks, slash commands or MCP servers (#41799, #40529); the review sheet does not call it yet. | P1 |
+| PR title and body generation (from the thread's work and checks) | provider-core/server/textGeneration.ts | Partial | core/engine/textgen.rs (`TextTask::PullRequest`) | Engine API; not wired to the pull request form yet. | P1 |
 | Branch name generation | provider-core/server/textGeneration.ts | Missing | | | P2 |
 | Backends: coding agent, or OpenAI / Anthropic / OpenRouter / OpenAI-compatible (Ollama, LM Studio) | srv/textGeneration/textGeneratorDrivers.ts | Missing | | | P2 |
 | Per-task model picker with Test | Settings → Text generation | Missing | | | P2 |
@@ -970,7 +970,7 @@ Not T3 features, so they are not in the counts above, but the design commits to 
 | Plan mode unreachable from the web composer | Yes | Plan toggle in the composer (app/composer.rs:307). |
 | Long setup commands truncated with no wrap or tooltip | Partly | Approval cards wrap and scroll (app/thread/rows.rs:596); tool rows truncate titles with no tooltip (app/thread/rows.rs:456). |
 | `/side` while side chat is disabled fails silently | Not yet | No slash menu. |
-| Provider's raw `/clear` reappears and clears a session T3 thinks is live | No | Orbit passes typed text through, so a typed `/clear` reaches Claude while Orbit keeps the old session and cursors. WP9 must intercept it. |
+| Provider's raw `/clear` reappears and clears a session T3 thinks is live | Yes | `/clear`, `/new` and `/reset` start a fresh session in the same thread and never reach the agent (core/engine/sessions.rs). |
 | `followUpBehavior` defaults to steer, which waits for tools on Claude | Yes | Enter queues by default; steering is explicit (app/composer.rs:108). |
 | "Revert files too" disabled outside isolated worktrees without explanation | Partly | Engine restore works in any repository and keeps an undo point (core/git/checkpoint.rs:162-200), but there is no UI yet. |
 | Slow workspace loses its turn baseline after a 5 s budget | Partly | No budget, so the baseline is never skipped; but the first prompt is held until the snapshot finishes with no timeout (core/engine/orchestrator.rs:933-947), so a pathological repo can hold the turn indefinitely. |
@@ -1065,7 +1065,7 @@ Not T3 features, so they are not in the counts above, but the design commits to 
 |---|---|---|
 | #7338 Claude usage 3–5× the native app | Yes | One long-lived CLI per thread; Stop interrupts instead of killing; no idle release; no injected system prompt (core/provider/claude.rs:4-13). |
 | #2256 context lost after an hour idle | Yes | No idle release; sessions resume by id. |
-| #24152 resumes the pre-`/clear` session | Not yet | No `/clear` (see F.1). |
+| #24152 resumes the pre-`/clear` session | Yes | `/clear` drops the session id, rollback cursor and pending handoff (core/engine/sessions.rs). |
 | #17467 Enter on a stale thread runs `/compact` first | Yes | Never compacts on its own. |
 | #2121, #2034 compaction and context-window maths wrong | Partly | Context comes from the provider's own usage (core/engine/orchestrator.rs:1355-1362). |
 | #15854 Stop before `system/init` bricks the thread | Partly | Different race: Stop while the baseline snapshot is still running marks the turn interrupted, but the held prompt is still sent when the snapshot lands (core/engine/orchestrator.rs:463-478). |
@@ -1078,7 +1078,7 @@ Not T3 features, so they are not in the counts above, but the design commits to 
 | #2653, #41195, #40466 false "not authenticated" | Partly | Signed-in state comes from the CLI's own `initialize` (core/provider/claude.rs:661). |
 | #15353 Auto mode runs ask-rule commands | Not yet | No Auto mode. |
 | #16502, #17045 shared Codex app-server dies and breaks every thread | Yes | One supervised app-server per thread with restart and resume (core/provider/codex.rs:4-28). |
-| #8259, #30630 "already has an active writer" on instance or account switch | Not yet | No account switching. |
+| #8259, #30630 "already has an active writer" on instance or account switch | Yes | The old session is shut down before the new instance starts, each account with its own `CODEX_HOME`. |
 | #42123 idle release makes the next turn take 20–60 s | Yes | No idle release (the trade-off is memory, see F.4). |
 | #13987, #37298 sandbox and approval mapping errors | Partly | Mapping is pure and unit-tested (core/provider/codex/map.rs:1-2, :186); not checked against these cases. |
 | #42142, #41249, #41250 connection resets, capacity reconnect, stale model on retry | Partly | Restart with back-off, at most 3 per 5 minutes (core/provider/codex/session.rs:24-56). |
@@ -1086,7 +1086,7 @@ Not T3 features, so they are not in the counts above, but the design commits to 
 | #27230 provider check times out after 20 s | Partly | Same 20 s probe timeout (core/provider/claude.rs:37). |
 | #40696 wrong binary gives an opaque failure | Partly | stderr tail in the message. |
 | #41799, #40529 Codex text generation runs notify hooks / fails with `mcp_servers` | Not yet | No text generation. |
-| OpenCode, Cursor and ACP-family issues (#2691, #11458, #40503, #19112, #36105, #38123 …) | Not yet | Providers not implemented; ACP cancel must wait for the agent's acknowledgement. |
+| OpenCode, Cursor and ACP-family issues (#2691, #11458, #40503, #19112, #36105, #38123 …) | Partly | ACP cancel waits for the acknowledgement; OpenCode runs one server per session with its own password. Not checked against each issue. |
 
 ### F.7 Windows (§5.5)
 
@@ -1150,7 +1150,7 @@ Not T3 features, so they are not in the counts above, but the design commits to 
 | T3 bug | Avoided? | Why |
 |---|---|---|
 | #42390 file-edit approvals do not show the change | Yes | Diff preview in the card (app/thread/rows.rs:502). |
-| #42025 ACP approval says "Changed files" without naming them | Not yet | |
+| #42025 ACP approval says "Changed files" without naming them | Yes | Paths come from diffs, `locations` and `rawInput`, merged across updates (core/provider/acp/map.rs). |
 | #15082, #22925 child approvals not surfaced to the parent | Partly | Claude subagent and background approvals appear in the thread; no child threads yet. |
 | #21935 child approvals stay pending after cancel | Yes | Turn end clears pending requests; withdrawals settle cards (core/engine/orchestrator.rs:1180, :1345-1354). |
 | #856 plan questions stuck after restart | No | Pending requests persist on the thread record, but after a restart there is no session to answer, so the card stays and answering fails. |
@@ -1159,7 +1159,7 @@ Not T3 features, so they are not in the counts above, but the design commits to 
 | #41235 CLI thread start ignores the default mode | Not yet | |
 | #41220 messages accepted on deleted or archived threads | No | Deleted: rejected. Archived: accepted and run (core/engine/orchestrator.rs:811-853). |
 | Claude "always allow" without a suggestion allows the whole tool | Yes | Session rules are scoped to the command or file (core/provider/claude/parser.rs:14-15, :1404). |
-| ACP "for session" silently degrades to once | Not yet | |
+| ACP "for session" silently degrades to once | Yes | Without an `allow_always` option the grant is kept client-side for the session (core/provider/acp/session.rs). |
 | Codex approval card pending after `serverRequest/resolved` | Yes | Handled as a withdrawal (core/provider/codex/session.rs:1105-1114). |
 
 ### F.12 Usage and limits (§5.10)
@@ -1193,7 +1193,7 @@ Not T3 bugs, but found while verifying the rows above. All belong in WP1 unless 
 1. **Checkpoint trees can be garbage-collected.** The engine stores `git.snapshot()` tree ids (core/engine/orchestrator.rs:939, :1150), which are not pinned by any ref; `git gc` may drop them after the grace period, breaking older turn diffs and restores. Use `checkpoint()` (pinned refs) and call `prune`.
 2. **Restart loses work in flight.** The run queue is in memory (core/engine/orchestrator.rs:90-91), items saved as `Streaming` stay streaming, pending requests stay pending with no session, and snooze timers are not re-armed (core/engine/orchestrator.rs:712-719). Reconcile all four on start.
 3. **Stop during the baseline snapshot still sends the prompt** (core/engine/orchestrator.rs:463-478): check `turn.interrupted` before releasing `held_prompt`.
-4. **Provider switch on a live session** sends `Configure` to the old provider's adapter (core/engine/orchestrator.rs:720-723). End the session and hand off instead (WP9).
+4. ~~**Provider switch on a live session** sends `Configure` to the old provider's adapter.~~ Fixed in WP9: the session ends and the context is handed off (core/engine/sessions.rs).
 5. **No data-folder lock**: two engines can write one store.
 6. **Archived threads accept messages** (core/engine/orchestrator.rs:811).
 7. **Preferences are never saved** (app/main.rs:57, app/settings.rs:15) (WP8).

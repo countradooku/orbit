@@ -91,7 +91,7 @@ pub fn searchable<'a>(item: &'a Item, rendered: Option<&'a str>) -> Vec<(Part, &
             RequestKind::Question { question, .. } => vec![(Part::Body, question.as_str())],
             _ => Vec::new(),
         },
-        ItemBody::Reasoning { .. } | ItemBody::TurnEnd(_) => Vec::new(),
+        ItemBody::Reasoning { .. } | ItemBody::TurnEnd(_) | ItemBody::Handoff(_) => Vec::new(),
     }
 }
 
