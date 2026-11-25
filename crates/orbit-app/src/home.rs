@@ -25,13 +25,16 @@ pub struct HomeView {
     picked: Option<Option<ProjectId>>,
     config_touched: bool,
     sending: bool,
+    /// Start the next thread on a new worktree. Follows Settings ›
+    /// Workspace until the user picks in the composer.
     worktree: bool,
+    worktree_touched: bool,
     _subscriptions: Vec<Subscription>,
 }
 
 impl HomeView {
     pub fn new(app: Entity<AppState>, workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let defaults = app.read(cx).state().defaults.clone();
+        let defaults = new_thread_config(&app, cx);
         let composer = cx.new(|cx| Composer::new(app.clone(), defaults, window, cx));
         let subs = vec![
             cx.subscribe_in(&composer, window, |this, _, event: &ComposerEvent, window, cx| match event {
@@ -43,6 +46,7 @@ impl HomeView {
                 }
                 ComposerEvent::WorktreeChosen(worktree) => {
                     this.worktree = *worktree;
+                    this.worktree_touched = true;
                     this.sync_context(cx);
                 }
                 ComposerEvent::Stop => {}
@@ -50,9 +54,13 @@ impl HomeView {
             cx.observe(&app, |this, app, cx| {
                 // Adopt the last used settings until the user changes them here.
                 if !this.config_touched {
-                    let defaults = app.read(cx).state().defaults.clone();
+                    let defaults = new_thread_config(&app, cx);
                     this.composer.update(cx, |c, cx| c.set_config(defaults, cx));
                 }
+                this.sync_context(cx);
+                cx.notify();
+            }),
+            cx.observe_global::<crate::settings::SettingsModel>(|this, cx| {
                 this.sync_context(cx);
                 cx.notify();
             }),
@@ -64,7 +72,8 @@ impl HomeView {
             picked: None,
             config_touched: false,
             sending: false,
-            worktree: false,
+            worktree: crate::settings::get(cx).workspace.worktree_by_default,
+            worktree_touched: false,
             _subscriptions: subs,
         };
         home.sync_context(cx);
@@ -78,6 +87,9 @@ impl HomeView {
     }
 
     fn sync_context(&mut self, cx: &mut Context<Self>) {
+        if !self.worktree_touched {
+            self.worktree = crate::settings::get(cx).workspace.worktree_by_default;
+        }
         let project = self.project(cx);
         let state = self.app.read(cx).state();
         let project = project.and_then(|id| state.projects.iter().find(|p| p.id == id));
@@ -150,6 +162,14 @@ impl HomeView {
     }
 }
 
+/// The last used model and options, with the access level from settings: a
+/// new thread starts at the chosen default, never at full access.
+fn new_thread_config(app: &Entity<AppState>, cx: &App) -> ThreadConfig {
+    let mut config = app.read(cx).state().defaults.clone();
+    config.access = crate::settings::get(cx).agents.default_access.for_new_thread();
+    config
+}
+
 impl Render for HomeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -207,7 +227,7 @@ impl Render for HomeView {
             .child(
                 v_flex()
                     .w_full()
-                    .max_w(crate::thread::COLUMN)
+                    .max_w(crate::settings::chat_column(cx))
                     .px_4()
                     .pt(relative(0.16))
                     .pb_8()

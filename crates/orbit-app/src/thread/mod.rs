@@ -15,10 +15,10 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::text::TextViewState;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use orbit_net::state::ItemChange;
@@ -31,7 +31,7 @@ use gpui_kit::component::resizable::{ResizableState, resizable_panel, v_resizabl
 use terminal::{TerminalPanel, TerminalPanelEvent};
 use crate::{format, ui};
 
-pub use rows::{COLUMN, Row};
+pub use rows::Row;
 
 pub struct ThreadView {
     id: ThreadId,
@@ -45,6 +45,8 @@ pub struct ThreadView {
     composer: Entity<Composer>,
     focus: FocusHandle,
     loaded: bool,
+    /// Settings that change row heights; rows are re-measured when they do.
+    layout: (ChatWidth, u16, u16),
     terminal: Option<Entity<TerminalPanel>>,
     split: Entity<ResizableState>,
     /// When the running turn started (as seen here), for the elapsed time.
@@ -75,6 +77,14 @@ impl ThreadView {
                 this.on_composer(event, window, cx)
             }),
         ];
+        subscriptions.push(cx.observe_global::<crate::settings::SettingsModel>(|this, cx| {
+            let layout = Self::layout_key(cx);
+            if layout != this.layout {
+                this.layout = layout;
+                this.scroller.update(cx, |scroller, cx| scroller.remeasure(cx));
+                cx.notify();
+            }
+        }));
         subscriptions.push(cx.on_release(|this, cx| {
             let id = this.id;
             this.app.update(cx, |app, _| app.release_timeline(id));
@@ -91,6 +101,7 @@ impl ThreadView {
             composer,
             focus: cx.focus_handle(),
             loaded: false,
+            layout: Self::layout_key(cx),
             terminal: None,
             split: cx.new(|_| ResizableState::default()),
             turn_started: None,
@@ -101,6 +112,11 @@ impl ThreadView {
         view.rebuild(true, cx);
         view.sync_thread_record(cx);
         view
+    }
+
+    fn layout_key(cx: &App) -> (ChatWidth, u16, u16) {
+        let a = &crate::settings::get(cx).appearance;
+        (a.chat_width, a.ui_scale, a.code_font_size)
     }
 
     pub fn id(&self) -> ThreadId {
@@ -487,7 +503,7 @@ impl Render for ThreadView {
                     .child(
                         v_flex()
                             .w_full()
-                            .max_w(rows::COLUMN)
+                            .max_w(crate::settings::chat_column(cx))
                             .children(self.render_queue(cx))
                             .child(self.composer.clone()),
                     ),

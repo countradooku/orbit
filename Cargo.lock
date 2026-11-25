@@ -5989,6 +5989,7 @@ dependencies = [
  "orbit-net",
  "orbit-proto",
  "orbit-terminal",
+ "tempfile",
 ]
 
 [[package]]
