@@ -355,6 +355,40 @@ pub enum ToolKind {
     Other,
 }
 
+/// Bytes of tool output kept on an item; the full output is a blob.
+pub const INLINE_OUTPUT: usize = 64 * 1024;
+
+/// Appends streamed tool output, keeping only the last [`INLINE_OUTPUT`]
+/// bytes: the end of a long build log is what explains it. Engine and
+/// clients apply the same rule to the same deltas, so they agree on the text.
+pub fn append_output_tail(output: &mut String, delta: &str) {
+    output.push_str(delta);
+    if output.len() > INLINE_OUTPUT {
+        output.replace_range(..tail_start(output, INLINE_OUTPUT), "");
+    }
+}
+
+/// The last `max` bytes of `text`, starting at a line break when one is
+/// near, else at a character boundary.
+pub fn output_tail(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    &text[tail_start(text, max)..]
+}
+
+fn tail_start(text: &str, max: usize) -> usize {
+    let mut cut = text.len() - max;
+    while !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    // Start on a whole line when one begins within the next 512 bytes.
+    match text[cut..].bytes().take(512).position(|b| b == b'\n') {
+        Some(nl) => cut + nl + 1,
+        None => cut,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct ToolCall {
     /// The provider's id for the call, used to match its result.
@@ -365,7 +399,8 @@ pub struct ToolCall {
     pub title: String,
     /// The raw input as compact JSON.
     pub input: String,
-    /// Output, truncated to a bounded size; the full output is a blob.
+    /// Output, cut to its last [`INLINE_OUTPUT`] bytes; when it was cut,
+    /// the full output is the blob `output_blob`.
     pub output: String,
     pub output_blob: Option<String>,
     pub exit_code: Option<i32>,
@@ -522,6 +557,21 @@ pub struct SlashCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_output_keeps_its_tail_on_line_boundaries() {
+        let mut out = String::new();
+        for i in 0..20_000 {
+            append_output_tail(&mut out, &format!("line {i}\n"));
+        }
+        assert!(out.len() <= INLINE_OUTPUT);
+        assert!(out.ends_with("line 19999\n"));
+        assert!(out.starts_with("line "), "starts on a whole line: {:?}", &out[..12]);
+        // Multi-byte text never splits a character.
+        let wide = "é".repeat(INLINE_OUTPUT);
+        assert!(output_tail(&wide, 1001).chars().all(|c| c == 'é'));
+        assert_eq!(output_tail("short", 10), "short");
+    }
 
     #[test]
     fn provider_ids_become_sentence_case_copy() {

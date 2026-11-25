@@ -71,6 +71,24 @@ fn fake_launcher() -> Launcher {
                                     }
                                 }
                             }
+                            "stuck" => {
+                                // Ignores Stop; only shutting it down ends it.
+                                emit(AgentEvent::Delta { block: block.clone(), kind: BlockKind::Text, text: "busy".into() });
+                                while let Ok(msg) = rx.recv().await {
+                                    if matches!(msg, SessionInput::Shutdown) {
+                                        return;
+                                    }
+                                }
+                            }
+                            t if (t.starts_with("flaky") || t.starts_with("limited")) && first_time(t) => {
+                                let outcome = if t.starts_with("flaky") {
+                                    TurnOutcome::Failed { message: "The model is overloaded.".into() }
+                                } else {
+                                    TurnOutcome::RateLimited { resets_ms: 0 }
+                                };
+                                emit(AgentEvent::BlockDone { block: block.clone(), kind: BlockKind::Text, text: "partial".into() });
+                                emit(AgentEvent::TurnFinished { outcome, usage: Usage::default(), duration_ms: 1 });
+                            }
                             _ => {
                                 for piece in ["echo", ": ", &text] {
                                     emit(AgentEvent::Delta { block: block.clone(), kind: BlockKind::Text, text: piece.to_string() });
@@ -88,6 +106,18 @@ fn fake_launcher() -> Launcher {
         });
         SessionHandle { input }
     })
+}
+
+/// True the first time a prompt is seen in this test process; prompts are
+/// unique per test, so parallel tests do not interfere.
+fn first_time(prompt: &str) -> bool {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap();
+    if seen.iter().any(|p| p == prompt) {
+        return false;
+    }
+    seen.push(prompt.to_owned());
+    true
 }
 
 fn finish(emit: &impl Fn(AgentEvent)) {
@@ -511,4 +541,80 @@ fn switching_provider_starts_a_fresh_session() {
             && h.thread(id).config.provider == ProviderKind::Codex
             && h.items.values().any(|i| matches!(&i.body, ItemBody::Notice { text, .. } if text.contains("Switched to Codex")))
     });
+}
+
+impl Harness {
+    /// The turn-end records of `turn`, in order.
+    fn turn_ends(&self, turn: u32) -> Vec<TurnSummary> {
+        let mut items: Vec<&Item> = self.items.values().filter(|i| i.turn == turn).collect();
+        items.sort_by_key(|i| i.id);
+        items
+            .iter()
+            .filter_map(|i| match &i.body {
+                ItemBody::TurnEnd(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_failed_turn_retries_under_the_same_number_and_keeps_the_failed_attempt() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "flaky-retry");
+    h.wait("failure", |h| matches!(h.thread(id).status, ThreadStatus::Failed { .. }));
+    let err = h.engine.call(Command::Send { thread: id, text: String::new(), attachments: vec![], steer: false });
+    assert!(err.recv().unwrap().is_err());
+    h.call(Command::Retry { thread: id });
+    h.wait("retried turn", |h| h.thread(id).status == ThreadStatus::Idle && h.turn_ends(1).len() == 2);
+    assert_eq!(h.thread(id).turns, 1, "a retry is the same turn, not a new one");
+    // The message is shown once; both attempts' replies stay, in order.
+    assert_eq!(h.texts(1), vec!["user: flaky-retry", "agent: partial", "agent: echo: flaky-retry"]);
+    // Only failed turns can be retried.
+    let again = h.engine.call(Command::Retry { thread: id }).recv().unwrap();
+    assert!(again.unwrap_err().contains("failed"));
+}
+
+#[test]
+fn a_rate_limited_turn_can_be_retried_now() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "limited-now");
+    h.wait("limit", |h| matches!(h.thread(id).status, ThreadStatus::RateLimited { .. }));
+    h.call(Command::Retry { thread: id });
+    h.wait("retried turn", |h| h.thread(id).status == ThreadStatus::Idle && h.turn_ends(1).len() == 2);
+    assert_eq!(h.texts(1).last().unwrap(), "agent: echo: limited-now");
+}
+
+#[test]
+fn force_stop_ends_a_turn_the_agent_will_not_stop() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "stuck");
+    h.wait("turn to start", |h| h.thread(id).status == ThreadStatus::Running);
+    h.call(Command::Interrupt { thread: id });
+    std::thread::sleep(Duration::from_millis(50));
+    h.wait("stop to be ignored", |h| h.thread(id).status == ThreadStatus::Running);
+    h.call(Command::ForceStop { thread: id });
+    h.wait("forced stop", |h| h.thread(id).status == ThreadStatus::Idle && !h.turn_ends(1).is_empty());
+    assert!(h.turn_ends(1)[0].interrupted);
+    // The thread takes the next message on a fresh process.
+    h.send(id, "after");
+    h.wait("next turn", |h| h.thread(id).turns == 2 && h.thread(id).status == ThreadStatus::Idle);
+    assert_eq!(h.texts(2), vec!["user: after", "agent: echo: after"]);
+}
+
+#[test]
+fn blobs_read_back_and_bad_hashes_are_refused() {
+    let h = Harness::new();
+    let data = b"full output".to_vec();
+    let Reply::Blob(blob) = h.call(Command::PutBlob { name: "out.txt".into(), mime: "text/plain".into(), data: data.clone() })
+    else {
+        panic!()
+    };
+    assert_eq!(h.call(Command::ReadBlob { hash: blob.hash }), Reply::Bytes(data));
+    for bad in ["../token", "", &"z".repeat(64)] {
+        assert!(h.engine.call(Command::ReadBlob { hash: bad.into() }).recv().unwrap().is_err(), "{bad}");
+    }
 }

@@ -9,6 +9,7 @@
 mod bus;
 pub use bus::Bus;
 mod orchestrator;
+mod timeline;
 
 #[cfg(test)]
 mod tests;
