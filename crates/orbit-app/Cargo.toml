@@ -1,0 +1,20 @@
+[package]
+name = "orbit-app"
+description = "Orbit desktop client: the GPUI Kit user interface."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "orbit"
+path = "src/main.rs"
+
+[features]
+default = ["fast"]
+# Render on GPUI Fast (retained mode, scroll layers). Build with
+# `--no-default-features` to compare against the pinned upstream GPUI.
+fast = ["gpui-kit/gpui-fast"]
+
+[dependencies]
+gpui-kit = { version = "0.11", features = ["tree-sitter"] }
