@@ -92,7 +92,7 @@ pub fn describe(summary: &GitSummary) -> String {
 impl RenderOnce for GitBadge {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme().clone();
-        if self.summary.as_ref().is_some_and(|s| !s.repo) && self.fallback_branch.is_none() {
+        if self.summary.as_ref().is_some_and(|s| !s.repo) {
             // Checkpoints still work, kept by Orbit; say so calmly.
             return h_flex()
                 .id(self.id)
