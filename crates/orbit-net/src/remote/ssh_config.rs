@@ -38,11 +38,23 @@ impl SshHost {
     }
 }
 
-/// The hosts in `~/.ssh/config`, in file order, each alias once.
+impl SshHost {
+    /// A git remote (GitHub, GitLab, Bitbucket, Azure DevOps, or any
+    /// `User git`): not a computer to run agents on.
+    pub fn is_git_service(&self) -> bool {
+        const SERVICES: [&str; 6] = ["github.com", "gitlab.com", "bitbucket.org", "ssh.dev.azure.com", "vs-ssh.visualstudio.com", "codeberg.org"];
+        let host = self.hostname.as_deref().unwrap_or(&self.alias).to_ascii_lowercase();
+        self.user.as_deref() == Some("git")
+            || SERVICES.iter().any(|s| host == *s || host.ends_with(&format!(".{s}")))
+    }
+}
+
+/// The computers in `~/.ssh/config`, in file order, each alias once (git
+/// services left out).
 pub fn read_user_config() -> Vec<SshHost> {
     let Some(home) = dirs::home_dir() else { return Vec::new() };
     let ssh_dir = home.join(".ssh");
-    read(&ssh_dir.join("config"), &ssh_dir)
+    read(&ssh_dir.join("config"), &ssh_dir).into_iter().filter(|h| !h.is_git_service()).collect()
 }
 
 /// The hosts in the config file at `path`; `ssh_dir` anchors relative
@@ -224,6 +236,21 @@ mod tests {
         assert_eq!(hosts[2].detail().as_deref(), Some("gpu.example.com"));
         assert_eq!(hosts[4].user.as_deref(), Some("pi"));
         assert_eq!(hosts[4].detail().as_deref(), Some("pi@pi"));
+    }
+
+    #[test]
+    fn git_services_are_not_computers() {
+        let host = |alias: &str, hostname: Option<&str>, user: Option<&str>| SshHost {
+            alias: alias.into(),
+            hostname: hostname.map(Into::into),
+            user: user.map(Into::into),
+            port: None,
+        };
+        assert!(host("github-work", Some("github.com"), None).is_git_service());
+        assert!(host("bb", Some("altssh.bitbucket.org"), None).is_git_service());
+        assert!(host("forge", Some("git.example.com"), Some("git")).is_git_service());
+        assert!(!host("devbox", Some("10.0.0.4"), Some("dev")).is_git_service());
+        assert!(!host("gitbox", None, None).is_git_service());
     }
 
     #[test]

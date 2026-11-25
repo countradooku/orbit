@@ -64,6 +64,8 @@ fn commands() -> Vec<CommandDef> {
         command("Usage", Lucide::ChartColumn, "limits quota rate tokens cost accounts export csv", crate::usage::GoUsage),
         command("Refresh usage limits", Lucide::Gauge, "quota rate limits accounts", crate::usage::RefreshUsage),
         command("Add project…", Lucide::FolderPlus, "folder open repository", AddProject),
+        command("Add host…", Lucide::Server, "remote ssh wsl computer machine server connect pair", crate::hosts::AddHost),
+        command("Hosts", Lucide::Server, "remote ssh wsl switch share computer machines", crate::hosts::ManageHosts),
         command("Open beside", Lucide::Columns2, "tile split side by side", OpenBeside),
         command("Maximize or restore the tile", Lucide::Maximize2, "tile zoom", MaximizeTile),
         command("Close the tile", Lucide::SquareX, "tile", CloseTile),

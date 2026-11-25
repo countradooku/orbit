@@ -62,8 +62,9 @@ spawn fails), the window runs the engine in-process, as before, and shows
 (the end of its log says why) or does not serve within 10 s is retried by
 the connection, which shows the reason in the connection status.
 `--in-process` or `ORBIT_IN_PROCESS=1` asks for the in-process engine
-directly (tests, benchmarks, debugging). A remote host (Settings › Remote,
-`ORBIT_HOST`) is used as before.
+directly (tests, benchmarks, debugging). Other computers (SSH hosts, WSL
+distros, shared computers) are hosts of their own; see
+[REMOTE.md](REMOTE.md).
 
 ## Transport
 
@@ -97,7 +98,7 @@ not the transport.
 
 ## Versions, restarts and updates
 
-`PROTOCOL_VERSION` is 12 (11 was usage, 10 workspaces). A window and a host of the same protocol talk
+`PROTOCOL_VERSION` is 13 (12 was the background host, 11 usage, 10 workspaces). A window and a host of the same protocol talk
 normally; the window checks the version in `endpoint.json` before it
 connects.
 

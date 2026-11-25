@@ -55,6 +55,14 @@ pub enum Route {
     Usage,
 }
 
+/// Where a host's window was: kept while the window shows another host,
+/// and restored when it comes back.
+#[derive(Clone, Debug)]
+pub struct WindowMemory {
+    route: Route,
+    history: Vec<ThreadId>,
+}
+
 /// Threads whose views stay alive for instant switching (tiles always do).
 /// Older views are dropped and their timelines released.
 const LIVE_VIEWS: usize = 6;
@@ -210,6 +218,32 @@ impl Workspace {
 
     fn run_debug_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(route) = self.debug_route.take() else { return };
+        match route.as_str() {
+            "add-host" => {
+                window.defer(cx, crate::hosts::add::open);
+                return;
+            }
+            "install-host" if self.app.read(cx).link().is_some_and(|l| l.phase().waits_on_user()) => {
+                let app = self.app.clone();
+                window.defer(cx, move |window, cx| crate::hosts::install::open(&app, window, cx));
+                return;
+            }
+            "install-host" => {
+                self.debug_route = Some(route);
+                return;
+            }
+            // Shows another host once this one has its threads.
+            switch if switch.starts_with("switch:") => {
+                if self.app.read(cx).has_snapshot() || self.app.read(cx).active_entry().id == switch["switch:".len()..] {
+                    let id = SharedString::from(switch["switch:".len()..].to_owned());
+                    window.defer(cx, move |window, cx| crate::hosts::switch_to(id, window, cx));
+                } else {
+                    self.debug_route = Some(route);
+                }
+                return;
+            }
+            _ => {}
+        }
         let state = self.app.read(cx).state();
         if state.threads.is_empty() && route != "settings" {
             self.debug_route = Some(route);
@@ -447,6 +481,29 @@ impl Workspace {
 
     pub fn home(&self) -> &Entity<HomeView> {
         &self.home
+    }
+
+    /// Where this window is, to come back to after showing another host.
+    pub fn memory(&self) -> WindowMemory {
+        // Settings are left for the host switched to; come back to where
+        // they were opened from.
+        let route = if self.route == Route::Settings { self.before_settings.clone() } else { self.route.clone() };
+        WindowMemory { route, history: self.history.clone() }
+    }
+
+    /// Goes back to where this host's window was.
+    pub fn restore(&mut self, memory: Option<WindowMemory>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(memory) = memory else {
+            self.navigate(Route::Home, window, cx);
+            return;
+        };
+        let state = self.app.read(cx).state();
+        self.history = memory.history.into_iter().filter(|id| state.threads.contains_key(id)).collect();
+        let route = match memory.route {
+            Route::Thread(id) if !state.threads.contains_key(&id) => Route::Home,
+            route => route,
+        };
+        self.navigate(route, window, cx);
     }
 
     pub fn navigate(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
@@ -848,6 +905,14 @@ impl Workspace {
     }
 
     pub fn add_project(&mut self, _: &AddProject, window: &mut Window, cx: &mut Context<Self>) {
+        // Another computer's folders: browsed through its engine.
+        if !self.app.read(cx).active_entry().is_local() {
+            let this = cx.entity().downgrade();
+            crate::hosts::browse::open(self.app.clone(), move |path, window, cx| {
+                let _ = this.update(cx, |this, cx| this.add_project_path(path, window, cx));
+            }, window, cx);
+            return;
+        }
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -1125,6 +1190,11 @@ impl Workspace {
     }
 
     fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        // A host this window has not reached yet: how it stands, and what
+        // to do about it, in place of its (empty) views.
+        if crate::hosts::panel::shows(&self.app, cx) {
+            return crate::hosts::panel::render(&self.app, window, cx);
+        }
         match &self.route {
             Route::Home => self.home.clone().into_any_element(),
             Route::Inbox => self.inbox.clone().into_any_element(),

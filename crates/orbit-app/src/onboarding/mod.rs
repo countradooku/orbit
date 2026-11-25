@@ -172,6 +172,13 @@ pub(crate) fn close(window: &mut Window, cx: &mut App) {
 /// Once the window is up: decide whether this data folder needs the guide.
 /// That waits for the engine's first snapshot (its provider list is never
 /// empty), so a folder with projects is never mistaken for a fresh one.
+/// The window's workspace was replaced (it switched hosts).
+pub fn set_workspace(workspace: WeakEntity<Workspace>, cx: &mut App) {
+    if cx.has_global::<Onboarding>() {
+        cx.global_mut::<Onboarding>().workspace = Some(workspace);
+    }
+}
+
 pub fn on_window_open(window: &mut Window, workspace: WeakEntity<Workspace>, cx: &mut App) {
     if cx.has_global::<Onboarding>() {
         cx.global_mut::<Onboarding>().workspace = Some(workspace);

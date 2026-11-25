@@ -185,6 +185,8 @@ impl crate::update::host::RestartHost for HostRestart {
 
     fn prepare(&self, cx: &mut App) -> Task<Result<(), String>> {
         crate::settings::flush(cx);
+        // Every host this window keeps connected waits for the new window.
+        self.app.read(cx).send_all(Command::Host(HostCommand::Hold { ms: RELAUNCH_HOLD_MS }));
         let held = self.app.update(cx, |app, cx| app.call(Command::Host(HostCommand::Hold { ms: RELAUNCH_HOLD_MS }), cx));
         let app = self.app.clone();
         cx.spawn(async move |cx| {
@@ -199,7 +201,7 @@ impl crate::update::host::RestartHost for HostRestart {
 /// Makes updates drain into the background host instead of stopping
 /// agents, when the engine runs in one.
 pub fn install_restart(app: &Entity<AppState>, cx: &mut App) {
-    if app.read(cx).host().is_some() {
+    if !app.read(cx).runs_in_process() {
         crate::update::host::set_restart_host(Rc::new(HostRestart { app: app.clone() }), cx);
     }
 }
@@ -214,7 +216,7 @@ const RELAUNCH_HOLD_MS: u64 = 60_000;
 /// automations keep running; the new window re-attaches to them.
 #[allow(dead_code)] // The updater's entry point (installs land separately).
 pub fn relaunch(app: &Entity<AppState>, exe: &Path, cx: &mut App) -> std::io::Result<()> {
-    app.read(cx).send(Command::Host(HostCommand::Hold { ms: RELAUNCH_HOLD_MS }));
+    app.read(cx).send_all(Command::Host(HostCommand::Hold { ms: RELAUNCH_HOLD_MS }));
     std::process::Command::new(exe).arg("--wait-pid").arg(std::process::id().to_string()).spawn()?;
     app.update(cx, |app, _| app.detach());
     cx.quit();

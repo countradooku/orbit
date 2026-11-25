@@ -35,6 +35,23 @@ fn main() {
         Some("--fake-scp") => std::process::exit(fake_scp(&args[2..])),
         _ => {}
     }
+    // For looking at the app by hand: a copy of this binary named `ssh` or
+    // `scp`, with ORBIT_FAKE_REMOTE_HOME set, is the fake (and
+    // `ORBIT_SSH`/`ORBIT_SCP` point the app at it). A target containing
+    // "locked" fails as SSH does without a key.
+    if let Some(home) = std::env::var_os("ORBIT_FAKE_REMOTE_HOME") {
+        let stem = std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()));
+        let mut forwarded = vec!["--home".to_owned(), home.to_string_lossy().into_owned()];
+        if args.iter().any(|a| a.contains("locked")) {
+            forwarded.extend(["--fail".to_owned(), "locked@box: Permission denied (publickey).".to_owned()]);
+        }
+        forwarded.extend(args[1..].iter().cloned());
+        match stem.as_deref() {
+            Some("ssh") => std::process::exit(fake_ssh(&forwarded)),
+            Some("scp") => std::process::exit(fake_scp(&forwarded)),
+            _ => {}
+        }
+    }
     // SAFETY: set before any other thread exists.
     unsafe {
         std::env::set_var("ORBIT_HOST_FAKE_AGENT_MS", "300");

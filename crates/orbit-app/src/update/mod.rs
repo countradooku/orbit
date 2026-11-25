@@ -140,6 +140,18 @@ struct UpdaterGlobal(Entity<Updater>);
 impl Global for UpdaterGlobal {}
 
 /// The updater, once [`init`] ran.
+/// The manifest this desktop's channel reads (`ORBIT_UPDATE_URL` wins), for
+/// finding `orbitd` builds for other computers (`crate::hosts::install`).
+pub fn manifest_url(cx: &App) -> String {
+    match updater(cx) {
+        Some(updater) => updater.read(cx).manifest_url(),
+        None => {
+            let template = std::env::var("ORBIT_UPDATE_URL").ok().filter(|u| !u.trim().is_empty());
+            template.as_deref().unwrap_or(MANIFEST_URL).trim().replace("{channel}", Channel::default().id())
+        }
+    }
+}
+
 pub fn updater(cx: &App) -> Option<Entity<Updater>> {
     cx.try_global::<UpdaterGlobal>().map(|g| g.0.clone())
 }
