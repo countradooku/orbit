@@ -3,6 +3,8 @@
 //! ```text
 //! orbitd [--listen 127.0.0.1:7840] [--data <dir>] [--print-token]
 //! orbitd --local [--data <dir>] [--grace-ms <ms>]
+//! orbitd --local --stdio [--data <dir>]
+//! orbitd --probe
 //! ```
 //!
 //! **Server mode** (the default) serves remote clients on `--listen`. The
@@ -16,9 +18,22 @@
 //! (`endpoint.json`), and exits by itself: once no window is attached and,
 //! per `host.json`, nothing is working, after a grace period; or when a
 //! restart is requested. It logs to `<data>/logs/orbitd.log`.
+//!
+//! **Stdio mode** (`--local --stdio`) is how another computer reaches this
+//! one over SSH or WSL (`ssh host orbitd --local --stdio`, see
+//! `docs/REMOTE.md`): it makes sure the local host runs (starting it,
+//! detached, when it does not) and relays the link protocol between
+//! stdin/stdout and the host, so the host outlives the SSH session.
+//!
+//! **Probe** (`--probe`) prints one JSON line saying what this binary is:
+//! its version, protocol, platform and path. A remote client runs it to
+//! decide whether to install or update `orbitd` before connecting.
+//!
+//! `--data` defaults to `ORBIT_DATA` when set, else the platform folder.
 
 mod fake;
 mod lifetime;
+mod stdio;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -34,6 +49,8 @@ struct Args {
     data: PathBuf,
     print_token: bool,
     local: bool,
+    stdio: bool,
+    probe: bool,
     /// How long the local host waits with nothing to do before it exits.
     grace: Option<std::time::Duration>,
 }
@@ -41,9 +58,14 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut args = Args {
         listen: SocketAddr::from(([127, 0, 0, 1], orbit_net::DEFAULT_PORT)),
-        data: EngineOptions::default_data_dir(),
+        data: std::env::var_os("ORBIT_DATA")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(EngineOptions::default_data_dir),
         print_token: false,
         local: false,
+        stdio: false,
+        probe: false,
         grace: std::env::var("ORBIT_HOST_GRACE_MS").ok().and_then(|v| v.trim().parse().ok()).map(std::time::Duration::from_millis),
     };
     let mut it = std::env::args().skip(1);
@@ -56,6 +78,8 @@ fn parse_args() -> Result<Args, String> {
             "--data" => args.data = PathBuf::from(it.next().ok_or("--data needs a folder")?),
             "--print-token" => args.print_token = true,
             "--local" => args.local = true,
+            "--stdio" => args.stdio = true,
+            "--probe" => args.probe = true,
             "--grace-ms" => {
                 let value = it.next().ok_or("--grace-ms needs a number")?;
                 let ms = value.parse().map_err(|e| format!("--grace-ms {value}: {e}"))?;
@@ -141,6 +165,13 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if args.probe {
+        println!("{}", stdio::probe_json());
+        return;
+    }
+    if args.stdio {
+        std::process::exit(stdio::run(&args.data));
+    }
     if args.local {
         init_local_log(&args.data);
         std::process::exit(run_local(&args));
@@ -235,6 +266,8 @@ fn run_local(args: &Args) -> i32 {
     let bots = orbit_bots::Bots::start(engine.clone(), &args.data)
         .inspect_err(|err| log::warn!("no chat bots: {err}"))
         .ok();
+    // Sharing this computer with paired devices, when the user turned it on.
+    control.set_share(orbit_net::share::Share::start(engine.clone(), control.clone(), &args.data));
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
     let grace = lifetime::Grace::with_override(args.grace);
     let exit = runtime.block_on(async {

@@ -14,8 +14,9 @@
 //! A `SettingsChanged` from elsewhere (another client of the same host)
 //! replaces the local copy when nothing local is pending.
 //!
-//! Which host to connect to ([`RemoteSettings`]) is not engine state: it is
-//! read before any engine exists, from `<data folder>/connection`.
+//! Which hosts to connect to is not engine state either: the client keeps
+//! its list in `hosts.json` (see `crate::hosts`). `<data folder>/connection`,
+//! the single remote host of older versions, is read once to migrate it.
 
 mod page;
 
@@ -45,11 +46,7 @@ pub struct SettingsModel {
     save: Option<Task<()>>,
     /// Where this client keeps its own files.
     data_dir: PathBuf,
-    /// The connection record as saved (takes effect on the next start).
-    remote: RemoteSettings,
-    /// The host this process is connected to, if remote.
-    connected_host: Option<String>,
-    /// The host came from `ORBIT_HOST`, which wins over the saved record.
+    /// The host came from `ORBIT_HOST`, which wins over the saved list.
     host_from_env: bool,
     /// Bytes under the data folder, once measured.
     storage: Option<u64>,
@@ -58,11 +55,16 @@ pub struct SettingsModel {
 
 impl Global for SettingsModel {}
 
+impl SettingsModel {
+    /// The application state the settings belong to.
+    pub fn app(&self) -> &Entity<AppState> {
+        &self.app
+    }
+}
+
 /// Where the client runs and connects, decided before the engine starts.
 pub struct Startup {
     pub data_dir: PathBuf,
-    pub remote: RemoteSettings,
-    pub connected_host: Option<String>,
     pub host_from_env: bool,
 }
 
@@ -74,8 +76,6 @@ pub fn init(app: Entity<AppState>, startup: Startup, cx: &mut App) {
         in_flight: None,
         save: None,
         data_dir: startup.data_dir,
-        remote: startup.remote,
-        connected_host: startup.connected_host,
         host_from_env: startup.host_from_env,
         storage: None,
         measuring: None,
@@ -218,7 +218,8 @@ pub fn send_keys(cx: &App) -> (String, String) {
 
 const CONNECTION_FILE: &str = "connection";
 
-/// Reads the saved connection (`host=` and `token=` lines).
+/// Reads the connection older versions saved (`host=` and `token=` lines),
+/// to move it into the host list.
 pub fn read_connection(data_dir: &Path) -> RemoteSettings {
     let Ok(text) = std::fs::read_to_string(data_dir.join(CONNECTION_FILE)) else { return RemoteSettings::default() };
     let mut remote = RemoteSettings::default();
@@ -232,40 +233,12 @@ pub fn read_connection(data_dir: &Path) -> RemoteSettings {
     remote
 }
 
-fn write_connection(data_dir: &Path, remote: &RemoteSettings) -> std::io::Result<()> {
-    std::fs::create_dir_all(data_dir)?;
-    let path = data_dir.join(CONNECTION_FILE);
-    if !remote.is_remote() && remote.token.is_empty() {
-        return match std::fs::remove_file(&path) {
-            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
-            _ => Ok(()),
-        };
-    }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, format!("host={}\ntoken={}\n", remote.host.trim(), remote.token.trim()))?;
-    std::fs::rename(tmp, path)
-}
-
-pub fn remote(cx: &App) -> RemoteSettings {
-    cx.try_global::<SettingsModel>().map(|m| m.remote.clone()).unwrap_or_default()
-}
-
-/// Saves the connection record; it takes effect the next time Orbit starts.
-pub fn set_remote(cx: &mut App, edit: impl FnOnce(&mut RemoteSettings)) {
-    if !cx.has_global::<SettingsModel>() {
-        return;
-    }
-    let model = cx.global_mut::<SettingsModel>();
-    edit(&mut model.remote);
-    if let Err(err) = write_connection(&model.data_dir, &model.remote) {
-        log::warn!("couldn’t save the connection: {err}");
-    }
-    cx.refresh_windows();
-}
-
-/// The host this process is connected to, and whether `ORBIT_HOST` set it.
+/// The host the window shows when it is not this computer, and whether
+/// `ORBIT_HOST` set it.
 pub fn connected_host(cx: &App) -> (Option<String>, bool) {
-    cx.try_global::<SettingsModel>().map(|m| (m.connected_host.clone(), m.host_from_env)).unwrap_or_default()
+    let Some(model) = cx.try_global::<SettingsModel>() else { return (None, false) };
+    let entry = model.app.read(cx).active_entry();
+    ((!entry.is_local()).then(|| entry.label()), model.host_from_env)
 }
 
 // ── Data folder ──────────────────────────────────────────────────────────
@@ -319,18 +292,17 @@ fn folder_size(dir: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that would bring in `gpui_kit::test` in place of `#[test]`.
-    use super::{CONNECTION_FILE, folder_size, read_connection, write_connection};
+    use super::{CONNECTION_FILE, folder_size, read_connection};
     use orbit_proto::RemoteSettings;
 
     #[test]
-    fn connection_file_round_trips_and_clears() {
+    fn the_old_connection_file_is_read() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read_connection(dir.path()), RemoteSettings::default());
-        let remote = RemoteSettings { host: "ws://box:7840/".into(), token: "abc".into() };
-        write_connection(dir.path(), &remote).unwrap();
-        assert_eq!(read_connection(dir.path()), remote);
-        write_connection(dir.path(), &RemoteSettings::default()).unwrap();
-        assert!(!dir.path().join(CONNECTION_FILE).exists());
+        std::fs::write(dir.path().join(CONNECTION_FILE), "host=ws://box:7840/
+token=abc
+").unwrap();
+        assert_eq!(read_connection(dir.path()), RemoteSettings { host: "ws://box:7840/".into(), token: "abc".into() });
     }
 
     #[test]

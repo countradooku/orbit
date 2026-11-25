@@ -18,7 +18,6 @@ use gpui_kit::component::setting::{
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use orbit_net::ConnectionStatus;
 use orbit_proto::*;
 
 use super::{ZOOM_STEPS, get, update};
@@ -42,6 +41,8 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
     // Opened from a project (its menu, the thread's Run control): Projects.
     let target = if crate::project::settings::take_request(cx) {
         Some(gpui_kit::component::setting::SelectIndex { page_ix: PROJECTS_PAGE, group_ix: None })
+    } else if crate::hosts::page::take_request(cx) {
+        Some(gpui_kit::component::setting::SelectIndex { page_ix: crate::hosts::page::PAGE, group_ix: None })
     } else {
         target
     };
@@ -61,7 +62,7 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         crate::usage::settings::page(&app, cx),
         notifications(),
         keyboard(),
-        remote(&app, cx),
+        crate::hosts::page::page(&app, cx),
         data(cx),
         crate::update::settings_page(cx),
         about(cx),
@@ -594,76 +595,6 @@ fn keyboard() -> SettingPage {
         ]),
     ])
     .description(format!("Shortcuts shown as this keyboard types them. {m} is the command modifier on this platform."))
-}
-
-fn remote(app: &Entity<AppState>, cx: &App) -> SettingPage {
-    let (host, from_env) = super::connected_host(cx);
-    let saved = super::remote(cx);
-    let pending = saved.host.trim() != host.as_deref().unwrap_or("") && !from_env;
-    let app = app.clone();
-    SettingPage::new("Remote").icon(Icon::new(IconName::Globe)).resettable(false).groups([
-        SettingGroup::new()
-            .title("Connection")
-            .description("Run agents on another machine or in WSL with orbitd, and drive them from here.")
-            .items([
-                SettingItem::new(
-                    "Engine",
-                    SettingField::render(move |_, _, cx| {
-                        let theme = cx.theme().clone();
-                        let (host, from_env) = super::connected_host(cx);
-                        let status = match app.read(cx).connection() {
-                            Some(ConnectionStatus::Connected) | None => "Connected".to_owned(),
-                            Some(ConnectionStatus::Connecting) => "Connecting…".to_owned(),
-                            Some(ConnectionStatus::Disconnected { reason }) => format!("Reconnecting: {reason}"),
-                        };
-                        let text = match host {
-                            None => "This computer".to_owned(),
-                            Some(host) if from_env => format!("{host} (from ORBIT_HOST) · {status}"),
-                            Some(host) => format!("{host} · {status}"),
-                        };
-                        div().text_sm().text_color(theme.muted_foreground).child(text)
-                    }),
-                )
-                .description(if pending {
-                    "The saved host takes effect the next time Orbit starts."
-                } else {
-                    "Where threads, worktrees and agents run."
-                }),
-                SettingItem::new(
-                    "Host",
-                    text_field(
-                        "remote-host".into(),
-                        "ws://host:7840/",
-                        false,
-                        |cx| super::remote(cx).host,
-                        |v, cx| super::set_remote(cx, |r| r.host = v),
-                    ),
-                )
-                .description("Leave empty to run agents on this computer. Applies the next time Orbit starts; ORBIT_HOST overrides it.")
-                .disabled(from_env)
-                .keywords(["orbitd", "server", "wsl", "ssh", "url"]),
-                SettingItem::new(
-                    "Access token",
-                    text_field(
-                        "remote-token".into(),
-                        "Token",
-                        true,
-                        |cx| super::remote(cx).token,
-                        |v, cx| super::set_remote(cx, |r| r.token = v),
-                    ),
-                )
-                .description("Printed by orbitd --print-token on the host. Kept in Orbit’s data folder on this computer.")
-                .disabled(from_env)
-                .keywords(["password", "secret"]),
-            ]),
-        SettingGroup::new().title("Set up a host").item(
-            SettingItem::new("Start orbitd", copy_text("copy-orbitd", "orbitd --listen 127.0.0.1:7840"))
-                .description(
-                    "Run this on the other machine, then reach it through an SSH tunnel or a private network such as \
-                     Tailscale. It listens on loopback only unless you choose another address.",
-                ),
-        ),
-    ])
 }
 
 fn data(cx: &App) -> SettingPage {

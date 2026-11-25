@@ -6,6 +6,12 @@
 //! shell preferences, not on the host): VS Code, Cursor, Windsurf, Zed,
 //! Sublime Text, the JetBrains IDEs, the system's default app, or a custom
 //! command with `{file}`, `{line}`, `{column}` and `{folder}`.
+//!
+//! On another computer (the window shows an SSH host or a WSL distro),
+//! paths are that computer's: VS Code and its forks open them through their
+//! remote extensions (`--remote ssh-remote+<host>`, `--remote wsl+<distro>`),
+//! Zed through `ssh://`, and a terminal is an SSH session (or `wsl.exe`)
+//! in the folder. Other editors can't reach them, which is said.
 
 use std::path::{Path, PathBuf};
 
@@ -197,8 +203,51 @@ pub fn open_label(cx: &App) -> String {
     }
 }
 
+/// Where paths live when the window shows another computer.
+fn remote_host(cx: &App) -> Option<orbit_net::remote::HostEntry> {
+    let model = cx.try_global::<crate::settings::SettingsModel>()?;
+    let entry = model.app().read(cx).active_entry();
+    (!entry.is_local()).then(|| entry.clone())
+}
+
+/// Opens `path` (a file at `line`, or a folder) on another computer.
+fn open_remote(host: &orbit_net::remote::HostEntry, path: &Path, line: Option<u32>, cx: &App) -> Result<(), String> {
+    use orbit_net::remote::HostKind;
+    let label = host.label();
+    let unreachable = || format!("{} is on {label}. Open it there, or use VS Code with Remote - SSH or WSL.", path.display());
+    let remote = match &host.kind {
+        HostKind::Ssh { .. } => format!("ssh-remote+{}", host.ssh_remote().unwrap_or_default()),
+        HostKind::Wsl { distro } => format!("wsl+{distro}"),
+        _ => return Err(unreachable()),
+    };
+    let editor = preferred(cx).ok_or_else(unreachable)?;
+    match editor.goto {
+        // VS Code, Cursor, Windsurf.
+        Goto::Flag => {
+            let mut args: Vec<std::ffi::OsString> = vec!["--remote".into(), remote.into()];
+            args.extend(goto_args(editor.goto, path, line));
+            spawn(&editor.path, &args, None)
+        }
+        Goto::Suffix if editor.id == "zed" => match &host.kind {
+            HostKind::Ssh { target, port, .. } => {
+                let port = port.map(|p| format!(":{p}")).unwrap_or_default();
+                let line = line.filter(|l| *l > 0).map(|l| format!(":{l}")).unwrap_or_default();
+                let url = format!("ssh://{target}{port}/{}{line}", path.display().to_string().trim_start_matches('/'));
+                spawn(&editor.path, &[url.into()], None)
+            }
+            _ => Err(unreachable()),
+        },
+        _ => Err(unreachable()),
+    }
+}
+
 /// Opens `file` at `line` (1-based) in the preferred editor.
 pub fn open_file(file: &Path, line: Option<u32>, cx: &mut App) {
+    if let Some(host) = remote_host(cx) {
+        let result = open_remote(&host, file, line, cx);
+        report(result, cx);
+        return;
+    }
     let prefs = crate::prefs::get(cx);
     let (choice, custom) = (prefs.editor.clone(), prefs.editor_command.clone());
     let result = if choice == CUSTOM && !custom.trim().is_empty() {
@@ -216,6 +265,11 @@ pub fn open_file(file: &Path, line: Option<u32>, cx: &mut App) {
 
 /// Opens a folder (a worktree, a project) in the preferred editor.
 pub fn open_folder(folder: &Path, cx: &mut App) {
+    if let Some(host) = remote_host(cx) {
+        let result = open_remote(&host, folder, None, cx);
+        report(result, cx);
+        return;
+    }
     let prefs = crate::prefs::get(cx);
     let (choice, custom) = (prefs.editor.clone(), prefs.editor_command.clone());
     let result = if choice == CUSTOM && !custom.trim().is_empty() {
@@ -229,8 +283,31 @@ pub fn open_folder(folder: &Path, cx: &mut App) {
     report(result, cx);
 }
 
-/// Opens a terminal window of the system in `folder`.
+/// Opens a terminal window of the system in `folder`: on another
+/// computer, an SSH session (or `wsl.exe`) there.
 pub fn open_terminal(folder: &Path, cx: &mut App) {
+    if let Some(host) = remote_host(cx) {
+        use orbit_net::remote::{HostKind, shell_word};
+        let dir = shell_word(&folder.display().to_string());
+        let command = match &host.kind {
+            HostKind::Ssh { .. } => {
+                let tools = orbit_net::remote::Tools::default();
+                let remote = orbit_net::remote::Remote::new(&host, &tools);
+                // `-t` for a terminal; the folder and the login shell are
+                // the remote's (`$SHELL` must reach it unexpanded).
+                let shell = if cfg!(windows) { "$SHELL" } else { r"\$SHELL" };
+                remote.interactive_command().map(|ssh| format!("{} \"cd {dir} && exec {shell} -l\"", ssh.replacen("ssh ", "ssh -t ", 1)))
+            }
+            HostKind::Wsl { distro } => Some(format!("wsl.exe -d {distro} --cd {dir}")),
+            _ => None,
+        };
+        let result = match command {
+            Some(command) => crate::hosts::panel::open_terminal(&command).map_err(|e| format!("Couldn’t open a terminal: {e}")),
+            None => Err(format!("{} is on {}; open a terminal there.", folder.display(), host.label())),
+        };
+        report(result, cx);
+        return;
+    }
     let result = if cfg!(windows) {
         match orbit_core::provider::process::resolve_binary("wt", None, &[]) {
             Some(wt) => spawn(&wt, &["-d".into(), folder.as_os_str().to_owned()], None),
@@ -257,6 +334,10 @@ pub fn open_terminal(folder: &Path, cx: &mut App) {
 
 /// Shows `path` selected in the file manager.
 pub fn reveal(path: &Path, cx: &mut App) {
+    if let Some(host) = remote_host(cx) {
+        report(Err(format!("{} is on {}, which this computer’s file manager can’t show.", path.display(), host.label())), cx);
+        return;
+    }
     cx.reveal_path(path);
 }
 

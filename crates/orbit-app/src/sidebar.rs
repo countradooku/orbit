@@ -34,7 +34,6 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Si
 use gpui_kit::component::{VirtualListScrollHandle, v_virtual_list};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use orbit_net::ConnectionStatus;
 use orbit_proto::*;
 
 use crate::actions::*;
@@ -1041,8 +1040,9 @@ impl Render for Sidebar {
         let state = self.app.read(cx).state();
         let waiting = crate::inbox::InboxView::waiting(state);
         let current = self.current(cx);
-        let connection = state.connection.clone();
         let has_projects = !state.projects.is_empty();
+        // Another computer not reached yet: nothing to add projects to.
+        let unreached = crate::hosts::panel::shows(&self.app, cx);
         let nav_item = |id: &'static str, icon: Icon, label: &'static str, route: Route, badge: Option<usize>, action: &dyn Action| {
             let action = action.boxed_clone();
             let selected = current.as_ref() == Some(&route);
@@ -1161,12 +1161,14 @@ impl Render for Sidebar {
                     .text_color(theme.muted_foreground)
                     .child(if !self.query.is_empty() {
                         "No thread matches. Search messages too with # in the palette."
+                    } else if unreached {
+                        "Threads on this host show once it is connected."
                     } else if has_projects {
                         "No threads yet. Start one from New thread."
                     } else {
                         "Add a folder to start working in it. Orbit uses your existing checkout."
                     })
-                    .when(!has_projects, |el| {
+                    .when(!has_projects && !unreached, |el| {
                         el.child(
                             Button::new("add-first-project")
                                 .small()
@@ -1203,7 +1205,7 @@ impl Render for Sidebar {
                     .gap_1()
                     .border_t_1()
                     .border_color(theme.sidebar_border)
-                    .child(connection_pill(connection.as_ref(), &theme))
+                    .child(crate::hosts::switcher::footer(&self.app, cx))
                     .child(div().flex_1())
                     .child(
                         Button::new("shortcuts")
@@ -1223,22 +1225,6 @@ impl Render for Sidebar {
                     ),
             )
     }
-}
-
-fn connection_pill(status: Option<&ConnectionStatus>, theme: &gpui_kit::component::Theme) -> impl IntoElement {
-    let (color, label) = match status {
-        None | Some(ConnectionStatus::Connected) => (theme.success, "This computer".to_string()),
-        Some(ConnectionStatus::Connecting) => (theme.warning, "Connecting…".to_string()),
-        Some(ConnectionStatus::Disconnected { reason }) => (theme.danger, reason.clone()),
-    };
-    h_flex()
-        .min_w_0()
-        .gap_1p5()
-        .px_2()
-        .text_xs()
-        .text_color(theme.muted_foreground)
-        .child(div().flex_none().size_1p5().rounded_full().bg(color))
-        .child(div().truncate().child(label))
 }
 
 #[cfg(test)]

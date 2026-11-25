@@ -124,7 +124,7 @@ fn known_secrets(cx: &App) -> Vec<String> {
         .flat_map(|p| p.env.iter().map(|e| e.value.clone()))
         .chain(settings.agents.instances.iter().flat_map(|i| i.env.iter().map(|e| e.value.clone())))
         .collect();
-    secrets.push(crate::settings::remote(cx).token);
+    secrets.extend(crate::hosts::tokens(cx));
     let integrations = crate::forge::integrations::get(cx);
     secrets.push(integrations.linear_api_key.clone());
     secrets.push(integrations.jira_api_token.clone());

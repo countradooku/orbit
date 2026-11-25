@@ -17,6 +17,12 @@
 //! created as the first instance of its name (a squatter makes binding
 //! fail rather than intercept clients) and refuses remote clients; on Unix
 //! the socket is made readable by its owner only.
+//!
+//! The same frames also travel over a child process's stdin and stdout:
+//! `exec:["ssh","box","--","~/.orbit/bin/orbitd","--local","--stdio"]`
+//! (a JSON argument list) starts the program and speaks to whatever it
+//! connects to. That is how a remote or WSL host is reached (see
+//! `docs/REMOTE.md`): no port, no listener, the user's SSH setup as it is.
 
 use std::io;
 
@@ -28,10 +34,80 @@ pub const MAX_FRAME: usize = 64 * 1024 * 1024;
 
 const PIPE: &str = "pipe:";
 const UNIX: &str = "unix:";
+const EXEC: &str = "exec:";
 
-/// Whether `url` names a local transport (`pipe:` or `unix:`).
+/// Whether `url` names a local transport (`pipe:` or `unix:`) or a
+/// program to speak through (`exec:`).
 pub fn is_local(url: &str) -> bool {
-    url.starts_with(PIPE) || url.starts_with(UNIX)
+    url.starts_with(PIPE) || url.starts_with(UNIX) || url.starts_with(EXEC)
+}
+
+/// The `exec:` address that runs `argv` and speaks over its stdio.
+pub fn exec_url<S: AsRef<str>>(argv: &[S]) -> String {
+    let argv: Vec<&str> = argv.iter().map(AsRef::as_ref).collect();
+    format!("{EXEC}{}", serde_json::to_string(&argv).unwrap_or_default())
+}
+
+/// The program and arguments of an `exec:` address.
+pub fn exec_argv(url: &str) -> Option<Vec<String>> {
+    let argv: Vec<String> = serde_json::from_str(url.strip_prefix(EXEC)?).ok()?;
+    (!argv.is_empty()).then_some(argv)
+}
+
+/// A program the link runs through (`exec:`): killed when dropped. Its
+/// stderr is kept (the last 8 KB) to say why a connection failed: SSH
+/// writes "Permission denied" or "Host key verification failed" there.
+pub struct ExecChild {
+    child: tokio::process::Child,
+    stderr: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl ExecChild {
+    /// What the program wrote to stderr, once it exited (or after
+    /// `wait`, whichever comes first).
+    pub async fn stderr_after_exit(&mut self, wait: std::time::Duration) -> (Option<std::process::ExitStatus>, String) {
+        let status = tokio::time::timeout(wait, self.child.wait()).await.ok().and_then(Result::ok);
+        // The reader task may still hold the last bytes for a moment.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let text = String::from_utf8_lossy(&self.stderr.lock().unwrap_or_else(|e| e.into_inner())).into_owned();
+        (status, text)
+    }
+}
+
+/// Starts `argv` with piped stdio and returns its frames.
+pub fn spawn_exec(argv: &[String]) -> io::Result<(FrameReader, FrameWriter, ExecChild)> {
+    use std::process::Stdio;
+    let (program, args) = argv.split_first().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nothing to run"))?;
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        // No console window flashing up from a windowed app.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = cmd.spawn()?;
+    let stdin = child.stdin.take().ok_or_else(|| io::Error::other("no stdin"))?;
+    let stdout = child.stdout.take().ok_or_else(|| io::Error::other("no stdout"))?;
+    let stderr = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    if let Some(mut pipe) = child.stderr.take() {
+        let kept = stderr.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            while let Ok(n) = pipe.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
+                kept.extend_from_slice(&buf[..n]);
+                if kept.len() > 8192 {
+                    let cut = kept.len() - 8192;
+                    kept.drain(..cut);
+                }
+            }
+        });
+    }
+    Ok((FrameReader::new(Box::new(stdout)), FrameWriter::new(Box::new(stdin)), ExecChild { child, stderr }))
 }
 
 /// A fresh, unguessable local address for a host on `data_dir`.

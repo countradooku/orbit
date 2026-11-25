@@ -8,8 +8,9 @@
 //!   the next ten minutes) for [`Grace::idle`]; `never` exits after
 //!   [`Grace::detached`], long enough for the app to restart.
 //!
-//! While a window is attached the loop sleeps on the control's notifier:
-//! no timer runs. Without one it looks once a second.
+//! While a window is attached, or this computer is shared with paired
+//! devices (they may connect at any time), the loop sleeps on the control's
+//! notifier: no timer runs. Without one it looks once a second.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -57,7 +58,7 @@ pub async fn run(engine: EngineHandle, control: Arc<HostControl>, data_dir: Path
         if restart == Some(RestartWhen::Now) {
             return Exit::Restart;
         }
-        let attached = control.windows() > 0;
+        let attached = control.windows() > 0 || control.sharing();
         if restart.is_none() && attached {
             idle_since = None;
             control.changed().await;

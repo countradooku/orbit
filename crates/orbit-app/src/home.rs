@@ -264,6 +264,39 @@ impl Render for HomeView {
                     window.dispatch_action(Box::new(AddProject), cx)
                 }))
             });
+        // Where the thread runs: shown once there is more than one host.
+        let hosts = self.app.read(cx).hosts().hosts.clone();
+        let active_host = self.app.read(cx).active_entry().clone();
+        let run_on = (hosts.len() > 1).then(|| {
+            let app = self.app.clone();
+            Button::new("home-run-on")
+                .ghost()
+                .small()
+                .icon(Icon::new(crate::hosts::kind_icon(&active_host)))
+                .label(active_host.label())
+                .dropdown_caret(true)
+                .tooltip("Run on: the computer this thread’s agent works on")
+                .dropdown_menu(move |mut menu, _, cx| {
+                    let active = app.read(cx).active_entry().id.clone();
+                    for entry in &hosts {
+                        let summary = app.read(cx).summary(&entry.id);
+                        let (_, status) = crate::hosts::status_line(entry, &summary);
+                        let id = SharedString::from(entry.id.clone());
+                        let label = if entry.id == active { entry.label() } else { format!("{} · {status}", entry.label()) };
+                        menu = menu.item(
+                            PopupMenuItem::new(label)
+                                .icon(crate::hosts::kind_icon(entry))
+                                .checked(entry.id == active)
+                                .on_click(move |_, window, cx| {
+                                    crate::hosts::switch_to(id.clone(), window, cx)
+                                }),
+                        );
+                    }
+                    menu.separator().item(PopupMenuItem::new("Add host…").icon(gpui_kit::component::IconName::Plus).on_click(
+                        |_, window, cx| crate::hosts::add::open(window, cx),
+                    ))
+                })
+        });
         let shortcut = |label: &'static str, action: &dyn Action| {
             h_flex()
                 .gap_1p5()
@@ -297,7 +330,8 @@ impl Render for HomeView {
                                     .text_sm()
                                     .text_color(theme.muted_foreground)
                                     .child("Working in")
-                                    .child(picker),
+                                    .child(picker)
+                                    .when_some(run_on, |el, run_on| el.child("on").child(run_on)),
                             ),
                     )
                     .child(self.composer.clone())

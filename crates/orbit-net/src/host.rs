@@ -114,7 +114,7 @@ impl HostStatus {
 }
 
 /// A control request: the first frame of a connection, JSON.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlRequest {
     pub token: String,
     /// `status` or `restart`.
@@ -122,6 +122,14 @@ pub struct ControlRequest {
     /// For `restart`: `idle` (default) or `now`.
     #[serde(default)]
     pub when: String,
+    /// For `pair` (a shared host, see [`crate::share`]): the pairing code,
+    /// this device's name and a random nonce.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub device: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub nonce: String,
 }
 
 impl ControlRequest {
@@ -146,6 +154,7 @@ pub fn control(info: &EndpointInfo, op: &str, when: Option<RestartWhen>) -> io::
             Some(RestartWhen::WhenIdle) => "idle".into(),
             None => String::new(),
         },
+        ..Default::default()
     };
     let body = serde_json::to_vec(&request).map_err(io::Error::other)?;
     let target = info.client_url().to_owned();
@@ -529,8 +538,8 @@ pub use control::HostControl;
 
 #[cfg(feature = "engine")]
 mod control {
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
 
     use orbit_proto::{RestartWhen, now_ms};
 
@@ -541,6 +550,9 @@ mod control {
         restart: Mutex<Option<RestartWhen>>,
         changed: tokio::sync::Notify,
         started_ms: u64,
+        /// Devices may connect over the network: the host stays up.
+        sharing: AtomicBool,
+        share: OnceLock<Arc<crate::share::Share>>,
     }
 
     impl Default for HostControl {
@@ -551,6 +563,8 @@ mod control {
                 restart: Mutex::new(None),
                 changed: tokio::sync::Notify::new(),
                 started_ms: now_ms(),
+                sharing: AtomicBool::new(false),
+                share: OnceLock::new(),
             }
         }
     }
@@ -605,6 +619,26 @@ mod control {
             *self.restart.lock().unwrap_or_else(|e| e.into_inner())
         }
 
+        /// Sharing over the network is on: paired devices may come at any
+        /// time, so the host does not exit for lack of windows.
+        pub fn sharing(&self) -> bool {
+            self.sharing.load(Ordering::Acquire)
+        }
+
+        pub fn set_sharing(&self, on: bool) {
+            self.sharing.store(on, Ordering::Release);
+            self.changed.notify_one();
+        }
+
+        /// The host's sharing, once started.
+        pub fn share(&self) -> Option<&Arc<crate::share::Share>> {
+            self.share.get()
+        }
+
+        pub fn set_share(&self, share: Arc<crate::share::Share>) {
+            let _ = self.share.set(share);
+        }
+
         /// Waits until windows, holds or restart requests change.
         pub async fn changed(&self) {
             self.changed.notified().await
@@ -647,7 +681,7 @@ mod tests {
             since: 0,
         });
         assert!(!is_control(&hello));
-        let req = ControlRequest { token: "t".into(), op: "status".into(), when: String::new() };
+        let req = ControlRequest { token: "t".into(), op: "status".into(), ..Default::default() };
         assert!(is_control(&serde_json::to_vec(&req).unwrap()));
         // Unknown fields from a later version are ignored.
         let later: HostStatus = serde_json::from_str(r#"{"pid":4,"working":2,"something_new":true}"#).unwrap();

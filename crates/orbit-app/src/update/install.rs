@@ -204,8 +204,9 @@ fn unzip(archive: &Path, into: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", test))]
-fn untar_gz(archive: &Path, into: &Path) -> Result<(), String> {
+/// Unpacks a `.tar.gz` into `into` (Linux updates; `orbitd` builds for
+/// other computers on every platform).
+pub fn untar_gz(archive: &Path, into: &Path) -> Result<(), String> {
     let file = fs::File::open(archive).map_err(|e| format!("Couldn’t read the update: {e}"))?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
     fs::create_dir_all(into).map_err(|e| format!("Couldn’t unpack the update: {e}"))?;
@@ -217,11 +218,6 @@ fn untar_gz(archive: &Path, into: &Path) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-#[cfg(not(any(target_os = "linux", test)))]
-fn untar_gz(_: &Path, _: &Path) -> Result<(), String> {
-    Err("Tarball updates are for Linux.".to_owned())
 }
 
 fn set_executable(path: &Path) {

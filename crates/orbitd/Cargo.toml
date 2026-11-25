@@ -20,3 +20,8 @@ crossfire = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 
+
+# Its own `main`: the test binary is also the fake `ssh` and `scp` it runs.
+[[test]]
+name = "remote"
+harness = false

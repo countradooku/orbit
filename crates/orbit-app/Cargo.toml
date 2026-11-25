@@ -56,18 +56,15 @@ sha2 = "0.10"
 semver = "1"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Linux updates and orbitd builds for other computers arrive as tarballs.
+tar = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
 # Signing test manifests and bundles (`update` tests).
 ring = "0.17"
 blake2 = "0.10"
-tar = "0.4"
 gpui-kit = { version = "0.11", features = ["tree-sitter", "x11", "test-support"] }
-
-# Linux updates may arrive as a tarball.
-[target.'cfg(target_os = "linux")'.dependencies]
-tar = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"

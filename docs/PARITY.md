@@ -135,7 +135,7 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | New project with a private repo created on the host and cloned ("Create & Clone") | srv/project/ManagedProjectFolders.ts | Missing | | Through the user's own `gh`/`glab`, least privilege. | P2 |
 | Clone from URL, `owner/name` shorthand or provider picker, with destination confirm | web/components/CommandPaletteAddProject.tsx, srv/vcs/CheckoutCloner.ts | Missing | | SSH with HTTPS fallback; ghq layout optional. | P2 |
 | Clone progress toast with Cancel / Retry / Remove project, stall detection after 20 s | web/components/ProjectCloneToastCoordinator.tsx, srv/project/ProjectCloneTracker.ts:71-75 | Missing | | Progress from git's own output; commands on a cloning project are queued, not rejected. | P2 |
-| Open WSL folder | web/components/CommandPalette.tsx | Partial | orbitd/src/main.rs:1, app/main.rs:33, app/settings.rs:134 | Today: run `orbitd` in WSL by hand and set ORBIT_HOST. Target: one-click "Open in WSL" that starts the host in the distro (#192, 145 reactions; #14393 stuck "Connecting to WSL"). | P1 |
+| Open WSL folder | web/components/CommandPalette.tsx | Done | app/hosts/add.rs, app/hosts/browse.rs | Add host › WSL, then Add project browses the distro's folders. | P1 |
 | Unarchive a project from the palette | web/components/CommandPalette.tsx | Missing | | | P2 |
 | Add project to another machine (clone there, copy up to 200 ignored files) | web/components/AddProjectToMachineDialog.tsx, web/lib/addProjectToMachine.ts:25-28 | Missing | | | P2 |
 | Drop a folder on the sidebar to add it | web/components/sidebar/SidebarFolderDrop.tsx | Missing | | | P1 |
@@ -884,15 +884,15 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 |---|---|---|---|---|---|
 | T3 Connect (account sign-in and hosted relay; free tier of 3 machines) | srv/cloud/* | N/A | | Hosted T3 cloud and accounts. | P2 |
 | Require approval for new devices (Connect device codes) | web/components/settings/ConnectDeviceApprovalSettings.tsx | N/A | | Part of T3 Connect. | P2 |
-| Connection troubleshooting | web/components/ConnectionDiagnosisDetails.tsx | Partial | app/sidebar.rs:531-545 | Status pill with the disconnect reason. | P2 |
-| Direct connection to a remote host with a token | srv/auth/*, web/routes/pair.tsx | Partial | orbitd/src/main.rs:1-60, app/main.rs:33-40 | Works through ORBIT_HOST / ORBIT_TOKEN env vars; no in-app UI. | P1 |
-| One-time pairing link or QR, `pair` CLI | web/routes/pair.tsx | Missing | | Links survive leaving the page (T3 loses them, §1 D bugs). | P1 |
-| Authorised clients with revoke; scoped tokens | web/components/settings/AuthorizedClientsSettings.tsx | Missing | | No hard 30-day expiry (#33183, #42190). | P2 |
+| Connection troubleshooting | web/components/ConnectionDiagnosisDetails.tsx | Done | app/hosts/panel.rs, net/remote/mod.rs (`diagnose`) | SSH's stderr becomes the fix: install orbitd, accept a host key or sign in once in a terminal (the exact command), ssh-add, or wait for the network. See [REMOTE.md](REMOTE.md). | P2 |
+| Direct connection to a remote host with a token | srv/auth/*, web/routes/pair.tsx | Done | app/hosts/add.rs | Add host › Direct: an address with a token or a pairing code. ORBIT_HOST still works for one run. | P1 |
+| One-time pairing link or QR, `pair` CLI | web/routes/pair.tsx | Partial | net/share.rs, app/hosts/share.rs | A short code (ten minutes, one device) and matching six digits on both screens; no QR or CLI yet. | P1 |
+| Authorised clients with revoke; scoped tokens | web/components/settings/AuthorizedClientsSettings.tsx | Done | net/share.rs | Paired devices with last seen, revoked one by one (connections closed at once); tokens kept as digests; devices can't manage sharing. No expiry. | P2 |
 | Reconnect without losing events | client-runtime connection layer | Done | net/client.rs:66-172, core/engine/bus.rs:1-17 | Replays from the last sequence; never a blank state. T3 flaps on lossy links (#3054, #2366). | P1 |
-| Several hosts in one window | client-runtime | Missing | net/lib.rs:1 | One backend per window. | P1 |
+| Several hosts in one window | client-runtime | Done | app/app_state.rs, app/hosts/* | One host shown at a time, the others connected in the background with what waits on you; switching is instant (see [REMOTE.md](REMOTE.md)). | P1 |
 | Saved machines with ordered routes (LAN, Tailscale, VPN, SSH), re-probed on network change | web/components/settings/ConnectionsSettings.tsx | Missing | | | P2 |
-| SSH hosts (install runtime, port-forward, reuse ControlMaster) | desk/ssh/DesktopSshEnvironment.ts | Missing | | Codex #10450 (879 reactions, remote development). | P1 |
-| WSL backend (run in a distro, install automatically, WSL-only mode) | desk/wsl/* | Partial | orbitd/src/main.rs:1 | Manual. | P1 |
+| SSH hosts (install runtime, port-forward, reuse ControlMaster) | desk/ssh/DesktopSshEnvironment.ts | Done | net/remote/*, orbitd --stdio | The system ssh (config, agent, ProxyJump), `orbitd --local --stdio` (no ports), install with scp, hosts from ~/.ssh/config. No port forwarding yet. | P1 |
+| WSL backend (run in a distro, install automatically, WSL-only mode) | desk/wsl/* | Done | net/remote/wsl.rs | A distro is a host (`wsl.exe -d`), installed to like an SSH host; Linux paths, folders browsed through its engine. | P1 |
 | Load balancing across machines | web/components/settings/LoadBalancingSettings.tsx | Missing | | | P2 |
 | Tailscale HTTPS serve | packages/tailscale | Missing | | | P2 |
 | Linked environments (delegation between machines, read-only linked threads) | srv/peer/* | Missing | | | P2 |

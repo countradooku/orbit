@@ -27,6 +27,8 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     ChartColumn, ArrowLeftRight, Download,
     // First run, updates and diagnostics.
     Circle, CircleArrowUp, Monitor, LifeBuoy,
+    // Hosts: the switcher, adding and sharing.
+    Server, Laptop, Share2, KeyRound, RefreshCw, Unplug, FolderUp, House, Wifi,
 ]);
 
 /// Orbit's icons first, then GPUI Kit's defaults.

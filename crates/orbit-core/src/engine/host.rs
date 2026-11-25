@@ -74,6 +74,48 @@ enum Sleep {
     Asleep { thread: Option<ThreadId>, size: TermSize },
 }
 
+/// A folder anywhere on this computer ([`HostCommand::ListDir`]): `""` and
+/// `~` are the home folder, `~/x` is under it. Blocking (one `read_dir`).
+pub(crate) fn list_host_dir(path: &str) -> Result<DirListing, String> {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+    let trimmed = path.trim();
+    let target = match trimmed {
+        "" | "~" => home.clone(),
+        _ => match trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
+            Some(rest) => home.join(rest),
+            None => std::path::PathBuf::from(trimmed),
+        },
+    };
+    if !target.is_absolute() {
+        return Err(format!("“{trimmed}” is not a full path."));
+    }
+    let dir = super::orchestrator::dunce_canonical(&target).map_err(|e| format!("Couldn’t open “{}”: {e}", target.display()))?;
+    if !dir.is_dir() {
+        return Err(format!("“{}” is not a folder.", dir.display()));
+    }
+    let read = std::fs::read_dir(&dir).map_err(|e| format!("Couldn’t read “{}”: {e}", dir.display()))?;
+    let mut entries = Vec::new();
+    for entry in read.flatten() {
+        if entries.len() >= MAX_DIR_ENTRIES {
+            break;
+        }
+        let Ok(kind) = entry.file_type() else { continue };
+        // A link to a folder opens as one.
+        let is_dir = kind.is_dir() || (kind.is_symlink() && entry.path().is_dir());
+        let size = if is_dir { 0 } else { entry.metadata().map(|m| m.len()).unwrap_or(0) };
+        entries.push(DirEntry { name: entry.file_name().to_string_lossy().into_owned(), is_dir, size });
+    }
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| super::workspaces::fs::natural_cmp(&a.name, &b.name)));
+    Ok(DirListing {
+        path: dir.display().to_string(),
+        parent: dir.parent().map(|p| p.display().to_string()),
+        home: home.display().to_string(),
+        os: std::env::consts::OS.to_owned(),
+        repo: dir.join(".git").exists(),
+        entries,
+    })
+}
+
 impl Orchestrator {
     pub(crate) fn host_command(&mut self, command: HostCommand) -> CommandResult {
         match command {
@@ -100,6 +142,9 @@ impl Orchestrator {
                 self.sleep_terminal(term);
                 Ok(Reply::Done)
             }
+            HostCommand::Ping => Ok(Reply::Done),
+            HostCommand::Share(_) => Err("Sharing this computer needs the background host; Orbit runs its engine in the window.".into()),
+            HostCommand::ListDir { path } => list_host_dir(&path).map(|listing| Reply::Host(HostReply::Dir(listing))),
             HostCommand::Terminals => {
                 let mut ids: Vec<TermId> = self.host.sessions.keys().copied().collect();
                 ids.sort();
