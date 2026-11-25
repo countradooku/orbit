@@ -156,6 +156,9 @@ const REFRESH: Arg = arg("refresh", Kind::Flag, "Fetch fresh data instead of a s
 const TRACKER: Arg = arg("tracker", Kind::Choice(TRACKERS), "The tracker; default: the project's host.");
 const KEY: Arg = pos("key", Kind::Str, "The issue (`42`, `ENG-123`, `PROJ-7`).");
 
+pub const MAIL_KINDS: &[&str] = &["message", "question", "handoff", "status", "done"];
+const TEAM_AS: Arg = arg("as", Kind::Thread, "Act as this team member; default: the thread this runs in.").cli();
+
 const THREAD: Arg = pos("thread", Kind::Thread, "The thread: its id, a unique part of its id or title, `latest`, or `self`.");
 const REQUEST: Arg = arg("request", Kind::Str, "The request id, when the thread has more than one pending.");
 const TIMEOUT: Arg = arg("timeout", Kind::Duration, "Give up after this long (`90s`, `10m`; `0` waits forever).").default("10m");
@@ -585,6 +588,121 @@ pub static SPECS: &[Spec] = &[
         details: "Brings the desktop app forward and shows the thread, through the app's own single-instance hand-off                   (the same as launching `orbit-desktop --thread <id>`). Starts the app when it is not running.",
         examples: &["orbit open latest"],
         ..spec(&["open"], "Show a thread in the desktop app", &[opt_pos("thread", Kind::Thread, "The thread to show.")])
+    },
+    // ── Agent teams and races ───────────────────────────────────────────
+    Spec {
+        details: "Starts a thread as the architect of a new agent team. Its sessions get the team tools (team_spawn_worker, \
+                  team_message, team_post_note, team_read_notes, team_status, team_merge_worker) as Orbit MCP tools, for \
+                  that session only. Workers run in their own worktrees off the architect's branch.",
+        examples: &["orbit team start \"Add OAuth sign-in across the API and the web app\" --max-workers 3"],
+        ..spec(
+            &["team", "start"],
+            "Start a thread as a team's architect",
+            &[
+                pos("prompt", Kind::Text, "The architect's first message (`-` reads standard input)."),
+                PROJECT,
+                arg("here", Kind::Flag, "Lead from the project's checkout instead of a new worktree."),
+                arg("provider", Kind::Str, "The architect's agent: `claude`, `codex`, or a configured instance's id."),
+                arg("model", Kind::Str, "The architect's model.").short('m'),
+                arg("access", Kind::Choice(ACCESS), "What the architect (and so its workers) may do without asking."),
+                arg("max-workers", Kind::Int, "Workers working at once.").default("4"),
+                arg("max-failures", Kind::Int, "Failed workers before spawning stops.").default("3"),
+                arg("max-cost", Kind::Str, "Spend (in dollars) before spawning stops; default: no limit."),
+            ],
+        )
+    },
+    Spec {
+        details: "Adds a worker to your team. It starts in its own worktree off the architect's branch as soon as the \
+                  workers it depends on are done, a slot is free and no working teammate is editing its scope; until \
+                  then it waits, with the reason in team_status. Its brief gets the newest team notes. When it finishes, \
+                  its summary comes to you as team mail between your turns: end your turn instead of polling.",
+        tool: write("team_spawn_worker", "Spawn a team worker"),
+        examples: &["orbit team spawn --title \"Users API\" --scope src/api \"Add GET /users …\"", "orbit team spawn --depends-on w1 --title UI \"…\""],
+        ..spec(
+            &["team", "spawn"],
+            "Spawn a worker on your team",
+            &[
+                pos("brief", Kind::Text, "The task, self-contained: goal, constraints, what done looks like (`-` reads stdin)."),
+                arg("title", Kind::Str, "A short title; default: the brief's first line.").short('t'),
+                arg("depends-on", Kind::Str, "Worker keys that must finish first, comma-separated (`w1,w2`)."),
+                arg("scope", Kind::Str, "Paths the worker will edit, comma-separated (`src/api,docs`)."),
+                arg("provider", Kind::Str, "The worker's agent; default: the team's worker agent, else yours."),
+                arg("model", Kind::Str, "The worker's model.").short('m'),
+                TEAM_AS,
+            ],
+        )
+    },
+    Spec {
+        details: "Stores a message for a teammate and delivers it between their turns (never typed into their \
+                  terminal). `to` is `architect`, `parent`, a worker key (`w2`) or `@all` (every working worker). \
+                  --urgent steers a working recipient right away, at most once a minute.",
+        tool: write("team_message", "Message a teammate"),
+        examples: &["orbit team message w2 \"The users table has an email column now\"", "orbit team message architect --kind question \"Which port?\""],
+        ..spec(
+            &["team", "message"],
+            "Mail a teammate",
+            &[
+                pos("to", Kind::Str, "`architect`, `parent`, a worker key or `@all`."),
+                pos("text", Kind::Text, "The message (`-` reads standard input)."),
+                arg("kind", Kind::Choice(MAIL_KINDS), "What it is.").default("message"),
+                arg("urgent", Kind::Flag, "Steer a working recipient now instead of at its next turn boundary."),
+                TEAM_AS,
+            ],
+        )
+    },
+    Spec {
+        details: "Posts to the team's shared notes board: API shapes, decisions, conventions. New workers' briefs include \
+                  the newest notes.",
+        tool: write("team_post_note", "Post a team note"),
+        examples: &["orbit team note \"GET /users returns [{id, name, email}]\""],
+        ..spec(&["team", "note"], "Post to the team's notes board", &[pos("text", Kind::Text, "The note (`-` reads stdin)."), TEAM_AS])
+    },
+    Spec {
+        details: "The team's notes, newest first.",
+        tool: read("team_read_notes", "Read team notes"),
+        ..spec(
+            &["team", "notes"],
+            "Read the team's notes board",
+            &[arg("limit", Kind::Int, "At most this many.").default("20"), TEAM_AS],
+        )
+    },
+    Spec {
+        details: "Every worker with its state (waiting, working, done, failed, merged), why a waiting one waits, its \
+                  thread, scope and summary; the circuit breaker; files two working members both changed.",
+        tool: read("team_status", "Team status"),
+        ..spec(&["team", "status"], "Show your team's workers", &[TEAM_AS])
+    },
+    Spec {
+        details: "Merges a finished worker's branch into the architect's worktree. Always previewed first: when the merge \
+                  would conflict, the conflicts are reported and nothing changes. --dry-run only previews.",
+        tool: Some(Tool { name: "team_merge_worker", title: "Merge a worker", read_only: false, destructive: true, idempotent: false }),
+        examples: &["orbit team merge w1 --dry-run", "orbit team merge w1"],
+        ..spec(
+            &["team", "merge"],
+            "Merge a finished worker into the architect's branch",
+            &[pos("worker", Kind::Str, "The worker's key (`w1`)."), arg("dry-run", Kind::Flag, "Preview only."), TEAM_AS],
+        )
+    },
+    Spec {
+        details: "Runs the same prompt several times, or once per agent, each in its own worktree off the same base. \
+                  When a candidate finishes, its diff stats are taken and the project's test command (a run script named \
+                  test or check, or --test) runs in its worktree; --judge asks an agent to name a winner. Compare and keep \
+                  the winner in the app, or with `orbit merge`.",
+        examples: &["orbit race \"Make the cache thread-safe\" -n 3", "orbit race \"Fix #12\" --provider claude,codex --judge"],
+        ..spec(
+            &["race"],
+            "Race one prompt across several candidates",
+            &[
+                pos("prompt", Kind::Text, "The prompt (`-` reads standard input)."),
+                arg("n", Kind::Int, "How many candidates, when --provider/--model name fewer.").short('n').default("3"),
+                arg("provider", Kind::Str, "Agents, comma-separated, one candidate each (`claude,codex`)."),
+                arg("model", Kind::Str, "Models, comma-separated, one candidate each.").short('m'),
+                arg("test", Kind::Str, "The test command; default: the project's run script named test or check."),
+                arg("judge", Kind::Flag, "Ask an agent for a verdict once every candidate settled."),
+                arg("base", Kind::Str, "The branch to start from and merge into; default: the project's base branch."),
+                PROJECT,
+            ],
+        )
     },
     Spec {
         connects: false,

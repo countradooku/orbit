@@ -17,6 +17,7 @@ fn group_about(name: &str) -> &'static str {
         "terminal" => "Run commands in terminals and read their output",
         "pr" => "Pull requests: list, show, merge, check out, fix failing checks",
         "issue" => "Issues from GitHub, GitLab, Linear or Jira: list, show, start a thread",
+        "team" => "Agent teams: an architect spawns workers, mails them and merges their work",
         _ => "",
     }
 }
