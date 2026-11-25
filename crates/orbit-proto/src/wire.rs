@@ -42,6 +42,8 @@ pub struct Snapshot {
     pub threads: Vec<Thread>,
     pub providers: Vec<ProviderInfo>,
     pub defaults: ThreadConfig,
+    /// Unsent messages, per composer.
+    pub drafts: Vec<(DraftTarget, Draft)>,
     /// Boxed: the snapshot travels inside small enums.
     pub settings: Box<Settings>,
 }
@@ -81,6 +83,8 @@ pub enum Event {
     /// Ephemeral.
     TimelineMark { thread: ThreadId, mark: u64 },
     TerminalExited { term: TermId, code: Option<i32> },
+    /// A composer's unsent message changed; an empty draft means none.
+    DraftSaved { target: DraftTarget, draft: Draft },
 }
 
 impl Event {
@@ -119,6 +123,9 @@ pub enum DiffScope {
     Base(String),
     /// Uncommitted changes in the working tree.
     Uncommitted,
+    /// Everything from before the given turn to the working tree now: what
+    /// restoring to before that turn would undo.
+    SinceTurn(u32),
 }
 
 /// A field-wise update to a thread; `None` leaves the field unchanged.
@@ -164,6 +171,13 @@ pub enum Command {
     /// Remove the timeline after `item` and send `text` in its place.
     EditAndResend { thread: ThreadId, item: ItemId, text: String },
     Interrupt { thread: ThreadId },
+    /// End the agent's process now, for when Stop did not take. The turn
+    /// ends as stopped; the next message resumes the session.
+    ForceStop { thread: ThreadId },
+    /// Run the thread's last failed or rate-limited turn again. The
+    /// provider's history is rewound to before the turn and its message is
+    /// sent again; the failed attempt stays in the timeline.
+    Retry { thread: ThreadId },
     Resolve { thread: ThreadId, request: RequestId, decision: Decision },
 
     Diff { thread: ThreadId, scope: DiffScope },
@@ -173,13 +187,22 @@ pub enum Command {
     /// turn and everything after it); the current state is snapshotted
     /// first so the restore itself can be undone.
     RestoreCheckpoint { thread: ThreadId, turn: u32 },
+    /// Undo the thread's last restore (itself undoable: it swaps back).
+    UndoRestore { thread: ThreadId },
     Commit { thread: ThreadId, message: String, push: bool },
     CreatePullRequest { thread: ThreadId, title: String, body: String },
     Branches { project: ProjectId },
+    /// Merge the thread's branch into `into` locally, without a pull
+    /// request. Uncommitted work is committed first with `message`. With
+    /// `dry_run` nothing changes and the reply previews the merge.
+    MergeLocal { thread: ThreadId, into: String, message: String, dry_run: bool },
 
     Search { query: String, limit: u32 },
     /// Store bytes in the blob store; returns [`Reply::Blob`].
     PutBlob { name: String, mime: String, data: Vec<u8> },
+    /// Read a stored blob by its hash (full tool output, an attachment).
+    /// Returns [`Reply::Bytes`].
+    ReadBlob { hash: String },
 
     OpenTerminal { cwd: String, cols: u16, rows: u16 },
     TerminalInput { term: TermId, data: Vec<u8> },
@@ -188,15 +211,25 @@ pub enum Command {
 
     RefreshProviders,
     SetDefaults { config: ThreadConfig },
+
+    /// Keep a composer's unsent message; an empty draft removes it.
+    SaveDraft { target: DraftTarget, draft: Draft },
+    /// Fuzzy-find files and folders in a thread's workspace (or a project's
+    /// folder when `thread` is `None`); returns [`Reply::Files`].
+    SearchFiles { thread: Option<ThreadId>, project: Option<ProjectId>, query: String, limit: u32 },
+    /// A readable digest of a thread (its messages and replies) stored as a
+    /// blob, so another thread's agent can read it; returns [`Reply::Blob`].
+    ExportThread { thread: ThreadId },
+    /// Move a queued message to position `to` of the queue (0 = next).
+    MoveQueued { thread: ThreadId, item: ItemId, to: u32 },
+    /// Send a queued message now: into the running turn, or as the next
+    /// turn when nothing runs.
+    SteerQueued { thread: ThreadId, item: ItemId },
     /// Replace the settings. The engine sanitizes them, persists them,
     /// applies what affects it (provider binaries and environment, git and
     /// worktree locations) and broadcasts [`Event::SettingsChanged`].
     UpdateSettings { settings: Settings },
 
-    /// Pull requests, checks, merges, issues and tracker settings; see
-    /// [`ForgeCommand`]. Replies [`Reply::Forge`] (or `Thread` / `Done`,
-    /// per command).
-    Forge(ForgeCommand),
     /// One-shot text generation (titles, commit messages, pull request
     /// text) on the thread's instance in a cheap mode, or on any available
     /// one when `thread` is `None`. Replies [`Reply::Text`].
@@ -204,6 +237,10 @@ pub enum Command {
     /// End the thread's agent session; the next message starts a fresh one
     /// in the same thread (what `/clear` does).
     NewSession { thread: ThreadId },
+    /// Pull requests, checks, merges, issues and tracker settings; see
+    /// [`ForgeCommand`]. Replies [`Reply::Forge`] (or `Thread`, `Text` or
+    /// `Done`, per command).
+    Forge(ForgeCommand),
 }
 
 /// What [`Command::GenerateText`] writes.
@@ -230,10 +267,34 @@ pub enum Reply {
     Branches { current: Option<String>, all: Vec<String> },
     SearchHits(Vec<SearchHit>),
     Blob(Attachment),
+    Bytes(Vec<u8>),
     Terminal(TermId),
     PullRequest { url: String },
+    Merge(MergeInfo),
+    Files(Vec<FileMatch>),
     Text(String),
     Forge(ForgeReply),
+}
+
+/// A local merge of a thread's branch, previewed or done.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+pub struct MergeInfo {
+    /// The thread's branch.
+    pub source: String,
+    /// The branch it merges into.
+    pub target: String,
+    /// Commits on `source` that `target` does not have yet.
+    pub commits: u32,
+    /// Files with uncommitted changes, committed before merging.
+    pub uncommitted: u32,
+    /// What the merge changes on `target`.
+    pub files: Vec<FileChange>,
+    /// Paths both branches changed in ways git cannot combine.
+    pub conflicts: Vec<String>,
+    /// `target` only moves forward; no merge commit is needed.
+    pub fast_forward: bool,
+    /// The new tip of `target` once merged.
+    pub merged: Option<String>,
 }
 
 /// A path that more than one thread's worktree changed.

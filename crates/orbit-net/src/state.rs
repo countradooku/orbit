@@ -86,8 +86,13 @@ impl Timeline {
             (ItemBody::Assistant { text } | ItemBody::Reasoning { text }, Delta::Text(d) | Delta::Reasoning(d)) => {
                 text.push_str(d)
             }
-            (ItemBody::Tool(call), Delta::ToolOutput(d)) => call.output.push_str(d),
-            (ItemBody::Tool(call), Delta::ToolInput(d)) => call.input.push_str(d),
+            // The same tail rule as the engine, so both hold the same text.
+            (ItemBody::Tool(call), Delta::ToolOutput(d)) => append_output_tail(&mut call.output, d),
+            (ItemBody::Tool(call), Delta::ToolInput(d)) => {
+                if call.input.len() < INLINE_OUTPUT {
+                    call.input.push_str(d);
+                }
+            }
             _ => return None,
         }
         self.revision += 1;
@@ -123,6 +128,8 @@ pub struct Changes {
     pub exited_terminals: Vec<(TermId, Option<i32>)>,
     /// Timelines that finished loading in this batch.
     pub loaded: Vec<ThreadId>,
+    /// Composers whose saved draft changed.
+    pub drafts: HashSet<DraftTarget>,
 }
 
 impl Changes {
@@ -142,6 +149,7 @@ impl Changes {
             && self.terminals.is_empty()
             && self.exited_terminals.is_empty()
             && self.loaded.is_empty()
+            && self.drafts.is_empty()
     }
 
     /// The shell (sidebar, inbox, fleet) needs a render.
@@ -172,6 +180,8 @@ pub struct ClientState {
     pub live_usage: HashMap<ThreadId, Usage>,
     /// Working-tree changes of threads with a watched workspace.
     pub workspace: HashMap<ThreadId, Vec<FileChange>>,
+    /// Unsent messages saved on the host, per composer.
+    pub drafts: HashMap<DraftTarget, Draft>,
     timelines: HashMap<ThreadId, Timeline>,
     /// Timelines being fetched: the reply and the stream are separate
     /// channels, so events are held until both the reply and its mark have
@@ -284,6 +294,7 @@ impl ClientState {
                     self.threads = snapshot.threads.into_iter().map(|t| (t.id, t)).collect();
                     self.providers = snapshot.providers;
                     self.defaults = snapshot.defaults;
+                    self.drafts = snapshot.drafts.into_iter().collect();
                     self.settings = *snapshot.settings;
                     self.live_usage.clear();
                     // Open timelines may be stale; the UI refetches them.
@@ -340,6 +351,7 @@ impl ClientState {
                 self.threads.remove(&id);
                 self.timelines.remove(&id);
                 self.live_usage.remove(&id);
+                self.drafts.remove(&DraftTarget::Thread(id));
                 changes.removed_threads.insert(id);
             }
             Event::ItemUpserted { thread, item } => {
@@ -385,6 +397,14 @@ impl ClientState {
             Event::TerminalOutput { term, data } => changes.terminals.push((term, data)),
             Event::TimelineMark { .. } => {}
             Event::TerminalExited { term, code } => changes.exited_terminals.push((term, code)),
+            Event::DraftSaved { target, draft } => {
+                if draft.is_empty() {
+                    self.drafts.remove(&target);
+                } else {
+                    self.drafts.insert(target, draft);
+                }
+                changes.drafts.insert(target);
+            }
         }
     }
 }

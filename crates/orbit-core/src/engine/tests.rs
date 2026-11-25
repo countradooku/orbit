@@ -8,6 +8,8 @@ use orbit_proto::*;
 use super::*;
 use crate::provider::{AgentEvent, BlockKind, SessionHandle, SessionInput, SessionSpec, TurnOutcome};
 
+mod review;
+
 /// A fake agent whose behavior is chosen by the prompt text:
 /// `ask` raises an approval, `crash` exits mid-turn, `slow` streams until
 /// interrupted, anything else answers `echo: <text>`.
@@ -76,6 +78,24 @@ fn fake_launcher() -> Launcher {
                                     }
                                 }
                             }
+                            "stuck" => {
+                                // Ignores Stop; only shutting it down ends it.
+                                emit(AgentEvent::Delta { block: block.clone(), kind: BlockKind::Text, text: "busy".into() });
+                                while let Ok(msg) = rx.recv().await {
+                                    if matches!(msg, SessionInput::Shutdown) {
+                                        return;
+                                    }
+                                }
+                            }
+                            t if (t.starts_with("flaky") || t.starts_with("limited")) && first_time(t) => {
+                                let outcome = if t.starts_with("flaky") {
+                                    TurnOutcome::Failed { message: "The model is overloaded.".into() }
+                                } else {
+                                    TurnOutcome::RateLimited { resets_ms: 0 }
+                                };
+                                emit(AgentEvent::BlockDone { block: block.clone(), kind: BlockKind::Text, text: "partial".into() });
+                                emit(AgentEvent::TurnFinished { outcome, usage: Usage::default(), duration_ms: 1 });
+                            }
                             _ => {
                                 for piece in ["echo", ": ", &text] {
                                     emit(AgentEvent::Delta { block: block.clone(), kind: BlockKind::Text, text: piece.to_string() });
@@ -93,6 +113,18 @@ fn fake_launcher() -> Launcher {
         });
         SessionHandle { input }
     })
+}
+
+/// True the first time a prompt is seen in this test process; prompts are
+/// unique per test, so parallel tests do not interfere.
+fn first_time(prompt: &str) -> bool {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap();
+    if seen.iter().any(|p| p == prompt) {
+        return false;
+    }
+    seen.push(prompt.to_owned());
+    true
 }
 
 fn finish(emit: &impl Fn(AgentEvent)) {
@@ -708,4 +740,232 @@ fn a_second_account_runs_with_its_own_config_dir_and_hands_off() {
     assert!(last.resume.is_none(), "another account cannot resume the first one's session");
     let first = specs.iter().find(|s| s.thread == id).unwrap();
     assert!(!first.env.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"));
+}
+
+#[test]
+fn drafts_persist_across_restarts_and_go_with_their_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let h = Harness::open(dir.path().to_owned());
+        id = h.new_thread();
+        let draft = Draft { text: "Half a thought".into(), ..Default::default() };
+        h.call(Command::SaveDraft { target: DraftTarget::Thread(id), draft });
+        h.call(Command::SaveDraft { target: DraftTarget::Home, draft: Draft { text: "Next idea".into(), ..Default::default() } });
+        h.engine.shutdown();
+    }
+    let h = Harness::open(dir.path().to_owned());
+    let snapshot = h.engine.subscribe(0, 0).recv().unwrap().snapshot.unwrap();
+    let drafts: std::collections::HashMap<DraftTarget, Draft> = snapshot.drafts.into_iter().collect();
+    assert_eq!(drafts[&DraftTarget::Thread(id)].text, "Half a thought");
+    assert!(drafts[&DraftTarget::Thread(id)].updated_ms > 0);
+    assert_eq!(drafts[&DraftTarget::Home].text, "Next idea");
+
+    // Saving the same text again is free; clearing removes it.
+    let sub = h.engine.subscribe(0, 0).recv().unwrap();
+    h.call(Command::SaveDraft { target: DraftTarget::Home, draft: Draft { text: "Next idea".into(), ..Default::default() } });
+    h.call(Command::SaveDraft { target: DraftTarget::Home, draft: Draft::default() });
+    std::thread::sleep(Duration::from_millis(50));
+    let mut saved = Vec::new();
+    while let Ok(env) = sub.events.try_recv() {
+        if let Event::DraftSaved { target, draft } = env.event {
+            saved.push((target, draft.text));
+        }
+    }
+    assert_eq!(saved, vec![(DraftTarget::Home, String::new())]);
+
+    h.call(Command::DeleteThread { id });
+    let snapshot = h.engine.subscribe(0, 0).recv().unwrap().snapshot.unwrap();
+    assert!(snapshot.drafts.is_empty());
+    let gone = h.engine.call(Command::SaveDraft { target: DraftTarget::Thread(id), draft: Draft::default() }).recv().unwrap();
+    assert!(gone.is_err());
+}
+
+#[test]
+fn file_mentions_search_the_project_fuzzily_and_respect_gitignore() {
+    let h = Harness::new();
+    let project_dir = tempfile::tempdir().unwrap();
+    for file in ["src/engine/files.rs", "src/engine/orchestrator.rs", "README.md", "target/debug/files.rs"] {
+        let path = project_dir.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "x").unwrap();
+    }
+    std::fs::write(project_dir.path().join(".gitignore"), "target/\n").unwrap();
+    let Reply::Project(project) = h.call(Command::AddProject { path: project_dir.path().display().to_string() }) else { panic!() };
+    let search = |query: &str| match h.call(Command::SearchFiles { thread: None, project: Some(project), query: query.into(), limit: 10 }) {
+        Reply::Files(files) => files,
+        other => panic!("{other:?}"),
+    };
+    let hits = search("files");
+    assert_eq!(hits[0], FileMatch { path: "src/engine/files.rs".into(), is_dir: false });
+    assert!(hits.iter().all(|m| !m.path.starts_with("target")), "ignored files stay out: {hits:?}");
+    let hits = search("eng/");
+    assert_eq!(hits[0], FileMatch { path: "src/engine/".into(), is_dir: true });
+    assert!(search("zzzz").is_empty());
+    // A thread searches its own workspace.
+    let Reply::Thread(thread) =
+        h.call(Command::CreateThread { project: Some(project), config: ThreadConfig::default(), worktree: false })
+    else {
+        panic!()
+    };
+    let Reply::Files(hits) = h.call(Command::SearchFiles { thread: Some(thread), project: None, query: "readme".into(), limit: 5 }) else {
+        panic!()
+    };
+    assert_eq!(hits[0].path, "README.md");
+}
+
+#[test]
+fn a_thread_exports_as_a_readable_digest() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "explain the parser");
+    h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+    let Reply::Blob(attachment) = h.call(Command::ExportThread { thread: id }) else { panic!() };
+    assert_eq!(attachment.mime, THREAD_DIGEST_MIME);
+    assert!(attachment.name.starts_with("thread-explain-the-parser"));
+    // The digest is an ordinary attachment another thread can send.
+    let other = h.new_thread();
+    h.call(Command::Send { thread: other, text: "read this".into(), attachments: vec![attachment], steer: false });
+    h.wait("second thread's turn", |h| h.thread(other).turns == 1);
+}
+
+#[test]
+fn queued_messages_reorder_and_send_ahead() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "slow");
+    h.wait("slow turn to start", |h| h.thread(id).status == ThreadStatus::Running);
+    for text in ["first", "second", "third"] {
+        h.send(id, text);
+    }
+    h.wait("three queued", |h| h.thread(id).queued == 3);
+    let queued = |h: &Harness| {
+        let mut items: Vec<&Item> = h.items.values().filter(|i| i.status == ItemStatus::Queued).collect();
+        items.sort_by_key(|i| i.id);
+        items
+            .iter()
+            .map(|i| match &i.body {
+                ItemBody::User(m) => (i.id, m.text.clone()),
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let third = queued(&h)[2].0;
+    h.call(Command::MoveQueued { thread: id, item: third, to: 0 });
+    h.wait("third moved first", |h| queued(h).iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>() == ["third", "first", "second"]);
+    assert_eq!(queued(&h)[0].0, third, "the moved message keeps its id");
+
+    // Send "first" into the running turn now.
+    let first = queued(&h)[1].0;
+    h.call(Command::SteerQueued { thread: id, item: first });
+    h.wait("first steered", |h| {
+        h.thread(id).queued == 2
+            && h.items.values().any(|i| matches!(&i.body, ItemBody::User(m) if m.text == "first" && m.steer) && i.status == ItemStatus::Done)
+    });
+    // The rest run in the new order once the turn ends.
+    h.call(Command::Interrupt { thread: id });
+    h.wait("queue drained", |h| h.thread(id).queued == 0 && h.thread(id).turns == 3 && h.thread(id).status == ThreadStatus::Idle);
+    assert_eq!(h.texts(2), vec!["user: third", "agent: echo: third"]);
+    assert_eq!(h.texts(3), vec!["user: second", "agent: echo: second"]);
+}
+
+#[test]
+fn sent_messages_cannot_be_moved_or_sent_again() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "slow");
+    h.wait("running", |h| h.thread(id).status == ThreadStatus::Running);
+    h.send(id, "later");
+    h.wait("queued", |h| h.thread(id).queued == 1);
+    let item = h.items.values().find(|i| i.status == ItemStatus::Queued).unwrap().id;
+    assert!(h.engine.call(Command::MoveQueued { thread: id, item: ItemId(1), to: 0 }).recv().unwrap().is_err());
+    h.call(Command::SteerQueued { thread: id, item });
+    h.wait("steered", |h| h.thread(id).queued == 0);
+    let again = h.engine.call(Command::SteerQueued { thread: id, item }).recv().unwrap();
+    assert!(again.is_err());
+}
+
+#[test]
+fn messages_over_the_limit_are_refused() {
+    let h = Harness::new();
+    let id = h.new_thread();
+    let long = "a".repeat(MAX_MESSAGE_CHARS + 1);
+    let result = h.engine.call(Command::Send { thread: id, text: long, attachments: vec![], steer: false }).recv().unwrap();
+    assert!(result.unwrap_err().contains("over the 120,000 limit"));
+}
+
+impl Harness {
+    /// The turn-end records of `turn`, in order.
+    fn turn_ends(&self, turn: u32) -> Vec<TurnSummary> {
+        let mut items: Vec<&Item> = self.items.values().filter(|i| i.turn == turn).collect();
+        items.sort_by_key(|i| i.id);
+        items
+            .iter()
+            .filter_map(|i| match &i.body {
+                ItemBody::TurnEnd(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_failed_turn_retries_under_the_same_number_and_keeps_the_failed_attempt() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "flaky-retry");
+    h.wait("failure", |h| matches!(h.thread(id).status, ThreadStatus::Failed { .. }));
+    let err = h.engine.call(Command::Send { thread: id, text: String::new(), attachments: vec![], steer: false });
+    assert!(err.recv().unwrap().is_err());
+    h.call(Command::Retry { thread: id });
+    h.wait("retried turn", |h| h.thread(id).status == ThreadStatus::Idle && h.turn_ends(1).len() == 2);
+    assert_eq!(h.thread(id).turns, 1, "a retry is the same turn, not a new one");
+    // The message is shown once; both attempts' replies stay, in order.
+    assert_eq!(h.texts(1), vec!["user: flaky-retry", "agent: partial", "agent: echo: flaky-retry"]);
+    // Only failed turns can be retried.
+    let again = h.engine.call(Command::Retry { thread: id }).recv().unwrap();
+    assert!(again.unwrap_err().contains("failed"));
+}
+
+#[test]
+fn a_rate_limited_turn_can_be_retried_now() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "limited-now");
+    h.wait("limit", |h| matches!(h.thread(id).status, ThreadStatus::RateLimited { .. }));
+    h.call(Command::Retry { thread: id });
+    h.wait("retried turn", |h| h.thread(id).status == ThreadStatus::Idle && h.turn_ends(1).len() == 2);
+    assert_eq!(h.texts(1).last().unwrap(), "agent: echo: limited-now");
+}
+
+#[test]
+fn force_stop_ends_a_turn_the_agent_will_not_stop() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "stuck");
+    h.wait("turn to start", |h| h.thread(id).status == ThreadStatus::Running);
+    h.call(Command::Interrupt { thread: id });
+    std::thread::sleep(Duration::from_millis(50));
+    h.wait("stop to be ignored", |h| h.thread(id).status == ThreadStatus::Running);
+    h.call(Command::ForceStop { thread: id });
+    h.wait("forced stop", |h| h.thread(id).status == ThreadStatus::Idle && !h.turn_ends(1).is_empty());
+    assert!(h.turn_ends(1)[0].interrupted);
+    // The thread takes the next message on a fresh process.
+    h.send(id, "after");
+    h.wait("next turn", |h| h.thread(id).turns == 2 && h.thread(id).status == ThreadStatus::Idle);
+    assert_eq!(h.texts(2), vec!["user: after", "agent: echo: after"]);
+}
+
+#[test]
+fn blobs_read_back_and_bad_hashes_are_refused() {
+    let h = Harness::new();
+    let data = b"full output".to_vec();
+    let Reply::Blob(blob) = h.call(Command::PutBlob { name: "out.txt".into(), mime: "text/plain".into(), data: data.clone() })
+    else {
+        panic!()
+    };
+    assert_eq!(h.call(Command::ReadBlob { hash: blob.hash }), Reply::Bytes(data));
+    for bad in ["../token", "", &"z".repeat(64)] {
+        assert!(h.engine.call(Command::ReadBlob { hash: bad.into() }).recv().unwrap().is_err(), "{bad}");
+    }
 }

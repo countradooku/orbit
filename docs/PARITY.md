@@ -574,33 +574,33 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | Feature | T3 reference | Orbit status | Orbit location | Better than T3 | Pri |
 |---|---|---|---|---|---|
 | Review panel beside the thread | web/components/DiffPanel.tsx | Done | app/review.rs:191, app/actions.rs:34 | Resizable sheet (Ctrl+R). | P0 |
-| Scope: Changes (branch against a base ref) | web/diffPanelStore.ts | Partial | proto/wire.rs:108 (`DiffScope::Base`), core/git/diff.rs:86 | Engine supports it; the UI offers only Last turn, Whole thread, Uncommitted (app/review.rs:30). | P0 |
+| Scope: Changes (branch against a base ref) | web/diffPanelStore.ts | Done | app/review/mod.rs (`Scope::Branch`), core/git/diff.rs | Any local or remote branch from a searchable picker, defaulting to the project's base. | P0 |
 | Scope: Uncommitted | web/components/DiffPanel.tsx | Done | app/review.rs:30, core/git/diff.rs:86 | | P0 |
 | Scope: Latest turn | web/components/DiffPanel.tsx | Done | app/review.rs:43, core/engine/orchestrator.rs:219 | | P0 |
-| Scope: any earlier turn (Turn ▸ submenu) | web/components/DiffPanel.tsx:983-1060 | Partial | core/engine/orchestrator.rs:180, :219 | Engine diffs any turn; UI only the last. Emdash #1635 "diff since last turn". | P1 |
+| Scope: any earlier turn (Turn ▸ submenu) | web/components/DiffPanel.tsx:983-1060 | Done | app/review/mod.rs (`render_turn_picker`), proto/wire.rs (`DiffScope::SinceTurn`) | Every turn labelled with its prompt, plus "Include later turns" (a turn and everything since, Emdash #1635). Follows the latest turn until another is picked. | P1 |
 | Scope: one local commit (merge commits against first parent) | review/ReviewService.ts | Missing | | | P2 |
 | Scope: one tool call's diff, opened from the timeline | web/components/chat/useRightPanelActions.ts:312 | Missing | | | P1 |
 | Scope persisted per thread | web/diffPanelStore.ts | Missing | | Keep it with the thread on the host; T3 leaks entries for archived threads (§1 C bugs). | P2 |
 | Whole-thread diff | `getFullThreadDiff` | Done | app/review.rs:44, core/engine/orchestrator.rs:223 | | P0 |
 | One patch per tracked repository (multi-repo) | ct/checkpointDiff.ts | Missing | | | P2 |
 | Turn diff leaves out files brought in by pull / merge / rebase | checkpointing/CheckpointDiffQuery.ts (`listAuthoredPaths`) | Missing | | | P2 |
-| Base-ref picker ("Comparing {head} against {base}", use remote version) | web/lib/baseRefChoices.ts | Missing | | Claude #23626 (144 reactions): diff against branches other than main. | P1 |
+| Base-ref picker ("Comparing {head} against {base}", use remote version) | web/lib/baseRefChoices.ts | Done | app/review/mod.rs (`load_branches`) | "Comparing orbit/x with main"; remote branches (`origin/main`) are in the same list. | P1 |
 | Repository picker (multi-repo threads) | web/components/DiffPanel.tsx:1184-1220 | Missing | | | P2 |
 | Split / unified toggle | web/components/DiffPanel.tsx | Done | app/review.rs:141 | | P0 |
-| Line wrap toggle | web/components/DiffPanel.tsx | Missing | | Cursor 3 lacks wrap in diffs (forum complaint). | P1 |
+| Line wrap toggle | web/components/DiffPanel.tsx | Done | app/review/mod.rs (View menu, Alt+Z) | | P1 |
 | Hide whitespace toggle | web/components/DiffPanel.tsx | Missing | | | P2 |
-| Hide test files | sh/changedFileKind | Missing | | | P2 |
-| File tree (folders, +/− stats, reveal file) | web/components/diffs/DiffFileTree.tsx | Missing | app/review.rs:130 | Only a total "n files +a −d". | P1 |
-| Refresh and throttled live refresh | web/components/DiffPanel.tsx (`useLiveRefresh`) | Partial | app/review.rs:49, :96 | Reloads on scope change and after a revert; the file watcher (core/git/watch.rs) is not wired. | P1 |
-| Collapse / expand all files | web/components/DiffPanel.tsx | Missing | | | P2 |
+| Hide test files | sh/changedFileKind | Done | app/review/model.rs (`is_test_file`) | Conventions across languages, unit-tested. | P2 |
+| File tree (folders, +/− stats, reveal file) | web/components/diffs/DiffFileTree.tsx | Done | app/review/mod.rs (`render_tree_panel`), app/review/model.rs | Filterable, keyboard-driven (arrows; Alt+Up/Down walk files from the diff), single-child folders merged, status letter, counts, reviewed and overlap marks; clicking a diff line selects its file. | P1 |
+| Refresh and throttled live refresh | web/components/DiffPanel.tsx (`useLiveRefresh`) | Done | core/engine/review.rs, app/review/mod.rs (`refresh_live`) | One watcher per repository shared by open threads; a change costs one `git status`; the sheet reloads at most every 400 ms, skips identical patches and keeps the line under the pointer. | P1 |
+| Collapse / expand all files | web/components/DiffPanel.tsx | Done | app/review/mod.rs (View menu) | Reviewed files collapse on their own. | P2 |
 | Scroll position restored per scope | web/components/diffs/useCodeViewScrollRestore.ts | Missing | | | P2 |
-| Highlighted rendering, lazy large files, expandable context | web/components/DiffWorkerPoolProvider.tsx, StyledDiffCodeView.tsx | Partial | app/review.rs:169, core/git/diff.rs:62 | One `git diff` for all files, cached by tree id (T3: ~1,650 git processes for 272 files, #40182; 28 fps on large diffs, #42438). Lazy loading and context expansion not verified. | P0 |
-| Review comments sent to the agent (select lines, comment, chips with next message) | web/reviewCommentContext.ts, web/components/diffs/AnnotatableCodeView.tsx | Missing | | Promised by docs/DESIGN.md. | P1 |
-| Whole-file comments | `buildFileReviewComment` | Missing | | | P2 |
-| File actions (open in preview or editor, reveal, open with, copy path) | web/diffFileActions.ts | Missing | | | P1 |
+| Highlighted rendering, lazy large files, expandable context | web/components/DiffWorkerPoolProvider.tsx, StyledDiffCodeView.tsx | Done | app/review/mod.rs, core/git/diff.rs | One `git diff` for all files, parsed off the UI thread; tree-sitter highlighting (12 languages); one virtualized list with expandable context. 802 files / 49,609 changed lines: fetch and parse 290 ms, shown in 3 ms; wheel scrolling p99 13.6 ms, no frame over 18 ms (docs/BENCHMARKS.md). | P0 |
+| Review comments sent to the agent (select lines, comment, chips with next message) | web/reviewCommentContext.ts, web/components/diffs/AnnotatableCodeView.tsx | Done | app/review/mod.rs (`send_comments`), app/review/model.rs (`comments_message`) | Comments stay with the thread across sheet opens and go as one follow-up with `path:line`, the quoted diff and the note (queued if the agent is busy). Not yet chips in the composer (WP6). | P1 |
+| Whole-file comments | `buildFileReviewComment` | Done | app/review/mod.rs (file menu) | | P2 |
+| File actions (open in preview or editor, reveal, open with, copy path) | web/diffFileActions.ts | Partial | app/review/mod.rs (`file_menu`) | Open with the system, show in folder, copy path, revert file, comment; no editor picker yet (WP2). | P1 |
 | Commit links open in the diff pane | web/components/DiffPanel.tsx | Missing | | | P2 |
 | Settings → Diffs (default layout, ignore whitespace, collapsed files, proactive panels, open PRs in app) | web/components/settings/SettingsPanels.tsx:1709-1850 | Missing | | | P2 |
-| Diff colour scheme (red-green or colour-blind safe) | ct/settings.ts (`diffColorScheme`) | Missing | | Promised by docs/DESIGN.md; Codex users complain (HN). | P1 |
+| Diff colour scheme (red-green or colour-blind safe) | ct/settings.ts (`diffColorScheme`) | Done | app/review/mod.rs (`palette`) | Blue/orange from theme tokens for lines, word changes, tree and counts; signs keep +/− shapes. Session preference, not yet in Settings. | P1 |
 
 ### Checkpoints, revert, restore
 
@@ -611,9 +611,9 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | Nested repositories snapshotted as their own scopes | CheckpointService.ts:292 | Missing | | | P2 |
 | Diff size limit with `[truncated]` marker | vcs/VcsDriver.ts:43 | Missing | | Stream and virtualise instead of truncating at 10 MB. | P2 |
 | Revert and keep changes (rewind the chat only) | web/components/chat/ChatOverlayHosts.tsx:220-300 | Done | core/engine/orchestrator.rs:996 | Same as Edit from here. | P0 |
-| Revert files too (restore files from a turn's checkpoint) | web/components/chat/useTimelineRewind.ts | Partial | core/engine/orchestrator.rs:253, core/git/checkpoint.rs:162 | Engine command restores and keeps an undo point; no UI. T3 disables it outside isolated worktrees without saying why (§1 C bugs). | P0 |
+| Revert files too (restore files from a turn's checkpoint) | web/components/chat/useTimelineRewind.ts | Partial | app/review/dialogs.rs (`confirm_restore`, `edit_message`) | Review sheet: "Restore to before turn N…" names every file that changes. `edit_message` adds "Restore files too" to edit-and-resend; the thread view (WP5) still has to call it. Works outside worktrees. | P0 |
 | Revert repositories too (multi-repo, all-or-nothing) | CheckpointService.ts:821-900 | Missing | | | P2 |
-| Undo a restore | (not in T3) | Partial | core/git/checkpoint.rs:185 | Library only. Zed's restore is "irreversibly destructive" (#28676). | P1 |
+| Undo a restore | (not in T3) | Done | core/engine/review.rs (`UndoRestore`), app/review/dialogs.rs | Undo in the notification and the sheet's menu; undoing again swaps back. | P1 |
 | Branch-changed banner with "Restore branch" | web/components/chat/ThreadActivityBanners.tsx:300-350 | Missing | | | P1 |
 | Checkpoint refs deleted when no longer needed | `deleteCheckpointRefs` | Partial | core/engine/orchestrator.rs:729-737, core/git/checkpoint.rs:93, :131 | Removed on thread delete; `prune` and `prune_orphans` exist but nothing calls them. | P1 |
 
@@ -944,13 +944,13 @@ Not T3 features, so they are not in the counts above, but the design commits to 
 | Inbox: every request, failure, quota wait and result across threads, answerable in place | Done | app/inbox.rs:1-181 | Questions and plans still open the thread. |
 | Fleet status board | Done | app/fleet.rs:1-147 | No subagent nesting, branch, diff size or conflicts columns yet. |
 | Per-file revert | Done | app/review.rs:79-100 | |
-| Per-hunk revert | Partial | proto/diff.rs:536, core/git/checkpoint.rs:200 | Engine and patch builder exist; review UI reverts whole files only. |
-| Conflict detection between live worktrees | Partial | core/git/conflicts.rs:32, proto/wire.rs:70 | Library only; nothing emits `Conflicts`. |
+| Per-hunk revert | Done | app/review/mod.rs (`revert_hunk`), proto/diff.rs (`invert_patch`) | From each hunk's marker; every hunk or file revert can be undone. |
+| Conflict detection between live worktrees | Done | core/engine/review.rs (`schedule_conflicts`) | Emitted when overlap changes; shown in the review sheet, its tree and the merge dialog. |
 | Unique port block per worktree (`PORT`, `ORBIT_PORT_BASE`) | Partial | core/git/worktree.rs:101, core/engine/orchestrator.rs:890-892 | Exported when set; never set without worktrees. |
 | `.worktreeinclude` copies `.env` and untracked files | Partial | core/git/worktree.rs:5-7 | Library only. |
 | Worktree disk usage | Partial | core/git/worktree.rs:412 | Library only. |
-| Merge locally without a PR | Missing | | |
-| Undo a checkpoint restore | Partial | core/git/checkpoint.rs:185 | Library only. |
+| Merge locally without a PR | Done | core/git/merge.rs, core/engine/review.rs, app/review/dialogs.rs (`merge`) | Preview with `merge-tree` (no side effects), conflicts refused before anything is committed, the target's checkout follows. |
+| Undo a checkpoint restore | Done | core/engine/review.rs | |
 
 ## F. T3 Code's known bugs: does Orbit avoid them?
 
@@ -972,7 +972,7 @@ Not T3 features, so they are not in the counts above, but the design commits to 
 | `/side` while side chat is disabled fails silently | Not yet | No slash menu. |
 | Provider's raw `/clear` reappears and clears a session T3 thinks is live | Yes | `/clear`, `/new` and `/reset` start a fresh session in the same thread and never reach the agent (core/engine/sessions.rs). |
 | `followUpBehavior` defaults to steer, which waits for tools on Claude | Yes | Enter queues by default; steering is explicit (app/composer.rs:108). |
-| "Revert files too" disabled outside isolated worktrees without explanation | Partly | Engine restore works in any repository and keeps an undo point (core/git/checkpoint.rs:162-200), but there is no UI yet. |
+| "Revert files too" disabled outside isolated worktrees without explanation | Yes | Restore works in any repository, names what changes and can be undone (app/review/dialogs.rs). |
 | Slow workspace loses its turn baseline after a 5 s budget | Partly | No budget, so the baseline is never skipped; but the first prompt is held until the snapshot finishes with no timeout (core/engine/orchestrator.rs:933-947), so a pathological repo can hold the turn indefinitely. |
 | Large diffs cut at 10 MB with only a `[truncated]` marker | Partly | No truncation; also no cap, so a huge diff is held in memory. |
 | Diff-panel state leaks for archived threads | Yes | Review state is not persisted per thread. |
@@ -1002,7 +1002,7 @@ Not T3 features, so they are not in the counts above, but the design commits to 
 | #42338 palette cache misses per keystroke | Yes | Palette items built once per open (app/palette.rs:25-58). |
 | #440, #12689 multi-second transitions and typing lag | Yes | Native GPUI; a token re-renders one row (app/thread/mod.rs:133-164). |
 | #30657, #28489 skill and slash menus lag with hundreds of skills | Not yet | No menu. |
-| #42438 diff scrolls at 28 fps | Partly | GPUI Kit diff view; not benchmarked. |
+| #42438 diff scrolls at 28 fps | Yes | 802-file, 49,609-line review: normal wheel scrolling never drops below 60 fps (p99 13.6 ms); a 3× fling has p50 7–8 ms, p95 24 ms (docs/BENCHMARKS.md). |
 | #996 crash on a heavy thread, fixed only by deleting `~/.t3` | Partly | CRC-framed logs truncate torn records on recovery (proto/lib.rs:13-15); no crash-loop guard. |
 | #20366, #12372, #26338, #26385, #30515 scroll anchoring and "scroll to end" pill regressions | Partly | Message scroller follows the tail and appends without resetting (app/thread/mod.rs:204-219); no pill and no tests for scroll-up during a turn. |
 | #12094 rows overlap while a tool group streams | Yes | Each updated row is remeasured (app/thread/mod.rs:149-161). |

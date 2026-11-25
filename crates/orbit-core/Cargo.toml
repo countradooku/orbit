@@ -23,6 +23,7 @@ similar = { workspace = true }
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 parking_lot = { workspace = true }
+ignore = "0.4"
 # HTTPS for the Linear and Jira APIs: the hyper and rustls (ring) stack GPUI
 # Kit already links for its own HTTP client, so the app gains no new crates;
 # async on the engine's runtime, no thread per request.

@@ -20,7 +20,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crossfire::{AsyncRx, Tx, spsc};
+use crossfire::{MAsyncRx, MTx, mpmc};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -70,7 +70,7 @@ impl Changes {
 
 /// A live watch. Dropping it stops the watcher and its debounce thread.
 pub struct RepoWatcher {
-    rx: AsyncRx<spsc::Array<Changes>>,
+    rx: MAsyncRx<mpmc::Array<Changes>>,
     root: PathBuf,
     ignored: Arc<Mutex<Vec<PathBuf>>>,
     _watcher: RecommendedWatcher,
@@ -86,8 +86,9 @@ impl RepoWatcher {
         self.rx.try_recv().ok()
     }
 
-    /// The underlying crossfire receiver, for `select!`-style use.
-    pub fn receiver(&self) -> &AsyncRx<spsc::Array<Changes>> {
+    /// The underlying crossfire receiver, for `select!`-style use. It is
+    /// `Sync`, so a task can await it and still be sent across threads.
+    pub fn receiver(&self) -> &MAsyncRx<mpmc::Array<Changes>> {
         &self.rx
     }
 
@@ -122,7 +123,7 @@ pub fn watch_with(path: &Path, opts: WatchOptions) -> Result<RepoWatcher> {
             }
         }
 
-    let (tx, rx) = spsc::bounded_blocking_async::<Changes>(4);
+    let (tx, rx) = mpmc::bounded_blocking_async::<Changes>(4);
     let ignored = Arc::new(Mutex::new(Vec::new()));
     let filter = Filter { root: root.clone(), extra_git_dir, ignored: ignored.clone() };
     std::thread::Builder::new()
@@ -151,7 +152,10 @@ impl Filter {
     fn classify(&self, path: &Path) -> Verdict {
         if let Some(dir) = &self.extra_git_dir
             && let Ok(rel) = path.strip_prefix(dir) {
-                return if rel == Path::new("HEAD") { Verdict::GitRefs } else { Verdict::Ignore };
+                // A commit in a linked worktree moves a ref in the main
+                // repository's git dir, which is not watched; it does
+                // rewrite this worktree's index, so that counts too.
+                return if rel == Path::new("HEAD") || rel == Path::new("index") { Verdict::GitRefs } else { Verdict::Ignore };
             }
         let Ok(rel) = path.strip_prefix(&self.root) else { return Verdict::Ignore };
         let mut comps = rel.components();
@@ -177,7 +181,7 @@ impl Filter {
 
 fn debounce_loop(
     raw: mpsc::Receiver<notify::Result<notify::Event>>,
-    tx: Tx<spsc::Array<Changes>>,
+    tx: MTx<mpmc::Array<Changes>>,
     filter: Filter,
     opts: WatchOptions,
 ) {
