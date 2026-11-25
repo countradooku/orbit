@@ -5,8 +5,9 @@
 //! logged, replayed events to every client, and tokens must not. The file
 //! is written atomically and is readable by the user only.
 //!
-//! Layout: one version byte, then bitcode. Version 1 held the tracker
-//! settings alone; version 2 holds both. Unknown versions read as empty.
+//! Layout: one version byte, then the payload. Version 1 held the tracker
+//! settings alone and version 2 both, in bitcode; version 3 holds both in
+//! Orbit's wire format. Unknown versions read as empty.
 
 use std::path::Path;
 
@@ -15,6 +16,7 @@ use orbit_proto::*;
 pub(crate) const FILE: &str = "integrations.bin";
 const V1: u8 = 1;
 const V2: u8 = 2;
+const V3: u8 = 3;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Integrations {
@@ -24,15 +26,18 @@ pub(crate) struct Integrations {
 
 pub(crate) fn load(path: &Path) -> Integrations {
     let Ok(bytes) = std::fs::read(path) else { return Integrations::default() };
-    let unreadable = |e: bitcode::Error| {
+    let unreadable = |e: FrameError| {
         log::warn!("{}: unreadable ({e}); starting empty", path.display());
         Integrations::default()
     };
     match bytes.split_first() {
-        Some((&V1, rest)) => bitcode::decode::<IntegrationSettings>(rest)
+        Some((&V1, rest)) => bitcode_decode::<IntegrationSettings>(rest)
             .map(|forge| Integrations { forge, bots: BotSecrets::default() })
             .unwrap_or_else(unreadable),
-        Some((&V2, rest)) => bitcode::decode::<(IntegrationSettings, BotSecrets)>(rest)
+        Some((&V2, rest)) => bitcode_decode::<(IntegrationSettings, BotSecrets)>(rest)
+            .map(|(forge, bots)| Integrations { forge, bots })
+            .unwrap_or_else(unreadable),
+        Some((&V3, rest)) => decode::<(IntegrationSettings, BotSecrets)>(rest)
             .map(|(forge, bots)| Integrations { forge, bots })
             .unwrap_or_else(unreadable),
         _ => Integrations::default(),
@@ -40,8 +45,8 @@ pub(crate) fn load(path: &Path) -> Integrations {
 }
 
 pub(crate) fn save(path: &Path, integrations: &Integrations) -> std::io::Result<()> {
-    let mut bytes = vec![V2];
-    bytes.extend(bitcode::encode(&(integrations.forge.clone(), integrations.bots.clone())));
+    let mut bytes = vec![V3];
+    encode_into(&(integrations.forge.clone(), integrations.bots.clone()), &mut bytes);
     let tmp = path.with_extension("bin.tmp");
     {
         use std::io::Write as _;

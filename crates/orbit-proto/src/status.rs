@@ -21,6 +21,7 @@ use crate::model::*;
 
 /// Where a status comes from, strongest first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Evidence {
     /// The agent's structured protocol: a thread's own session.
     #[default]
@@ -43,6 +44,7 @@ impl Evidence {
 
 /// How fresh the evidence behind a thread's status is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Liveness {
     /// Signals arrive as expected, or nothing is running.
     #[default]
@@ -59,6 +61,7 @@ pub enum Liveness {
 /// What a thread's agents are doing right now, beyond its durable status.
 /// Ephemeral: sent as [`crate::Event::ThreadLive`] and in the snapshot.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ThreadLive {
     /// Freshness of the thread's own session during a turn.
     pub liveness: Liveness,
@@ -78,6 +81,7 @@ impl ThreadLive {
 /// An agent running in an Orbit terminal (`claude`, `codex`, `gemini`…
 /// typed at a shell prompt), as Orbit sees it.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct TerminalAgent {
     pub term: TermId,
     /// `claude`, `codex`, `gemini`…; empty when an agent reported status
@@ -96,6 +100,7 @@ pub struct TerminalAgent {
 
 /// The state of a terminal agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum AgentState {
     Working,
     /// Blocked on the user.
@@ -110,6 +115,7 @@ pub enum AgentState {
 
 /// What a blocked agent needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum NeedKind {
     /// Approve a command, an edit or a tool.
     Permission,

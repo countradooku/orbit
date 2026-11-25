@@ -49,6 +49,7 @@ macro_rules! id_type {
     ($(#[$doc:meta])* $name:ident, $prefix:literal) => {
         $(#[$doc])*
         #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, bitcode::Encode, bitcode::Decode)]
+        #[derive(wincode::SchemaWrite, wincode::SchemaRead)]
         pub struct $name(pub u64);
 
         impl $name {

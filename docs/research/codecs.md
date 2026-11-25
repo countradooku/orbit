@@ -56,13 +56,23 @@ shapes (token runs, `Done` replies) around bitcode's per-message cost. wincode
 would remove that cost for every other message too, including calls (4 µs →
 85 ns) and each durable log write (5 µs → 190 ns).
 
-## If Orbit switches
+## Decision (2026-11-25)
+
+Orbit switched to wincode (varint, `u8` tags) for the link and every file it
+writes: schema 5, protocol 9. On `orbit-bench`, cold start went from 9.6 to
+5.0 ms and opening a 3,000-item thread from 2.8 to 0.95 ms. One correction
+to the table above: it used small ids. Real thread and item ids are
+time-ordered `u64`s, nine bytes each as varints, so the link groups a run
+of tokens under their ids once (8 bytes per token in practice, against
+bitcode's 6.7).
+
+## What switching involved
 
 - Use the varint configuration with `u8` enum tags (no Orbit enum has more
   than 256 variants).
 - Raise wincode's preallocation limit, 4 MiB by default, to the frame limit
   (64 MiB): a long thread's timeline can exceed 4 MiB, and decoding would
-  fail.
+  fail. (`WireConfig` in `orbit_proto::codec`.)
 - Durable logs: a new schema version written with wincode; logs from older
   versions keep being read through bitcode in `legacy.rs`, and are rewritten
   once.

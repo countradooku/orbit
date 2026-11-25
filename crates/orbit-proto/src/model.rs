@@ -11,6 +11,7 @@ use crate::ids::*;
 /// A repository or folder the user works in. Always an existing local
 /// checkout: Orbit never clones or asks for a hosting account.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Project {
     pub id: ProjectId,
     pub name: String,
@@ -25,6 +26,7 @@ pub struct Project {
 /// Commands that prepare and clean up a worktree, and the project's run
 /// targets (dev servers, tests).
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ProjectScripts {
     pub setup: Option<String>,
     pub teardown: Option<String>,
@@ -32,6 +34,7 @@ pub struct ProjectScripts {
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct RunScript {
     pub name: String,
     pub command: String,
@@ -45,6 +48,7 @@ pub struct RunScript {
 /// frame, and logs written before this enum grew are read through
 /// [`crate::legacy`], so old data stays readable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ProviderKind {
     #[default]
     Claude,
@@ -101,6 +105,7 @@ impl ProviderKind {
 /// list: Claude Code describes its models in its `initialize` response and
 /// Codex in `model/list`, and the composer renders whatever comes back.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct OptionDescriptor {
     /// Stable id the provider adapter understands, e.g. `effort`.
     pub id: String,
@@ -110,6 +115,7 @@ pub struct OptionDescriptor {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum OptionKind {
     /// Pick one of `choices`.
     Select { choices: Vec<OptionChoice> },
@@ -118,6 +124,7 @@ pub enum OptionKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct OptionChoice {
     pub id: String,
     pub label: String,
@@ -127,12 +134,14 @@ pub struct OptionChoice {
 
 /// A chosen value for one [`OptionDescriptor`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct OptionValue {
     pub id: String,
     pub value: OptionSetting,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum OptionSetting {
     Choice(String),
     Toggle(bool),
@@ -173,6 +182,7 @@ pub fn humanize_id(id: &str) -> String {
 
 /// Whether the agent acts or first proposes a plan for approval.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Mode {
     #[default]
     Build,
@@ -181,6 +191,7 @@ pub enum Mode {
 
 /// What the agent may do without asking. New threads never start at `Full`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Access {
     Readonly,
     #[default]
@@ -205,6 +216,7 @@ impl Access {
 /// The model and behavior a thread runs with. The last used config becomes
 /// the default for the next thread.
 #[derive(Clone, Debug, PartialEq, Eq, Default, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ThreadConfig {
     pub provider: ProviderKind,
     /// Provider model slug; empty means the provider's default.
@@ -234,6 +246,7 @@ impl ThreadConfig {
 
 /// Where the thread's agent works.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Workspace {
     /// The checked-out branch, when known.
     pub branch: Option<String>,
@@ -246,6 +259,7 @@ pub struct Workspace {
 /// What a thread is doing. `Waiting` (on the user) is never shown like
 /// `Running`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ThreadStatus {
     #[default]
     Idle,
@@ -266,6 +280,7 @@ impl ThreadStatus {
 
 /// Token, cost and context accounting, cumulative for a thread or per turn.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -304,6 +319,7 @@ impl Usage {
 /// A conversation with one agent. Small: the timeline lives in its own log
 /// and is loaded only when the thread is opened.
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Thread {
     pub id: ThreadId,
     /// `None` for a scratch thread outside any project.
@@ -341,6 +357,7 @@ pub struct Thread {
 
 /// An unanswered request as the inbox shows it.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct PendingRequest {
     pub item: ItemId,
     pub request: AgentRequest,
@@ -349,6 +366,7 @@ pub struct PendingRequest {
 
 /// One entry of a thread's timeline.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Item {
     pub id: ItemId,
     pub turn: u32,
@@ -357,6 +375,7 @@ pub struct Item {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ItemStatus {
     Streaming,
     Done,
@@ -367,6 +386,7 @@ pub enum ItemStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ItemBody {
     User(UserMessage),
     Assistant { text: String },
@@ -384,6 +404,7 @@ pub enum ItemBody {
 /// The context handed to a new agent when a thread switches provider or
 /// account mid-conversation.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Handoff {
     /// Display names of the previous and the new instance.
     pub from: String,
@@ -399,6 +420,7 @@ pub struct Handoff {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct UserMessage {
     pub text: String,
     pub attachments: Vec<Attachment>,
@@ -408,6 +430,7 @@ pub struct UserMessage {
 
 /// A file or image the user attached, stored once by content hash.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Attachment {
     pub name: String,
     pub mime: String,
@@ -417,6 +440,7 @@ pub struct Attachment {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ToolKind {
     Command,
     Read,
@@ -465,6 +489,7 @@ fn tail_start(text: &str, max: usize) -> usize {
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ToolCall {
     /// The provider's id for the call, used to match its result.
     pub call_id: String,
@@ -483,6 +508,7 @@ pub struct ToolCall {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct FileChange {
     pub path: String,
     pub kind: ChangeKind,
@@ -491,6 +517,7 @@ pub struct FileChange {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ChangeKind {
     Added,
     Modified,
@@ -499,12 +526,14 @@ pub enum ChangeKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct PlanStep {
     pub text: String,
     pub state: StepState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum StepState {
     Pending,
     Active,
@@ -512,6 +541,7 @@ pub enum StepState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum NoticeLevel {
     Info,
     Warning,
@@ -520,6 +550,7 @@ pub enum NoticeLevel {
 
 /// Something the agent cannot continue without.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct AgentRequest {
     pub id: RequestId,
     /// The provider's id for the request, echoed back with the decision.
@@ -529,6 +560,7 @@ pub struct AgentRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum RequestKind {
     /// Run a shell command.
     Command { command: String, cwd: String, reason: String },
@@ -547,6 +579,7 @@ pub enum RequestKind {
 /// A suggested answer to a question: its label (what is sent back when it
 /// is chosen) and the agent's explanation of it, which may be empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct QuestionOption {
     pub label: String,
     pub description: String,
@@ -571,6 +604,7 @@ impl From<&str> for QuestionOption {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Decision {
     Allow,
     /// Allow this and similar requests for the rest of the session.
@@ -581,6 +615,7 @@ pub enum Decision {
 
 /// The closing record of a turn.
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct TurnSummary {
     pub usage: Usage,
     /// The provider's message id at the end of the turn: where a rollback or
@@ -599,6 +634,7 @@ pub struct TurnSummary {
 
 /// Availability of a provider on this host.
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ProviderInfo {
     pub kind: ProviderKind,
     pub installed: bool,
@@ -635,6 +671,7 @@ impl ProviderInfo {
 /// One rate-limit window of an account (for example the five-hour or
 /// seven-day window).
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct QuotaWindow {
     pub window: String,
     /// Share used, 0.0–1.0, when the provider reports it.
@@ -646,6 +683,7 @@ pub struct QuotaWindow {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ModelInfo {
     pub slug: String,
     pub name: String,
@@ -659,6 +697,7 @@ pub struct ModelInfo {
 /// An interaction mode the provider supports (for example plan mode), as
 /// reported at runtime.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ModeInfo {
     pub mode: Mode,
     pub label: String,
@@ -667,6 +706,7 @@ pub struct ModeInfo {
 
 /// A slash command or skill the provider exposes, passed through intact.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct SlashCommand {
     pub name: String,
     pub description: String,
@@ -675,6 +715,7 @@ pub struct SlashCommand {
 
 /// Which composer a draft belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum DraftTarget {
     /// The composer that starts a new thread.
     Home,
@@ -684,6 +725,7 @@ pub enum DraftTarget {
 /// An unsent message, kept on the host so it survives restarts and follows
 /// the user to every client of that host.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Draft {
     pub text: String,
     /// Stored blobs, including context references (terminal selections,
@@ -706,6 +748,7 @@ impl Draft {
 
 /// A file or folder in a project, as `@` mentions find it.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct FileMatch {
     /// Relative to the workspace root, `/`-separated; folders end in `/`.
     pub path: String,

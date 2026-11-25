@@ -15,7 +15,9 @@ use orbit_proto::*;
 
 /// Bumped when [`Team`] or [`Race`] change layout; older versions get a
 /// frozen copy and a conversion here, like the meta log's `legacy` module.
-pub const TEAMS_VERSION: u32 = 1;
+/// Version 1 was written in bitcode; version 2 in Orbit's wire format.
+pub const TEAMS_VERSION: u32 = 2;
+const TEAMS_BITCODE: u32 = 1;
 const MAGIC: &[u8; 8] = b"orbteam\0";
 
 pub struct TeamFiles {
@@ -47,11 +49,14 @@ impl TeamFiles {
                 continue;
             }
             let loaded = fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| {
-                let payload = payload(&bytes)?;
+                let (version, payload) = payload(&bytes)?;
+                let old = version == TEAMS_BITCODE;
                 if ext == "team" {
-                    decode::<Team>(payload).map(|t| teams.push(t)).map_err(|e| e.to_string())
+                    let team = if old { bitcode_decode::<Team>(payload) } else { decode::<Team>(payload) };
+                    team.map(|t| teams.push(t)).map_err(|e| e.to_string())
                 } else {
-                    decode::<Race>(payload).map(|r| races.push(r)).map_err(|e| e.to_string())
+                    let race = if old { bitcode_decode::<Race>(payload) } else { decode::<Race>(payload) };
+                    race.map(|r| races.push(r)).map_err(|e| e.to_string())
                 }
             });
             if let Err(err) = loaded {
@@ -115,15 +120,16 @@ fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-fn payload(bytes: &[u8]) -> Result<&[u8], String> {
+/// A record's schema version and payload.
+fn payload(bytes: &[u8]) -> Result<(u32, &[u8]), String> {
     if bytes.len() < 12 || &bytes[..8] != MAGIC {
         return Err("not a team record".into());
     }
     let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    if version != TEAMS_VERSION {
-        return Err(format!("written by schema {version}; this Orbit reads {TEAMS_VERSION}"));
+    if version != TEAMS_VERSION && version != TEAMS_BITCODE {
+        return Err(format!("written by schema {version}; this Orbit reads up to {TEAMS_VERSION}"));
     }
-    FrameReader::new(&bytes[12..]).next_payload().map_err(|e| e.to_string())
+    FrameReader::new(&bytes[12..]).next_payload().map(|p| (version, p)).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -150,5 +156,18 @@ mod tests {
         assert!(files.dir().join("junk.team.bad").exists());
         files.remove_team(team.id);
         assert!(files.load().0.is_empty());
+    }
+
+    #[test]
+    fn version_1_bitcode_records_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = TeamFiles::new(dir.path());
+        let team = Team { id: TeamId::new(), architect: ThreadId(8), ..Default::default() };
+        fs::create_dir_all(files.dir()).unwrap();
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&TEAMS_BITCODE.to_le_bytes());
+        write_raw_frame(&bitcode::encode(&team), &mut bytes);
+        fs::write(files.dir().join(format!("{}.team", team.id)), bytes).unwrap();
+        assert_eq!(files.load().0, vec![team]);
     }
 }

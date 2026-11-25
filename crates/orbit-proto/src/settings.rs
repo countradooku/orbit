@@ -19,6 +19,7 @@ use bitcode::{Decode, Encode};
 use crate::model::{Access, ProviderKind};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Settings {
     pub general: GeneralSettings,
     pub appearance: AppearanceSettings,
@@ -121,6 +122,7 @@ pub fn is_env_name(name: &str) -> bool {
 // ── General ──────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct GeneralSettings {
     /// Ask before deleting a thread (its timeline, checkpoints and worktree).
     pub confirm_delete: bool,
@@ -140,6 +142,7 @@ pub const CODE_FONT_MIN: u16 = 10;
 pub const CODE_FONT_MAX: u16 = 20;
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct AppearanceSettings {
     pub mode: ColorMode,
     /// Theme used in light mode; empty means Orbit Light.
@@ -174,6 +177,7 @@ impl Default for AppearanceSettings {
 
 /// A 24-hour clock (`14:05`) or a 12-hour one (`2:05 PM`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ClockFormat {
     #[default]
     H24,
@@ -181,6 +185,7 @@ pub enum ClockFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ColorMode {
     #[default]
     System,
@@ -190,6 +195,7 @@ pub enum ColorMode {
 
 /// Width of the reading column in threads, the inbox and home.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ChatWidth {
     Narrow,
     #[default]
@@ -214,6 +220,7 @@ impl ChatWidth {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Motion {
     /// Follow the operating system's reduced-motion setting.
     #[default]
@@ -225,6 +232,7 @@ pub enum Motion {
 // ── Composer ─────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ComposerSettings {
     pub submit: SubmitKey,
     /// What sending does while a turn runs; the alternate key does the other.
@@ -232,6 +240,7 @@ pub struct ComposerSettings {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum SubmitKey {
     /// Enter sends, Shift+Enter inserts a new line.
     #[default]
@@ -241,6 +250,7 @@ pub enum SubmitKey {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum FollowUp {
     /// Hold the message until the running turn ends.
     #[default]
@@ -252,6 +262,7 @@ pub enum FollowUp {
 // ── Agents ───────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct AgentSettings {
     /// Access level new threads start with. Never [`Access::Full`].
     pub default_access: Access,
@@ -284,6 +295,7 @@ impl Access {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ProviderSettings {
     pub kind: ProviderKind,
     /// Explicit path to the CLI; empty finds it on PATH and in the usual
@@ -310,6 +322,7 @@ impl ProviderSettings {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct EnvVar {
     pub name: String,
     pub value: String,
@@ -346,6 +359,7 @@ pub fn format_env(env: &[EnvVar]) -> String {
 /// second account of the same runtime ("Claude (work)" with its own
 /// `CLAUDE_CONFIG_DIR`), or an ACP agent with its launch command.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ProviderInstance {
     /// Unique slug (`claude-work`, `gemini`): letters, digits, `-` and `_`,
     /// starting with a letter. A built-in runtime's id
@@ -422,6 +436,7 @@ fn expand_home(path: &str) -> String {
 // ── Workspace and git ────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct WorkspaceSettings {
     /// Where new worktrees go (`<root>/<project>/<branch>`); empty means
     /// `<data folder>/worktrees`.
@@ -431,6 +446,7 @@ pub struct WorkspaceSettings {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ReviewSettings {
     /// Show diffs side by side instead of unified.
     pub split: bool,
@@ -448,6 +464,7 @@ pub struct ReviewSettings {
 
 /// Operating-system notifications, posted while Orbit is in the background.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct NotificationSettings {
     /// An agent asks for approval or has a question.
     pub requests: bool,
@@ -466,6 +483,7 @@ impl Default for NotificationSettings {
 // ── Advanced ─────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct AdvancedSettings {
     /// Explicit git binary; empty uses `git` from PATH.
     pub git_binary: String,
@@ -486,6 +504,7 @@ impl Default for AdvancedSettings {
 
 /// Which engine the client drives. Kept by the client, never by an engine.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct RemoteSettings {
     /// `ws://host:port/` of an `orbitd`; empty runs the engine in-process.
     pub host: String,

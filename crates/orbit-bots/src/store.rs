@@ -11,10 +11,13 @@ use bitcode::{Decode, Encode};
 use orbit_proto::*;
 
 const FILE: &str = "bots.bin";
-const VERSION: u8 = 1;
+/// Version 1 was written in bitcode; version 2 is Orbit's wire format.
+const BITCODE: u8 = 1;
+const VERSION: u8 = 2;
 
 /// A conversation: a chat, and in Slack a thread within it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ChatKey {
     pub platform: Platform,
     /// Telegram chat id, Slack channel id or Discord channel id.
@@ -35,6 +38,7 @@ impl ChatKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Paired {
     pub user: PairedUser,
     /// Where they paired from: their direct chat with the bot.
@@ -42,6 +46,7 @@ pub struct Paired {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Stored {
     pub enabled: Vec<Platform>,
     pub options: BotOptions,
@@ -92,10 +97,13 @@ impl Store {
         let path = dir.join(FILE);
         let data = match std::fs::read(&path) {
             Ok(bytes) => match bytes.split_first() {
-                Some((&VERSION, rest)) => bitcode::decode(rest).unwrap_or_else(|e| {
-                    log::warn!("{}: unreadable ({e}); starting empty", path.display());
-                    Stored::default()
-                }),
+                Some((&version @ (BITCODE | VERSION), rest)) => {
+                    let read = if version == BITCODE { bitcode_decode(rest) } else { decode(rest) };
+                    read.unwrap_or_else(|e| {
+                        log::warn!("{}: unreadable ({e}); starting empty", path.display());
+                        Stored::default()
+                    })
+                }
                 _ => Stored::default(),
             },
             Err(_) => Stored::default(),
@@ -112,7 +120,7 @@ impl Store {
 
 fn write(path: &Path, data: &Stored) -> std::io::Result<()> {
     let mut bytes = vec![VERSION];
-    bytes.extend(bitcode::encode(data));
+    encode_into(data, &mut bytes);
     let tmp = path.with_extension("bin.tmp");
     {
         use std::io::Write as _;
@@ -151,5 +159,21 @@ mod tests {
         assert_eq!(again.data, store.data);
         assert_eq!(again.data.binding(&chat), Some(ThreadId(9)));
         assert!(again.data.enabled(Platform::Slack) && !again.data.enabled(Platform::Discord));
+    }
+
+    #[test]
+    fn a_version_1_bitcode_store_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut data = Stored::default();
+        data.set_enabled(Platform::Telegram, true);
+        data.bind(ChatKey::new(Platform::Telegram, "42"), ThreadId(3));
+        let mut bytes = vec![BITCODE];
+        bytes.extend(bitcode::encode(&data));
+        std::fs::write(dir.path().join(FILE), bytes).unwrap();
+        let store = Store::open(dir.path());
+        assert_eq!(store.data, data);
+        store.save();
+        assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap()[0], VERSION);
+        assert_eq!(Store::open(dir.path()).data, data);
     }
 }

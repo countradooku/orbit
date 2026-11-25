@@ -16,6 +16,9 @@ orbit-bots = { path = "crates/orbit-bots" }
 
 # Wire + data
 bitcode = "0.6"
+# The wire and on-disk codec (see docs/research/codecs.md); bitcode stays to
+# read data folders written before schema 5.
+wincode = { version = "0.6.3", features = ["derive"] }
 sonic-rs = "0.5"
 serde = { version = "1", features = ["derive"] }
 crc32fast = "1"

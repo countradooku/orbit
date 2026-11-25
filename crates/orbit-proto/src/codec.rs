@@ -1,12 +1,20 @@
-//! Binary framing shared by the on-disk log and the WebSocket link.
+//! Binary framing shared by the on-disk logs and the WebSocket link.
 //!
 //! A frame is `[len: u32 LE][crc32: u32 LE][payload: len bytes]`, the payload
-//! being a `bitcode` value. The CRC lets the event log recover from a torn
-//! write after a crash: replay stops at the first frame whose length runs past
-//! the end of the file or whose checksum does not match, and the file is
-//! truncated there.
+//! being a value in Orbit's wire format. The CRC lets the event log recover
+//! from a torn write after a crash: replay stops at the first frame whose
+//! length runs past the end of the file or whose checksum does not match,
+//! and the file is truncated there.
+//!
+//! The wire format is `wincode` with variable-length integers and one-byte
+//! enum tags ([`WireConfig`]). Its cost follows the value, not the size of
+//! the type: a call or a log record takes tens of nanoseconds (see
+//! `docs/research/codecs.md`). Data written before schema 5 is `bitcode`;
+//! [`bitcode_decode`] reads it so old data folders can be migrated.
 
-use bitcode::{Decode, DecodeOwned, Encode};
+use wincode::config::Configuration;
+use wincode::int_encoding::{LittleEndian, VarInt};
+use wincode::len::BincodeLen;
 
 /// Size of the frame header in bytes.
 pub const FRAME_HEADER: usize = 8;
@@ -14,6 +22,30 @@ pub const FRAME_HEADER: usize = 8;
 /// Upper bound on one frame, so a corrupted length can never make a reader
 /// allocate gigabytes.
 pub const MAX_FRAME: usize = 64 * 1024 * 1024;
+
+/// Orbit's wire format: wincode, little-endian varints, `u8` enum tags, and
+/// collections preallocated up to [`MAX_FRAME`] (wincode's 4 MiB default
+/// would refuse a long thread's timeline).
+pub type WireConfig = Configuration<true, MAX_FRAME, BincodeLen, LittleEndian, VarInt, u8>;
+
+/// The [`WireConfig`] value.
+pub const fn wire_config() -> WireConfig {
+    Configuration::default()
+        .with_varint_encoding()
+        .with_tag_encoding::<u8>()
+        .with_preallocation_size_limit::<MAX_FRAME>()
+}
+
+/// A value in Orbit's wire format.
+pub trait Wire:
+    wincode::SchemaWrite<WireConfig, Src = Self> + for<'de> wincode::SchemaRead<'de, WireConfig, Dst = Self>
+{
+}
+
+impl<T> Wire for T where
+    T: wincode::SchemaWrite<WireConfig, Src = T> + for<'de> wincode::SchemaRead<'de, WireConfig, Dst = T>
+{
+}
 
 #[derive(Debug)]
 pub enum FrameError {
@@ -24,7 +56,7 @@ pub enum FrameError {
     /// The payload does not match its checksum.
     Checksum,
     /// The payload is not a valid value of the expected type.
-    Decode(bitcode::Error),
+    Decode(String),
 }
 
 impl std::fmt::Display for FrameError {
@@ -40,13 +72,11 @@ impl std::fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
-/// A reusable encoder/decoder. One-shot [`encode`] rebuilds bitcode's
-/// column encoders on every call; a `Codec` keeps them, which makes small
-/// hot-path messages (streamed deltas) several times cheaper. Keep one per
-/// connection or log writer.
+/// An encoder that keeps its output buffer, so a connection or log writer
+/// does not allocate per message.
 #[derive(Default)]
 pub struct Codec {
-    buf: bitcode::Buffer,
+    buf: Vec<u8>,
 }
 
 impl Codec {
@@ -55,49 +85,67 @@ impl Codec {
     }
 
     /// Encodes `value`; the bytes are valid until the next call.
-    pub fn encode<T: Encode + ?Sized>(&mut self, value: &T) -> &[u8] {
-        self.buf.encode(value)
+    pub fn encode<T: Wire>(&mut self, value: &T) -> &[u8] {
+        self.buf.clear();
+        encode_into(value, &mut self.buf);
+        &self.buf
     }
 
-    pub fn decode<'a, T: Decode<'a>>(&mut self, bytes: &'a [u8]) -> Result<T, FrameError> {
-        self.buf.decode(bytes).map_err(FrameError::Decode)
+    pub fn decode<T: Wire>(&mut self, bytes: &[u8]) -> Result<T, FrameError> {
+        decode(bytes)
     }
 
     /// Appends one framed value to `out`. Returns the number of bytes written.
-    pub fn write_frame<T: Encode + ?Sized>(&mut self, value: &T, out: &mut Vec<u8>) -> usize {
-        let payload = self.buf.encode(value);
+    pub fn write_frame<T: Wire>(&mut self, value: &T, out: &mut Vec<u8>) -> usize {
+        self.buf.clear();
+        encode_into(value, &mut self.buf);
         let start = out.len();
-        out.reserve(FRAME_HEADER + payload.len());
-        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        out.extend_from_slice(&crc32fast::hash(payload).to_le_bytes());
-        out.extend_from_slice(payload);
+        write_raw_frame(&self.buf, out);
         out.len() - start
     }
 }
 
-/// Encodes `value` as a bare `bitcode` payload (no frame header).
-pub fn encode<T: Encode + ?Sized>(value: &T) -> Vec<u8> {
-    bitcode::encode(value)
+/// Appends `value` to `out`.
+pub fn encode_into<T: Wire>(value: &T, out: &mut Vec<u8>) {
+    // Writing to a growable Vec cannot fail; an error would be a bug in a
+    // schema, not bad input.
+    let at = out.len();
+    wincode::config::serialize_into(wincode::io::Cursor::new_at(out, at), value, wire_config())
+        .expect("encoding into a Vec cannot fail");
 }
 
-/// Decodes a bare `bitcode` payload.
-pub fn decode<T: DecodeOwned>(bytes: &[u8]) -> Result<T, FrameError> {
-    bitcode::decode(bytes).map_err(FrameError::Decode)
+/// Encodes `value` as a bare payload (no frame header).
+pub fn encode<T: Wire>(value: &T) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_into(value, &mut out);
+    out
+}
+
+/// Decodes a bare payload.
+pub fn decode<T: Wire>(bytes: &[u8]) -> Result<T, FrameError> {
+    wincode::config::deserialize::<T, _>(bytes, wire_config()).map_err(|e| FrameError::Decode(e.to_string()))
+}
+
+/// Decodes a payload written before schema 5, in `bitcode`.
+pub fn bitcode_decode<T: bitcode::DecodeOwned>(bytes: &[u8]) -> Result<T, FrameError> {
+    bitcode::decode(bytes).map_err(|e| FrameError::Decode(e.to_string()))
 }
 
 /// Appends one framed value to `out`. Returns the number of bytes written.
-pub fn write_frame<T: Encode + ?Sized>(value: &T, out: &mut Vec<u8>) -> usize {
-    let payload = bitcode::encode(value);
+pub fn write_frame<T: Wire>(value: &T, out: &mut Vec<u8>) -> usize {
     let start = out.len();
-    out.reserve(FRAME_HEADER + payload.len());
-    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&crc32fast::hash(&payload).to_le_bytes());
-    out.extend_from_slice(&payload);
+    // Reserve the header, write the payload after it, then fill it in.
+    out.extend_from_slice(&[0; FRAME_HEADER]);
+    encode_into(value, out);
+    let len = out.len() - start - FRAME_HEADER;
+    let crc = crc32fast::hash(&out[start + FRAME_HEADER..]);
+    out[start..start + 4].copy_from_slice(&(len as u32).to_le_bytes());
+    out[start + 4..start + 8].copy_from_slice(&crc.to_le_bytes());
     out.len() - start
 }
 
 /// Appends one frame around raw `payload` bytes (headers that are not a
-/// `bitcode` value).
+/// wire value).
 pub fn write_raw_frame(payload: &[u8], out: &mut Vec<u8>) {
     out.reserve(FRAME_HEADER + payload.len());
     out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -143,13 +191,10 @@ impl<'a> FrameReader<'a> {
     }
 
     /// The next decoded value.
-    pub fn read<T: for<'de> Decode<'de>>(&mut self) -> Result<T, FrameError> {
+    pub fn read<T: Wire>(&mut self) -> Result<T, FrameError> {
         let start = self.pos;
         let payload = self.next_payload()?;
-        bitcode::decode(payload).map_err(|e| {
-            self.pos = start;
-            FrameError::Decode(e)
-        })
+        decode(payload).inspect_err(|_| self.pos = start)
     }
 }
 
@@ -157,7 +202,7 @@ impl<'a> FrameReader<'a> {
 mod tests {
     use super::*;
 
-    #[derive(Encode, Decode, PartialEq, Debug)]
+    #[derive(wincode::SchemaWrite, wincode::SchemaRead, PartialEq, Debug)]
     struct Sample {
         a: u64,
         b: String,
@@ -184,5 +229,18 @@ mod tests {
         let last = buf.len() - 1;
         buf[last] ^= 0xff;
         assert!(matches!(FrameReader::new(&buf).read::<Sample>(), Err(FrameError::Checksum)));
+    }
+
+    #[test]
+    fn a_reused_codec_and_appended_frames_match_one_shot_encoding() {
+        let sample = Sample { a: 300, b: "x".repeat(70_000) };
+        let mut codec = Codec::new();
+        assert_eq!(codec.encode(&sample), encode(&sample).as_slice());
+        let mut a = vec![9, 9];
+        let mut b = vec![9, 9];
+        codec.write_frame(&sample, &mut a);
+        write_frame(&sample, &mut b);
+        assert_eq!(a, b);
+        assert_eq!(FrameReader::new(&a[2..]).read::<Sample>().unwrap(), sample);
     }
 }

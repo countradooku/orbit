@@ -20,7 +20,9 @@ use orbit_proto::*;
 use super::orchestrator::{CommandResult, Orchestrator};
 
 const FILE: &str = "guard.bin";
-const VERSION: u8 = 1;
+/// Version 1 was written in bitcode; version 2 is Orbit's wire format.
+const BITCODE: u8 = 1;
+const VERSION: u8 = 2;
 
 #[derive(Default)]
 pub(crate) struct GuardState {
@@ -69,10 +71,13 @@ impl Orchestrator {
 fn load(path: &Path) -> GuardSettings {
     match std::fs::read(path) {
         Ok(bytes) => match bytes.split_first() {
-            Some((&VERSION, rest)) => bitcode::decode(rest).unwrap_or_else(|e| {
-                log::warn!("{}: unreadable ({e}); using the default guard list", path.display());
-                GuardSettings::default()
-            }),
+            Some((&version @ (BITCODE | VERSION), rest)) => {
+                let read = if version == BITCODE { bitcode_decode(rest) } else { decode(rest) };
+                read.unwrap_or_else(|e| {
+                    log::warn!("{}: unreadable ({e}); using the default guard list", path.display());
+                    GuardSettings::default()
+                })
+            }
             _ => GuardSettings::default(),
         },
         Err(_) => GuardSettings::default(),
@@ -81,7 +86,7 @@ fn load(path: &Path) -> GuardSettings {
 
 fn save(path: &Path, settings: &GuardSettings) -> std::io::Result<()> {
     let mut bytes = vec![VERSION];
-    bytes.extend(bitcode::encode(settings));
+    encode_into(settings, &mut bytes);
     let tmp = path.with_extension("bin.tmp");
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)

@@ -11,6 +11,7 @@ orbit-proto = { workspace = true }
 orbit-core = { workspace = true }
 orbit-net = { workspace = true }
 bitcode = { workspace = true }
+wincode = { workspace = true }
 crossfire = { workspace = true }
 tokio = { workspace = true }
 sockudo-ws = { workspace = true }

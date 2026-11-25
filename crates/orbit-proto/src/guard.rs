@@ -19,6 +19,7 @@ use crate::model::RequestKind;
 
 /// One guarded pattern and the reason shown when it matches.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct GuardRule {
     pub pattern: String,
     /// Short interface copy: "Force push", "Reads secrets".
@@ -34,6 +35,7 @@ impl GuardRule {
 /// The guard list. Kept by the engine in its own file (`guard.bin`) and
 /// handed to every agent session it starts.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct GuardSettings {
     pub enabled: bool,
     pub rules: Vec<GuardRule>,

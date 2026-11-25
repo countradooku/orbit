@@ -14,6 +14,7 @@ use crate::teams::*;
 
 /// Client → engine.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ClientMsg {
     /// First message on a connection. `epoch` and `since` identify the last
     /// event the client holds (0 for none). Within the same epoch the engine
@@ -25,6 +26,7 @@ pub enum ClientMsg {
 
 /// Engine → client.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ServerMsg {
     /// Reply to `Hello`. `snapshot` is `None` when the client's `since` was
     /// replayable; the missed events follow in `Events`.
@@ -39,6 +41,7 @@ pub enum ServerMsg {
 /// Everything a client needs to draw the shell. Timelines are not included;
 /// they are fetched with [`Command::OpenThread`].
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Snapshot {
     /// The engine's process lifetime; `seq` is only meaningful within it.
     pub epoch: u64,
@@ -61,6 +64,7 @@ pub struct Snapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Envelope {
     pub seq: u64,
     pub event: Event,
@@ -70,6 +74,7 @@ pub struct Envelope {
 /// token travels as one. `Box<T>` encodes exactly like `T`, so this changes
 /// nothing on disk or on the wire.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Event {
     ProjectUpserted(Box<Project>),
     ProjectRemoved(ProjectId),
@@ -145,6 +150,7 @@ impl Event {
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Delta {
     Text(String),
     Reasoning(String),
@@ -155,6 +161,7 @@ pub enum Delta {
 
 /// What part of a thread's changes a diff covers.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum DiffScope {
     /// The given turn only.
     Turn(u32),
@@ -171,6 +178,7 @@ pub enum DiffScope {
 
 /// A field-wise update to a thread; `None` leaves the field unchanged.
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ThreadPatch {
     pub title: Option<String>,
     pub config: Option<ThreadConfig>,
@@ -183,6 +191,7 @@ pub struct ThreadPatch {
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Command {
     AddProject { path: String },
     UpdateProject { project: Project },
@@ -337,6 +346,7 @@ impl From<TeamCommand> for Command {
 
 /// Everything needed to start a thread in one step.
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ThreadStart {
     pub project: Option<ProjectId>,
     pub config: ThreadConfig,
@@ -352,6 +362,7 @@ pub struct ThreadStart {
 
 /// A terminal the engine runs.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct TerminalInfo {
     pub id: TermId,
     /// The command given to [`Command::RunInTerminal`]; empty for an
@@ -364,6 +375,7 @@ pub struct TerminalInfo {
 
 /// What [`Command::GenerateText`] writes.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum TextTask {
     /// A short thread title from the conversation in `input`.
     ThreadTitle,
@@ -376,6 +388,7 @@ pub enum TextTask {
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Reply {
     Done,
     Project(ProjectId),
@@ -405,6 +418,7 @@ pub enum Reply {
 
 /// A local merge of a thread's branch, previewed or done.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct MergeInfo {
     /// The thread's branch.
     pub source: String,
@@ -426,12 +440,14 @@ pub struct MergeInfo {
 
 /// A path that more than one thread's worktree changed.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Conflict {
     pub path: String,
     pub threads: Vec<ThreadId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct SearchHit {
     pub thread: ThreadId,
     pub item: ItemId,
@@ -620,16 +636,17 @@ mod tests {
         assert!(encode(&env).len() < 32, "{} bytes", encode(&env).len());
     }
 
-    /// `Event` boxes its large payloads; bitcode must encode `Box<T>` as `T`
-    /// or every durable log written before the boxing would stop decoding.
+    /// `Event` boxes its large payloads. Both formats must encode `Box<T>`
+    /// as `T`: bitcode so schema-4 logs (written before the boxing) still
+    /// decode, wincode so the boxing is free on the wire.
     #[test]
     fn boxed_payloads_encode_like_plain_ones() {
-        #[derive(bitcode::Encode, bitcode::Decode, Debug, PartialEq)]
+        #[derive(bitcode::Encode, bitcode::Decode, wincode::SchemaWrite, wincode::SchemaRead, Debug, PartialEq)]
         enum Plain {
             T(Thread),
             S(crate::Settings),
         }
-        #[derive(bitcode::Encode, bitcode::Decode, Debug, PartialEq)]
+        #[derive(bitcode::Encode, bitcode::Decode, wincode::SchemaWrite, wincode::SchemaRead, Debug, PartialEq)]
         enum Boxed {
             T(Box<Thread>),
             S(Box<crate::Settings>),
@@ -637,6 +654,8 @@ mod tests {
         let thread = Thread { title: "hello".into(), turns: 3, ..Default::default() };
         let plain = vec![Plain::T(thread.clone()), Plain::S(Default::default())];
         let boxed = vec![Boxed::T(Box::new(thread)), Boxed::S(Box::default())];
+        assert_eq!(bitcode::encode(&plain), bitcode::encode(&boxed));
+        assert_eq!(crate::bitcode_decode::<Vec<Boxed>>(&bitcode::encode(&plain)).unwrap(), boxed);
         assert_eq!(encode(&plain), encode(&boxed));
         assert_eq!(decode::<Vec<Boxed>>(&encode(&plain)).unwrap(), boxed);
         assert!(std::mem::size_of::<Event>() <= 80, "Event is {} bytes", std::mem::size_of::<Event>());

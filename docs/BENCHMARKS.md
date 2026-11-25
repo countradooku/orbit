@@ -30,22 +30,29 @@ T3 Code's idle CPU varies between runs (2.34 % in an earlier session).
 ## Engine, protocol, storage, network (`orbit-bench`)
 
 Median of three runs on 2026-11-25, release builds, on the same machine and
-day as the baseline column (main at `da03e0a`, before the feature packages
-landed). "Regressed" is main at `25e3dc2`, after they landed and before the
-fix below.
+day. "Baseline" is main at `da03e0a`, before the feature packages landed;
+"Regressed" is `25e3dc2`, after they landed; "Fixed" is `971ff89`, the
+regression fixed while still on bitcode; "Now" is the switch to wincode.
 
-| Benchmark | Baseline | Regressed | Now |
-| --- | ---: | ---: | ---: |
-| Link: one streamed token (host → client) | 0.50 M/s | 0.20 M/s | **5.4 M/s** |
-| Link: streamed tokens, 512 per frame | 36.6 M/s, 7.3 B/delta | 24.2 M/s, 7.8 B/delta | **35 M/s, 6.7 B/delta** |
-| Link: `Done` reply encode+decode | 4.2 µs | 13.7 µs | **14 ns** |
-| Engine streaming to UI feed | 2.41 M deltas/s | 2.18 M deltas/s | **2.98 M deltas/s** |
-| UI state apply | 17 M deltas/s | 17.2 M deltas/s | **21.5 M deltas/s** |
-| Cold start with 1,000 threads | 8.4 ms | 9.6 ms | 9.6 ms |
-| Open a 3,000-item thread | 2.5 ms | 2.9 ms | 2.8 ms |
-| In-process command round trip | 0.40 µs p50 | 0.40 µs p50 | 0.40 µs p50, 1.1 µs p99 |
-| WebSocket round trip (loopback) | 74 µs p50, 161 µs p99 | 107 µs p50, 199 µs p99 | **47 µs p50, 91 µs p99** |
-| WebSocket streaming | 2.59 M deltas/s | 2.58 M deltas/s | **4.38 M deltas/s** |
+| Benchmark | Baseline | Regressed | Fixed (bitcode) | Now (wincode) |
+| --- | ---: | ---: | ---: | ---: |
+| Link: one streamed token (host → client) | 0.50 M/s | 0.20 M/s | 5.4 M/s | **10.4 M/s** |
+| Link: streamed tokens, 512 per frame | 36.6 M/s, 7.3 B/delta | 24.2 M/s, 7.8 B/delta | 35 M/s, 6.7 B/delta | 29 M/s, 8.0 B/delta |
+| Link: `Done` reply encode+decode | 4.2 µs | 13.7 µs | 14 ns | 14 ns |
+| Engine streaming to UI feed | 2.41 M deltas/s | 2.18 M deltas/s | 2.98 M deltas/s | 2.93 M deltas/s |
+| UI state apply | 17 M deltas/s | 17.2 M deltas/s | 21.5 M deltas/s | 21.5 M deltas/s |
+| Cold start with 1,000 threads | 8.4 ms | 9.6 ms | 9.6 ms | **5.0 ms** |
+| Open a 3,000-item thread | 2.5 ms | 2.9 ms | 2.8 ms | **0.95 ms** |
+| In-process command round trip | 0.40 µs p50 | 0.40 µs p50 | 0.40 µs p50 | 0.40 µs p50, 1.1 µs p99 |
+| WebSocket round trip (loopback) | 74 µs p50, 161 µs p99 | 107 µs p50, 199 µs p99 | 47 µs p50, 91 µs p99 | **41 µs p50, 80 µs p99** |
+| WebSocket streaming | 2.59 M deltas/s | 2.58 M deltas/s | 4.38 M deltas/s | 4.1 M deltas/s |
+
+The switch to wincode (schema 5, protocol 9) halves cold start and makes
+opening a thread three times faster: every log record decodes in tens of
+nanoseconds instead of microseconds. Streamed tokens travel in runs that
+name their thread and item once (`orbit_proto::link::DeltaRun`); otherwise
+the ids' varints would cost 18 bytes per token. Data folders from schemas 1
+to 4 are read through bitcode and rewritten once (`legacy.rs`).
 
 What the regression was, and the fix:
 
@@ -71,9 +78,6 @@ Two ordering bugs surfaced while fixing this, and are fixed with tests:
 - A remote client resolved replies before its consumer had applied the
   events ahead of them. With `RemoteClient::order_replies` (the app and the
   CLI turn it on), a reply resolves only after those events are applied.
-
-Cold start is still 14 % slower than the baseline (more state to rebuild:
-settings, automations, teams).
 
 ## Review sheet (release build, 165 Hz display)
 

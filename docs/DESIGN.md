@@ -109,8 +109,9 @@ what T3 Code does not have.
 ```
 
 * **orbit-proto** — the Orbit Wire Protocol: ids, domain model, commands,
-  events, bitcode payloads in CRC-checked frames. The same types travel the
-  in-process bus, the disk log and the WebSocket.
+  events, wincode payloads in CRC-checked frames (see
+  `docs/research/codecs.md`). The same types travel the in-process bus, the
+  disk log and the WebSocket.
 * **orbit-core** — the engine. A small Tokio runtime (one worker) owns all
   I/O: provider processes, git, terminals, storage. Commands arrive on a
   crossfire MPSC channel; events leave through one bounded crossfire channel

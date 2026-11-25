@@ -15,6 +15,7 @@ use crate::wire::ThreadStart;
 
 /// A chat platform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Platform {
     Telegram,
     Slack,
@@ -50,6 +51,7 @@ impl Platform {
 /// records it in the thread's timeline ("Sent via Telegram by Ana") and
 /// refuses guarded approvals from it (see [`crate::guard`]).
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Via {
     /// "Telegram", "Slack", "Discord".
     pub channel: String,
@@ -60,6 +62,7 @@ pub struct Via {
 /// What a remote origin may do ([`crate::Command::Via`]): the few actions
 /// a chat needs, nothing that edits settings, files or history.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ViaAction {
     /// As `Command::Send`, without attachments.
     Send { thread: ThreadId, text: String, steer: bool },
@@ -75,6 +78,7 @@ pub enum ViaAction {
 
 /// The connection of one platform.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum BotConnection {
     /// Turned off.
     #[default]
@@ -91,6 +95,7 @@ pub enum BotConnection {
 
 /// One platform as the settings page shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct PlatformState {
     pub platform: Platform,
     pub enabled: bool,
@@ -128,6 +133,7 @@ impl PlatformState {
 
 /// A person allowed to drive Orbit from a chat.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct PairedUser {
     pub platform: Platform,
     /// The platform's stable user id.
@@ -138,6 +144,7 @@ pub struct PairedUser {
 
 /// Someone who wrote to a bot and is waiting to be let in.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct PairingRequest {
     pub platform: Platform,
     pub user_id: String,
@@ -151,6 +158,7 @@ pub struct PairingRequest {
 
 /// When needs-you events are pushed to paired chats.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum BotNotify {
     Off,
     /// When no Orbit window is in front.
@@ -161,6 +169,7 @@ pub enum BotNotify {
 
 /// How chats start and drive threads.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct BotOptions {
     /// Where `/new` without a project starts; `None` asks.
     pub project: Option<ProjectId>,
@@ -183,6 +192,7 @@ impl Default for BotOptions {
 
 /// Everything the Bots settings page shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct BotsState {
     pub platforms: Vec<PlatformState>,
     pub paired: Vec<PairedUser>,
@@ -198,6 +208,7 @@ impl BotsState {
 
 /// [`crate::Command::Bots`].
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum BotCommand {
     /// Replies [`BotReply::State`].
     State,
@@ -218,6 +229,7 @@ pub enum BotCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum BotReply {
     State(BotsState),
     Paired(PairedUser),
@@ -226,6 +238,7 @@ pub enum BotReply {
 /// The platforms' tokens. Never sent to a client and never logged:
 /// `Debug` redacts them.
 #[derive(Clone, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct BotSecrets {
     pub telegram: String,
     /// Slack's bot token (`xoxb-…`) and app-level token (`xapp-…`).

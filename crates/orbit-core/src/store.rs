@@ -28,6 +28,7 @@ use orbit_proto::*;
 
 /// A record in a thread's log.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum TimelineRecord {
     Upsert(Item),
     Remove(ItemId),
@@ -52,7 +53,11 @@ impl From<TimelineRecordV3> for TimelineRecord {
 
 /// Decodes one timeline record written at schema `version`.
 fn decode_timeline(version: u32, payload: &[u8]) -> Result<TimelineRecord, FrameError> {
-    if version <= 3 { decode::<TimelineRecordV3>(payload).map(Into::into) } else { decode::<TimelineRecord>(payload) }
+    match version {
+        ..=3 => bitcode_decode::<TimelineRecordV3>(payload).map(Into::into),
+        legacy::LAST_BITCODE_VERSION => bitcode_decode::<TimelineRecord>(payload),
+        _ => decode::<TimelineRecord>(payload),
+    }
 }
 
 /// Append-only file of CRC-framed records with crash recovery.
@@ -185,7 +190,7 @@ impl Log {
         ))
     }
 
-    fn append<T: Encode>(&mut self, record: &T) -> io::Result<()> {
+    fn append<T: Wire>(&mut self, record: &T) -> io::Result<()> {
         self.buf.clear();
         self.codec.write_frame(record, &mut self.buf);
         self.file.as_mut().expect("log file is open").write_all(&self.buf)?;
@@ -194,7 +199,7 @@ impl Log {
     }
 
     /// Atomically replaces the log's contents with `records`.
-    fn rewrite<'a, T: Encode + 'a>(&mut self, records: impl IntoIterator<Item = &'a T>) -> io::Result<()> {
+    fn rewrite<'a, T: Wire + 'a>(&mut self, records: impl IntoIterator<Item = &'a T>) -> io::Result<()> {
         let tmp = self.path.with_extension("log.tmp");
         let mut out = Vec::new();
         if let Some(header) = &self.header {
@@ -935,6 +940,66 @@ mod tests {
         assert_eq!(store.thread(id).unwrap().config.instance_id(), "codex-work");
     }
 
+    /// Schema 4 was the last written in bitcode, through the current types.
+    /// Opening such a folder migrates the meta log and, when a thread is
+    /// opened, its timeline to wincode (schema 5); both read back after.
+    #[test]
+    fn a_version_4_bitcode_data_folder_migrates_to_wincode() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, id) = (ProjectId(0x44), ThreadId(0x4444));
+        let thread = Thread { id, project: Some(project), title: "Bitcode era".into(), turns: 2, ..Default::default() };
+        let mut settings = Settings::default();
+        settings.appearance.ui_scale = 125;
+        let mut meta = Vec::new();
+        let mut header = META_MAGIC.to_vec();
+        header.extend_from_slice(&legacy::LAST_BITCODE_VERSION.to_le_bytes());
+        write_raw_frame(&header, &mut meta);
+        let project_record = Project {
+            id: project,
+            name: "orbit".into(),
+            path: "C:/code/orbit".into(),
+            order: 0,
+            scripts: Default::default(),
+            base_branch: Some("main".into()),
+        };
+        for (seq, event) in [
+            (1, Event::ProjectUpserted(Box::new(project_record))),
+            (2, Event::ThreadUpserted(Box::new(thread))),
+            (3, Event::SettingsChanged(Box::new(settings))),
+        ] {
+            write_raw_frame(&bitcode::encode(&Envelope { seq, event }), &mut meta);
+        }
+        fs::write(dir.path().join("meta.log"), &meta).unwrap();
+        fs::create_dir_all(dir.path().join("threads")).unwrap();
+        let mut timeline = Vec::new();
+        let mut header = TIMELINE_MAGIC.to_vec();
+        header.extend_from_slice(&legacy::LAST_BITCODE_VERSION.to_le_bytes());
+        write_raw_frame(&header, &mut timeline);
+        let item = Item {
+            id: ItemId(0x99),
+            turn: 1,
+            status: ItemStatus::Done,
+            body: ItemBody::Assistant { text: "Written by bitcode".into() },
+        };
+        write_raw_frame(&bitcode::encode(&TimelineRecord::Upsert(item.clone())), &mut timeline);
+        let log = dir.path().join("threads").join(format!("{id}.log"));
+        fs::write(&log, &timeline).unwrap();
+
+        let check = |store: &mut Store| {
+            assert_eq!(store.thread(id).unwrap().title, "Bitcode era");
+            assert_eq!(store.projects()[0].base_branch.as_deref(), Some("main"));
+            assert_eq!(store.settings().appearance.ui_scale, 125);
+            assert_eq!(store.load_timeline(id).unwrap().items(), std::slice::from_ref(&item));
+        };
+        check(&mut Store::open(dir.path()).unwrap());
+        for path in [dir.path().join("meta.log"), log.clone()] {
+            let bytes = fs::read(&path).unwrap();
+            let first = FrameReader::new(&bytes).next_payload().unwrap().to_vec();
+            assert_eq!(header_version(&first), legacy::META_VERSION, "{} migrated", path.display());
+        }
+        check(&mut Store::open(dir.path()).unwrap());
+    }
+
     #[test]
     fn a_version_3_data_folder_keeps_its_questions_and_gains_option_descriptions() {
         use legacy::v3;
@@ -979,7 +1044,7 @@ mod tests {
         let mut header = META_MAGIC.to_vec();
         header.extend_from_slice(&3u32.to_le_bytes());
         write_raw_frame(&header, &mut meta);
-        write_frame(&v3::Envelope { seq: 1, event: v3::Event::ThreadUpserted(thread) }, &mut meta);
+        write_raw_frame(&bitcode::encode(&v3::Envelope { seq: 1, event: v3::Event::ThreadUpserted(thread) }), &mut meta);
         fs::write(dir.path().join("meta.log"), &meta).unwrap();
         fs::create_dir_all(dir.path().join("threads")).unwrap();
         let mut timeline = Vec::new();
@@ -989,9 +1054,9 @@ mod tests {
             status: ItemStatus::Done,
             body: v3::ItemBody::User(UserMessage { text: "Set up storage".into(), ..Default::default() }),
         };
-        write_frame(&TimelineRecordV3::Upsert(user), &mut timeline);
+        write_raw_frame(&bitcode::encode(&TimelineRecordV3::Upsert(user)), &mut timeline);
         let asked = v3::Item { id: ItemId(0x88), turn: 1, status: ItemStatus::Done, body: v3::ItemBody::Request(question) };
-        write_frame(&TimelineRecordV3::Upsert(asked), &mut timeline);
+        write_raw_frame(&bitcode::encode(&TimelineRecordV3::Upsert(asked)), &mut timeline);
         let log = dir.path().join("threads").join(format!("{id}.log"));
         fs::write(&log, &timeline).unwrap();
 

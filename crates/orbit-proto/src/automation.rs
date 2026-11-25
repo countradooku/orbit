@@ -15,6 +15,7 @@ use crate::model::ThreadConfig;
 
 /// What the user set up. The engine owns [`AutomationState`].
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct AutomationSpec {
     pub name: String,
     pub project: Option<ProjectId>,
@@ -36,6 +37,7 @@ pub struct AutomationSpec {
 
 /// Where a run works.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum RunTarget {
     /// A fresh worktree on a new branch for every run.
     #[default]
@@ -52,6 +54,7 @@ pub enum RunTarget {
 
 /// What starts a run.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Trigger {
     /// A five-field cron expression (`0 9 * * 1-5`) in an IANA time zone
     /// (empty: the system's).
@@ -72,6 +75,7 @@ impl Trigger {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum EventTrigger {
     /// Checks started failing on an open pull request (`mine`: only pull
     /// requests you wrote, review or are assigned).
@@ -90,12 +94,14 @@ pub enum EventTrigger {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ChainSource {
     Automation(AutomationId),
     Thread(ThreadId),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ChainWhen {
     #[default]
     Succeeded,
@@ -105,6 +111,7 @@ pub enum ChainWhen {
 
 /// Checked before a scheduled or event run starts; "Run now" skips them.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct PreChecks {
     /// Only when the project's files or commits changed since the last run.
     pub changes_since_last_run: bool,
@@ -124,6 +131,7 @@ impl Default for PreChecks {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Limits {
     /// At most this many runs start per day (0: no limit).
     pub max_runs_per_day: u32,
@@ -142,6 +150,7 @@ impl Default for Limits {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Notify {
     #[default]
     Always,
@@ -151,6 +160,7 @@ pub enum Notify {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct OnFinish {
     pub notify: Notify,
     /// Settle the run's thread when it changed nothing.
@@ -162,6 +172,7 @@ pub struct OnFinish {
 
 /// What the engine remembers about an automation between runs.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct AutomationState {
     /// When each trigger is next due (Unix ms; 0 for events), by index in
     /// [`AutomationSpec::triggers`]. Persisted before a run starts, so a
@@ -187,6 +198,7 @@ pub struct AutomationState {
 
 /// A run that is due but has not started.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct PendingRun {
     /// The id its record will have.
     pub id: RunId,
@@ -198,6 +210,7 @@ pub struct PendingRun {
 
 /// A user's automation and its engine state.
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Automation {
     pub id: AutomationId,
     pub spec: AutomationSpec,
@@ -219,6 +232,7 @@ impl Automation {
 
 /// Why a run started.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum RunReason {
     #[default]
     Schedule,
@@ -231,6 +245,7 @@ pub enum RunReason {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Skip {
     /// Missed by more than the grace window, `count` times.
     Missed { count: u32 },
@@ -247,6 +262,7 @@ pub enum Skip {
 /// What became of a run. Runs that are due but not started yet are
 /// [`AutomationState::pending`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum RunStatus {
     #[default]
     Running,
@@ -268,6 +284,7 @@ impl RunStatus {
 
 /// One run of an automation.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct AutomationRun {
     pub id: RunId,
     pub automation: AutomationId,
@@ -300,6 +317,7 @@ impl AutomationRun {
 
 /// Automation requests ([`crate::Command::Automation`]).
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum AutomationCommand {
     /// Create (`id: None`) or replace an automation's spec. Replies
     /// [`AutomationReply::Saved`].
@@ -318,6 +336,7 @@ pub enum AutomationCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum AutomationReply {
     Saved(AutomationId),
     Run(RunId),

@@ -24,6 +24,7 @@ use crate::model::{ChangeKind, FileChange};
 
 /// A byte range into [`FileDiff::raw`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Span {
     pub start: u32,
     pub end: u32,
@@ -46,6 +47,7 @@ impl Span {
 
 /// What happened to a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum FileDiffKind {
     Added,
     Deleted,
@@ -66,6 +68,7 @@ impl From<FileDiffKind> for ChangeKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum LineKind {
     Context,
     Added,
@@ -75,6 +78,7 @@ pub enum LineKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct DiffLine {
     pub kind: LineKind,
     /// Line number in the old file (context and removed lines).
@@ -88,6 +92,7 @@ pub struct DiffLine {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Hunk {
     pub old_start: u32,
     pub old_len: u32,
@@ -101,6 +106,7 @@ pub struct Hunk {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct FileDiff {
     /// `None` for added files.
     pub old_path: Option<String>,

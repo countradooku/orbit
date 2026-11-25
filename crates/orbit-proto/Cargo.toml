@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 bitcode = { workspace = true }
+wincode = { workspace = true }
 crc32fast = { workspace = true }
 memchr = { workspace = true }
 

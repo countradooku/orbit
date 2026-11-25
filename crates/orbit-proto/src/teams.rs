@@ -14,6 +14,7 @@ use crate::wire::{MergeInfo, ThreadStart};
 
 /// Every team and race, as a client first sees them.
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct TeamBoard {
     pub teams: Vec<Team>,
     pub races: Vec<Race>,
@@ -23,6 +24,7 @@ pub struct TeamBoard {
 
 /// Spawning limits and the circuit breaker's thresholds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct TeamLimits {
     /// Workers of this team working at once.
     pub max_workers: u32,
@@ -42,6 +44,7 @@ impl Default for TeamLimits {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Team {
     pub id: TeamId,
     /// The lead thread that plans and spawns.
@@ -116,6 +119,7 @@ impl Tally {
 
 /// One task handed to a worker.
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Worker {
     /// Short handle unique in the team (`w1`, `w2`…); what agents use.
     pub key: String,
@@ -142,6 +146,7 @@ pub struct Worker {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum WorkerState {
     Waiting(WaitReason),
     Working,
@@ -171,6 +176,7 @@ impl WorkerState {
 
 /// Why a worker has not started.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum WaitReason {
     /// Workers it depends on are not done.
     Dependency { on: Vec<String> },
@@ -199,6 +205,7 @@ impl WaitReason {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Note {
     pub id: u64,
     pub author: ThreadId,
@@ -209,6 +216,7 @@ pub struct Note {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum MailKind {
     Message,
     Question,
@@ -242,6 +250,7 @@ impl MailKind {
 
 /// A message between members, stored until delivered at a turn boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Mail {
     pub id: u64,
     /// `None`: from the user or from Orbit itself.
@@ -258,12 +267,14 @@ pub struct Mail {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Breaker {
     pub reason: String,
     pub at_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct FileOverlap {
     pub path: String,
     pub threads: Vec<ThreadId>,
@@ -272,6 +283,7 @@ pub struct FileOverlap {
 // ── Races ───────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Race {
     pub id: RaceId,
     pub project: ProjectId,
@@ -298,6 +310,7 @@ impl Race {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Candidate {
     pub thread: ThreadId,
     /// `A`, `B`, `C`…
@@ -323,12 +336,14 @@ impl Candidate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum CandidateEnd {
     Completed,
     Failed { message: String },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum TestState {
     /// No test command is configured.
     #[default]
@@ -340,6 +355,7 @@ pub enum TestState {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum JudgeState {
     #[default]
     Off,
@@ -351,6 +367,7 @@ pub enum JudgeState {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum RaceState {
     #[default]
     Running,
@@ -366,6 +383,7 @@ pub enum RaceState {
 pub type Recipient = String;
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum TeamCommand {
     /// Starts `start` as the architect of a new team; its sessions get the
     /// Orbit MCP tools. Replies `Reply::Thread`.
@@ -430,6 +448,7 @@ pub enum TeamCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum TeamReply {
     Team(Box<Team>),
     Worker { team: TeamId, key: String, thread: Option<ThreadId>, state: WorkerState },
@@ -440,6 +459,7 @@ pub enum TeamReply {
 
 /// Ephemeral updates; the latest state is in the snapshot.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum TeamEvent {
     Team(Box<Team>),
     TeamRemoved(TeamId),

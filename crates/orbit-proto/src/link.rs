@@ -1,37 +1,36 @@
-//! The host link's message codec: hot messages bypass the big enums.
+//! The host link's message framing: the hot messages get compact frames.
 //!
-//! `bitcode` keeps one column per field of every variant of a type, and each
-//! encode or decode visits all of them, whatever variant the value holds. A
-//! one-byte `Reply::Done` therefore costs about as much as the largest reply,
-//! and a streamed token pays for every kind of event. On the link the two
-//! hot messages get frames of their own, told apart by the first byte:
+//! Streamed tokens are most of the traffic, and as `Event::ItemDelta`s each
+//! would repeat its thread and item ids (time-ordered `u64`s, nine bytes
+//! each as varints) for a few bytes of text. On the link the two hot
+//! messages get frames of their own, told apart by the first byte:
 //!
-//! * [`DELTAS`]: a run of streamed tokens as [`WireDelta`]s;
+//! * [`DELTAS`]: streamed tokens, grouped into [`DeltaRun`]s that name their
+//!   thread and item once;
 //! * [`DONE`]: `Ok(Reply::Done)` for call `id`, four bytes;
 //! * [`MSG`]: any other [`ServerMsg`].
 //!
-//! Each side keeps one [`ServerEncoder`] or [`ServerDecoder`] per connection,
-//! so bitcode's buffers are reused too. Clients see plain [`ServerMsg`]s.
-
-use bitcode::{Decode, Encode};
+//! Each side keeps one [`ServerEncoder`] or [`ServerDecoder`] per
+//! connection, so buffers are reused. Clients see plain [`ServerMsg`]s.
 
 use crate::codec::{Codec, FrameError};
 use crate::ids::{ItemId, ThreadId};
 use crate::wire::{ClientMsg, Delta, Envelope, Event, Reply, ServerMsg};
 
-/// First byte: a bitcode [`ServerMsg`] follows.
+/// First byte: a [`ServerMsg`] follows.
 pub const MSG: u8 = 0;
-/// First byte: a bitcode `Vec<WireDelta>` follows.
+/// First byte: a `Vec<DeltaRun>` follows.
 pub const DELTAS: u8 = 1;
 /// First byte: a call id (`u32` LE) whose reply is `Ok(Reply::Done)`.
 pub const DONE: u8 = 2;
 
-/// A streamed token without the [`Event`] around it.
-#[derive(Clone, Debug, PartialEq, Encode, Decode)]
-pub struct WireDelta {
+/// Consecutive streamed tokens into one item, without the [`Event`]s
+/// around them.
+#[derive(Clone, Debug, PartialEq, wincode::SchemaWrite, wincode::SchemaRead)]
+pub struct DeltaRun {
     pub thread: ThreadId,
     pub item: ItemId,
-    pub delta: Delta,
+    pub deltas: Vec<Delta>,
 }
 
 /// The host's side: frames server messages for the link.
@@ -39,7 +38,7 @@ pub struct WireDelta {
 pub struct ServerEncoder {
     msg: Codec,
     deltas: Codec,
-    run: Vec<WireDelta>,
+    runs: Vec<DeltaRun>,
 }
 
 impl ServerEncoder {
@@ -69,20 +68,23 @@ impl ServerEncoder {
                     if !other.is_empty() {
                         frames.push(frame(MSG, self.msg.encode(&ServerMsg::Events(std::mem::take(&mut other)))));
                     }
-                    self.run.push(WireDelta { thread, item, delta });
+                    match self.runs.last_mut() {
+                        Some(run) if run.thread == thread && run.item == item => run.deltas.push(delta),
+                        _ => self.runs.push(DeltaRun { thread, item, deltas: vec![delta] }),
+                    }
                 }
                 env => {
-                    if !self.run.is_empty() {
-                        frames.push(frame(DELTAS, self.deltas.encode(&self.run)));
-                        self.run.clear();
+                    if !self.runs.is_empty() {
+                        frames.push(frame(DELTAS, self.deltas.encode(&self.runs)));
+                        self.runs.clear();
                     }
                     other.push(env);
                 }
             }
         }
-        if !self.run.is_empty() {
-            frames.push(frame(DELTAS, self.deltas.encode(&self.run)));
-            self.run.clear();
+        if !self.runs.is_empty() {
+            frames.push(frame(DELTAS, self.deltas.encode(&self.runs)));
+            self.runs.clear();
         }
         if !other.is_empty() {
             frames.push(frame(MSG, self.msg.encode(&ServerMsg::Events(other))));
@@ -114,12 +116,12 @@ impl ServerDecoder {
         match kind {
             MSG => self.msg.decode(body),
             DELTAS => {
-                let run: Vec<WireDelta> = self.deltas.decode(body)?;
-                Ok(ServerMsg::Events(
-                    run.into_iter()
-                        .map(|d| Envelope { seq: 0, event: Event::ItemDelta { thread: d.thread, item: d.item, delta: d.delta } })
-                        .collect(),
-                ))
+                let runs: Vec<DeltaRun> = self.deltas.decode(body)?;
+                let mut events = Vec::with_capacity(runs.iter().map(|r| r.deltas.len()).sum());
+                for DeltaRun { thread, item, deltas } in runs {
+                    events.extend(deltas.into_iter().map(|delta| Envelope { seq: 0, event: Event::ItemDelta { thread, item, delta } }));
+                }
+                Ok(ServerMsg::Events(events))
             }
             DONE => {
                 let id = body.get(..4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes).ok_or(FrameError::Incomplete)?;

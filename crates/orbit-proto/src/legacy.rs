@@ -1,17 +1,22 @@
 //! Readers for records written by older versions of Orbit.
 //!
-//! `bitcode` is not self-describing: a struct that gains a field, or an enum
-//! whose variant count crosses a packing boundary, no longer decodes from old
-//! bytes. The durable logs therefore carry a schema version (see
-//! `orbit-core`'s store), and each version that changed a logged type keeps a
-//! frozen copy of the old layout here with a conversion to the current one.
+//! Neither wire format is self-describing: a struct that gains a field no
+//! longer decodes from old bytes. The durable logs therefore carry a schema
+//! version (see `orbit-core`'s store), and each version that changed a
+//! logged type keeps a frozen copy of the old layout here with a conversion
+//! to the current one.
+//!
+//! Schemas 1 to 4 were written in `bitcode`; schema 5 switched to `wincode`
+//! (`crate::codec`). Schema 4 is read through the current types' bitcode
+//! derives, so before a logged type changes, its schema-4 layout must be
+//! frozen here like the others (`v4`).
 //!
 //! Rules for changing logged types (`Event`, `Thread`, `ThreadConfig`,
 //! `Project`, `Item` and everything inside them):
 //!
-//! * Appending an enum variant is compatible while the variant count stays
-//!   within its packing class (2, 3, 4, 6, 16, 256 variants). `ItemBody` and
-//!   `Event` have room; crossing a boundary needs a new version.
+//! * Appending an enum variant is compatible while there are fewer than 256
+//!   (`u8` tags). In schemas 1 to 4 (bitcode) the variant count also had to
+//!   stay within its packing class (2, 3, 4, 6, 16, 256).
 //! * Adding, removing or reordering a struct field always needs a new
 //!   schema version and a frozen copy of the old struct here, and of
 //!   everything that contains it (an `Item` field freezes `Item`,
@@ -603,8 +608,12 @@ pub mod v3 {
     }
 }
 
-/// The current schema version of the meta log.
-pub const META_VERSION: u32 = 4;
+/// The current schema version of the meta log and timeline logs: 5, the
+/// first written in `wincode`.
+pub const META_VERSION: u32 = 5;
+
+/// The last schema written in `bitcode`.
+pub const LAST_BITCODE_VERSION: u32 = 4;
 
 /// Decodes one meta-log envelope written at schema `version`.
 ///
@@ -618,13 +627,10 @@ pub fn decode_envelope(version: u32, payload: &[u8]) -> Result<Envelope, FrameEr
             Ok(old) => Ok(Envelope { seq: old.seq, event: old.event.into() }),
             Err(_) => Ok(Envelope { seq: 0, event: Event::Providers(Vec::new()) }),
         },
-        2 => bitcode::decode::<v2::Envelope>(payload)
-            .map(|old| Envelope { seq: old.seq, event: old.event.into() })
-            .map_err(FrameError::Decode),
-        3 => bitcode::decode::<v3::Envelope>(payload)
-            .map(|old| Envelope { seq: old.seq, event: old.event.into() })
-            .map_err(FrameError::Decode),
-        _ => bitcode::decode(payload).map_err(FrameError::Decode),
+        2 => crate::codec::bitcode_decode::<v2::Envelope>(payload).map(|old| Envelope { seq: old.seq, event: old.event.into() }),
+        3 => crate::codec::bitcode_decode::<v3::Envelope>(payload).map(|old| Envelope { seq: old.seq, event: old.event.into() }),
+        LAST_BITCODE_VERSION => crate::codec::bitcode_decode(payload),
+        _ => crate::codec::decode(payload),
     }
 }
 

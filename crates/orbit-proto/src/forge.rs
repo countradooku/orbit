@@ -14,6 +14,7 @@ use crate::model::ThreadConfig;
 
 /// A git hosting service, detected from the repository's remote.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ForgeKind {
     GitHub,
     GitLab,
@@ -52,6 +53,7 @@ impl ForgeKind {
 
 /// The hosted repository behind a project's remote.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ForgeRepo {
     pub kind: ForgeKind,
     /// `github.com`, `gitlab.example.com`.
@@ -66,6 +68,7 @@ pub struct ForgeRepo {
 
 /// Whether Orbit can talk to the host, and the exact fix when it cannot.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ForgeAuth {
     /// Signed in as `account` (may be empty when the CLI does not say).
     Ready { account: String },
@@ -79,6 +82,7 @@ pub enum ForgeAuth {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ForgeInfo {
     /// `None` when the project has no remote on a known host.
     pub repo: Option<ForgeRepo>,
@@ -90,6 +94,7 @@ pub struct ForgeInfo {
 // ── Pull requests ────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum PrState {
     #[default]
     Open,
@@ -115,6 +120,7 @@ impl PrState {
 
 /// Which pull requests a list shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum PrFilter {
     #[default]
     Open,
@@ -139,6 +145,7 @@ impl PrFilter {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum CheckState {
     #[default]
     Queued,
@@ -171,6 +178,7 @@ impl CheckState {
 
 /// Counts of a pull request's checks by outcome.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ChecksSummary {
     pub passed: u16,
     pub failed: u16,
@@ -211,6 +219,7 @@ impl ChecksSummary {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ReviewDecision {
     #[default]
     None,
@@ -220,6 +229,7 @@ pub enum ReviewDecision {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum Mergeability {
     #[default]
     Unknown,
@@ -254,6 +264,7 @@ impl Mergeability {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum MergeMethod {
     Merge,
     #[default]
@@ -275,6 +286,7 @@ impl MergeMethod {
 
 /// A pull (or merge) request as lists show it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct PullRequest {
     pub number: u64,
     pub title: String,
@@ -297,6 +309,7 @@ pub struct PullRequest {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Check {
     pub name: String,
     /// The workflow or pipeline stage it belongs to, when there is one.
@@ -312,6 +325,7 @@ pub struct Check {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ReviewState {
     Approved,
     ChangesRequested,
@@ -322,6 +336,7 @@ pub enum ReviewState {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Review {
     pub author: String,
     pub state: ReviewState,
@@ -331,6 +346,7 @@ pub struct Review {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Comment {
     pub author: String,
     /// Markdown.
@@ -342,6 +358,7 @@ pub struct Comment {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct PullRequestDetail {
     pub pr: PullRequest,
     /// Markdown.
@@ -362,6 +379,7 @@ pub struct PullRequestDetail {
 
 /// A list as the engine last fetched it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct PullRequestList {
     pub items: Vec<PullRequest>,
     pub fetched_ms: u64,
@@ -374,6 +392,7 @@ pub struct PullRequestList {
 
 /// Where issues come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum TrackerKind {
     GitHub,
     GitLab,
@@ -400,6 +419,7 @@ impl TrackerKind {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum IssueState {
     #[default]
     Open,
@@ -409,6 +429,7 @@ pub enum IssueState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct Issue {
     pub tracker: TrackerKind,
     /// What people call it: `#42`, `ENG-123`, `PROJ-7`.
@@ -428,6 +449,7 @@ pub struct Issue {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct IssueDetail {
     pub issue: Issue,
     /// Markdown.
@@ -437,6 +459,7 @@ pub struct IssueDetail {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct IssueList {
     pub items: Vec<Issue>,
     pub fetched_ms: u64,
@@ -448,6 +471,7 @@ pub struct IssueList {
 /// Where a thread's work is on the way from edit to merge. Each stage names
 /// the next step, so one control can always offer it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ShipStage {
     /// Not in a git repository.
     #[default]
@@ -471,6 +495,7 @@ pub enum ShipStage {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct ShipState {
     pub stage: ShipStage,
     pub branch: Option<String>,
@@ -497,6 +522,7 @@ pub struct ShipState {
 
 /// Commands for hosts and trackers, carried by `Command::Forge`.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ForgeCommand {
     /// The project's host, repository and sign-in state.
     Info { project: ProjectId },
@@ -536,6 +562,7 @@ pub enum ForgeCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub enum ForgeReply {
     Info(Box<ForgeInfo>),
     PullRequests(PullRequestList),
@@ -555,6 +582,7 @@ pub enum ForgeReply {
 /// client, and tokens should not. `Debug` redacts the tokens, so they never
 /// reach a log either.
 #[derive(Clone, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
 pub struct IntegrationSettings {
     /// Explicit GitLab CLI binary; empty uses `glab` from PATH.
     pub glab_binary: String,

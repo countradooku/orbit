@@ -30,7 +30,10 @@ pub mod teams;
 pub mod wire;
 
 pub use automation::*;
-pub use codec::{Codec, FRAME_HEADER, FrameError, FrameReader, decode, encode, write_frame, write_raw_frame};
+pub use codec::{
+    Codec, FRAME_HEADER, FrameError, FrameReader, MAX_FRAME, Wire, WireConfig, bitcode_decode, decode, encode, encode_into,
+    write_frame, write_raw_frame,
+};
 pub use diff::{
     DiffLine, FileDiff, FileDiffKind, Hunk, LineKind, LineRanges, Span, file_patch, hunk_patch, hunks_patch, word_diff,
 };
@@ -56,8 +59,9 @@ pub use wire::*;
 /// version 7, agent teams and races (`Snapshot::teams`, `Event::Team`,
 /// `Command::Team`, `Reply::Team`); version 8, server frames start with a
 /// kind byte so streamed tokens and `Done` replies skip the big enums
-/// (see [`link`]).
-pub const PROTOCOL_VERSION: u16 = 8;
+/// (see [`link`]); version 9, payloads in wincode instead of bitcode
+/// (see [`codec`]).
+pub const PROTOCOL_VERSION: u16 = 9;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";
