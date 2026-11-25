@@ -34,6 +34,7 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         composer(cx),
         agents(&app, cx),
         workspace(cx),
+        integrations(),
         notifications(),
         keyboard(),
         remote(&app, cx),
@@ -279,6 +280,80 @@ fn provider_status(app: Entity<AppState>, kind: ProviderKind) -> SettingField<Sh
                     }),
             )
     })
+}
+
+/// Hosts and issue trackers. Stored by the engine in their own file, not
+/// with these settings, so tokens never travel in the logged settings.
+fn integrations() -> SettingPage {
+    use crate::forge::integrations::{get as integ, update as set_integ};
+    SettingPage::new("Integrations").icon(Icon::new(Lucide::Plug)).groups([
+        SettingGroup::new().title("GitLab").item(
+            SettingItem::new(
+                "GitLab CLI program",
+                text_field(
+                    "glab-binary".into(),
+                    "glab",
+                    false,
+                    |cx| integ(cx).glab_binary.clone(),
+                    |v, cx| set_integ(cx, |s| s.glab_binary = v),
+                ),
+            )
+            .description("Merge requests and GitLab issues are read with your own glab sign-in (`glab auth login`). Leave empty to use glab from PATH.")
+            .keywords(["glab", "merge request", "gitlab"]),
+        ),
+        SettingGroup::new().title("Linear").item(
+            SettingItem::new(
+                "API key",
+                text_field(
+                    "linear-api-key".into(),
+                    "lin_api_…",
+                    true,
+                    |cx| integ(cx).linear_api_key.clone(),
+                    |v, cx| set_integ(cx, |s| s.linear_api_key = v),
+                ),
+            )
+            .description("A personal API key from Linear › Settings › Security & access. Orbit reads the issues assigned to you and the ones you search for; it never changes them.")
+            .keywords(["linear", "token", "issues"]),
+        ),
+        SettingGroup::new().title("Jira").items([
+            SettingItem::new(
+                "Site",
+                text_field(
+                    "jira-url".into(),
+                    "https://your-team.atlassian.net",
+                    false,
+                    |cx| integ(cx).jira_url.clone(),
+                    |v, cx| set_integ(cx, |s| s.jira_url = v),
+                ),
+            )
+            .description("Your Jira Cloud site, or the base address of Jira Server or Data Center.")
+            .keywords(["jira", "atlassian", "url"]),
+            SettingItem::new(
+                "Email",
+                text_field(
+                    "jira-email".into(),
+                    "you@company.com",
+                    false,
+                    |cx| integ(cx).jira_email.clone(),
+                    |v, cx| set_integ(cx, |s| s.jira_email = v),
+                ),
+            )
+            .description("Your Atlassian account email, for a Jira Cloud API token. Leave empty for a Server or Data Center personal access token.")
+            .keywords(["jira", "account"]),
+            SettingItem::new(
+                "API token",
+                text_field(
+                    "jira-api-token".into(),
+                    "Token",
+                    true,
+                    |cx| integ(cx).jira_api_token.clone(),
+                    |v, cx| set_integ(cx, |s| s.jira_api_token = v),
+                ),
+            )
+            .description("Create one at id.atlassian.com › Security › API tokens (Cloud) or in Jira › Profile › Personal access tokens. Stored in Orbit’s data folder and never written to logs.")
+            .keywords(["jira", "token", "pat"]),
+        ]),
+    ])
 }
 
 fn workspace(cx: &App) -> SettingPage {

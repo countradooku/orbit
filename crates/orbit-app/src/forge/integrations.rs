@@ -17,30 +17,28 @@ const SAVE_DELAY: Duration = Duration::from_millis(500);
 pub struct Integrations {
     app: Entity<AppState>,
     current: IntegrationSettings,
-    loaded: bool,
     save: Option<Task<()>>,
 }
 
 impl Global for Integrations {}
 
 pub fn init(app: Entity<AppState>, cx: &mut App) {
-    cx.set_global(Integrations { app, current: IntegrationSettings::default(), loaded: false, save: None });
+    cx.set_global(Integrations { app, current: IntegrationSettings::default(), save: None });
     reload(cx);
 }
 
-/// Reads the engine's copy (at startup, and after a reconnect).
+/// Reads the engine's copy (at startup).
 pub fn reload(cx: &mut App) {
     let app = cx.global::<Integrations>().app.clone();
     let task = app.update(cx, |app, cx| app.call(Command::Forge(ForgeCommand::Integrations), cx));
     cx.spawn(async move |cx| {
         if let Ok(Reply::Forge(ForgeReply::Integrations(settings))) = task.await {
-            let _ = cx.update(|cx| {
+            cx.update(|cx| {
                 let model = cx.global_mut::<Integrations>();
                 // An edit made while loading wins.
                 if model.save.is_none() {
                     model.current = settings;
                 }
-                model.loaded = true;
                 cx.refresh_windows();
             });
         }
@@ -50,10 +48,6 @@ pub fn reload(cx: &mut App) {
 
 pub fn get(cx: &App) -> &IntegrationSettings {
     &cx.global::<Integrations>().current
-}
-
-pub fn loaded(cx: &App) -> bool {
-    cx.global::<Integrations>().loaded
 }
 
 pub fn update(cx: &mut App, edit: impl FnOnce(&mut IntegrationSettings)) {
@@ -66,7 +60,7 @@ pub fn update(cx: &mut App, edit: impl FnOnce(&mut IntegrationSettings)) {
     let app = model.app.clone();
     let task = cx.spawn(async move |cx| {
         cx.background_executor().timer(SAVE_DELAY).await;
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             let model = cx.global_mut::<Integrations>();
             model.save = None;
             let settings = model.current.clone();

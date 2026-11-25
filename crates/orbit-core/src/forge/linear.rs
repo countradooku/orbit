@@ -29,9 +29,9 @@ impl Linear {
         let auth = if self.api_key.starts_with("lin_oauth_") { format!("Bearer {}", self.api_key) } else { self.api_key.clone() };
         let headers = [("authorization", auth), ("content-type", "application/json".to_owned())];
         let response = http::send("POST", &self.endpoint, &headers, Some(body.into_bytes())).await?;
-        let v = json::parse(&response.body, "Linear's answer").or_else(|e| match response.status {
-            200 => Err(e),
-            status => Err(ForgeError::Failed(format!("Linear answered HTTP {status}."))),
+        let v = json::parse(&response.body, "Linear's answer").map_err(|e| match response.status {
+            200 => e,
+            status => ForgeError::Failed(format!("Linear answered HTTP {status}.")),
         })?;
         if let Some(error) = arr(&v, "errors").first() {
             return Err(classify(&s(error, "extensions/code"), &s(error, "message"), response.retry_after));

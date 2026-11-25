@@ -451,12 +451,12 @@ async fn ship_state(service: &Forge, config: &ForgeConfig, git: &Git, repo: &Pat
             Err(e) => state.note = Some(e.to_string()),
         }
     }
-    if let Some(pr) = state.pr.as_ref().filter(|p| p.state.is_open()) {
-        if let Ok(fresh) = service.pull_request(config, git, repo, pr.number, refresh).await {
-            state.mergeable = fresh.value.mergeable;
-            state.auto_merge = fresh.value.auto_merge.is_some();
-            state.pr = Some(fresh.value.pr);
-        }
+    if let Some(pr) = state.pr.as_ref().filter(|p| p.state.is_open())
+        && let Ok(fresh) = service.pull_request(config, git, repo, pr.number, refresh).await
+    {
+        state.mergeable = fresh.value.mergeable;
+        state.auto_merge = fresh.value.auto_merge.is_some();
+        state.pr = Some(fresh.value.pr);
     }
     state.stage = ship_stage(&state, status.upstream.is_some());
     state
