@@ -3,10 +3,7 @@
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let env = orbit_cli::Env::from_process();
-    let code = {
-        let stdout = std::io::stdout();
-        let stderr = std::io::stderr();
-        orbit_cli::run(&argv, env, &mut stdout.lock(), &mut stderr.lock())
-    };
+    // Unlocked handles: `orbit mcp` writes from its own thread.
+    let code = orbit_cli::run(&argv, env, &mut std::io::stdout(), &mut std::io::stderr());
     std::process::exit(code);
 }

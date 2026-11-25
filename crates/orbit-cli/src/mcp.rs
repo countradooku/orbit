@@ -112,24 +112,50 @@ async fn call_tool(ctx: &Ctx, params: &Value) -> Result<Value, (i64, String)> {
 /// a `LocalSet`, so call this inside one.
 pub async fn serve<R, W>(ctx: Ctx, input: R, mut output: W) -> std::io::Result<()>
 where
-    R: AsyncRead + Unpin,
+    R: AsyncRead + Unpin + 'static,
     W: AsyncWrite + Unpin + 'static,
 {
-    let ctx = Rc::new(ctx);
+    let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel::<std::io::Result<String>>();
+    tokio::task::spawn_local(async move {
+        let mut lines = BufReader::new(input).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => drop(line_tx.send(Ok(line))),
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = line_tx.send(Err(e));
+                    break;
+                }
+            }
+        }
+    });
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let writer = tokio::task::spawn_local(async move {
         while let Some(line) = rx.recv().await {
             if output.write_all(line.as_bytes()).await.is_err()
-                || output.write_all(b"\n").await.is_err()
+                || output.write_all(b"
+").await.is_err()
                 || output.flush().await.is_err()
             {
                 break;
             }
         }
     });
+    let result = serve_lines(ctx, line_rx, tx).await;
+    let _ = writer.await;
+    result
+}
+
+/// The protocol loop: requests in as lines, responses out as lines.
+async fn serve_lines(
+    ctx: Ctx,
+    mut input: tokio::sync::mpsc::UnboundedReceiver<std::io::Result<String>>,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+) -> std::io::Result<()> {
+    let ctx = Rc::new(ctx);
     let running: Rc<RefCell<HashMap<String, tokio::task::AbortHandle>>> = Rc::default();
-    let mut lines = BufReader::new(input).lines();
-    while let Some(line) = lines.next_line().await? {
+    while let Some(line) = input.recv().await {
+        let line = line?;
         if line.trim().is_empty() {
             continue;
         }
@@ -185,8 +211,6 @@ where
     for handle in pending {
         handle.abort();
     }
-    drop(tx);
-    let _ = writer.await;
     Ok(())
 }
 
@@ -200,8 +224,47 @@ pub fn run_stdio(env: crate::conn::Env, global: Map<String, Value>) -> i32 {
         }
     };
     let ctx = Ctx::new(env, global, Origin::Tool);
+    // Plain threads for stdio: a blocked console read must never hold up
+    // the runtime, and every response is flushed as one line.
+    let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel::<std::io::Result<String>>();
+    let reader = std::thread::Builder::new().name("mcp-stdin".into()).spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::stdin().lock().lines() {
+            let failed = line.is_err();
+            if line_tx.send(line).is_err() || failed {
+                break;
+            }
+        }
+    });
+    if let Err(e) = reader {
+        eprintln!("error: {e}");
+        return exit::ERROR;
+    }
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let writer = std::thread::Builder::new().name("mcp-stdout".into()).spawn(move || {
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        while let Some(line) = rx.blocking_recv() {
+            let mut out = stdout.lock();
+            if writeln!(out, "{line}").and_then(|_| out.flush()).is_err() {
+                break;
+            }
+        }
+    });
+    let writer = match writer {
+        Ok(writer) => writer,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return exit::ERROR;
+        }
+    };
     let local = tokio::task::LocalSet::new();
-    match local.block_on(&runtime, serve(ctx, tokio::io::stdin(), tokio::io::stdout())) {
+    let result = local.block_on(&runtime, serve_lines(ctx, line_rx, tx));
+    // Dropping the set drops cancelled calls and their senders, which
+    // lets the writer finish.
+    drop(local);
+    let _ = writer.join();
+    match result {
         Ok(()) => exit::OK,
         Err(e) => {
             eprintln!("error: {e}");

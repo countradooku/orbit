@@ -222,8 +222,97 @@ async fn run(ctx: &Ctx, conn: &Conn, spec: &Spec, args: &Map<String, Value>, out
         ["stop"] => {
             let id = thread_arg("thread")?;
             check_lineage(ctx, conn, id, Lineage::Control)?;
-            conn.call(Command::Interrupt { thread: id }).await?;
-            Ok(Outcome::ok(json!({"thread": id.to_string(), "stopped": true}), format!("Stopped {id}")))
+            let force = flag(args, "force");
+            conn.call(if force { Command::ForceStop { thread: id } } else { Command::Interrupt { thread: id } }).await?;
+            let human = if force { format!("Ended {id}’s agent") } else { format!("Stopped {id}") };
+            Ok(Outcome::ok(json!({"thread": id.to_string(), "stopped": true, "forced": force}), human))
+        }
+        ["retry"] => {
+            let id = thread_arg("thread")?;
+            check_lineage(ctx, conn, id, Lineage::Control)?;
+            conn.call(Command::Retry { thread: id }).await?;
+            Ok(Outcome::ok(json!({"thread": id.to_string(), "retrying": true}), format!("Retrying {id}’s last turn")))
+        }
+        ["new-session"] => {
+            let id = thread_arg("thread")?;
+            conn.call(Command::NewSession { thread: id }).await?;
+            Ok(Outcome::ok(json!({"thread": id.to_string(), "new_session": true}), format!("{id} starts a fresh session with its next message")))
+        }
+        ["export"] => {
+            let id = thread_arg("thread")?;
+            let Reply::Blob(blob) = conn.call(Command::ExportThread { thread: id }).await? else {
+                return Err(CliError::engine("Unexpected reply."));
+            };
+            let Reply::Bytes(bytes) = conn.call(Command::ReadBlob { hash: blob.hash.clone() }).await? else {
+                return Err(CliError::engine("Unexpected reply."));
+            };
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            Ok(Outcome::ok(json!({"thread": id.to_string(), "blob": blob.hash, "digest": text}), text))
+        }
+        ["merge"] => merge(ctx, conn, thread_arg("thread")?, args).await,
+        ["files"] => {
+            let query = text(args, "query", ctx.origin)?;
+            let (thread, project) = {
+                let state = conn.state();
+                let thread = s(args, "thread").map(|t| select::thread(&state, &ctx.env, t)).transpose()?;
+                let project = match (thread, s(args, "project")) {
+                    (Some(_), _) => None,
+                    (None, Some(p)) => Some(select::project(&state, &ctx.env, p)?),
+                    (None, None) => Some(select::containing(&state, &ctx.env.cwd).ok_or_else(|| {
+                        CliError::not_found("The current folder is not in a project.").hint("Pass --thread or --project.")
+                    })?),
+                };
+                (thread, project)
+            };
+            let limit = int(args, "limit").unwrap_or(50).min(1000) as u32;
+            let Reply::Files(files) = conn.call(Command::SearchFiles { thread, project, query, limit }).await? else {
+                return Err(CliError::engine("Unexpected reply."));
+            };
+            let human = if files.is_empty() { "No matches.".to_owned() } else { files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>().join("\n") };
+            let list: Vec<Value> = files.iter().map(|f| json!({"path": f.path, "is_dir": f.is_dir})).collect();
+            Ok(Outcome::ok(json!({"files": list}), human))
+        }
+        ["queue"] => {
+            let id = thread_arg("thread")?;
+            let raw = s(args, "item").unwrap_or_default();
+            let item: ItemId = raw.parse().map_err(|_| CliError::usage(format!("“{raw}” is not an item id.")))?;
+            if flag(args, "now") {
+                conn.call(Command::SteerQueued { thread: id, item }).await?;
+                Ok(Outcome::ok(json!({"thread": id.to_string(), "item": item.to_string(), "sent": true}), format!("Sent {item} now")))
+            } else {
+                let to = int(args, "to").ok_or_else(|| CliError::usage("Say where with --to, or send it with --now."))?;
+                conn.call(Command::MoveQueued { thread: id, item, to: to as u32 }).await?;
+                Ok(Outcome::ok(json!({"thread": id.to_string(), "item": item.to_string(), "position": to}), format!("Moved {item} to place {to}")))
+            }
+        }
+        ["draft"] => {
+            let target = if flag(args, "home") { DraftTarget::Home } else { DraftTarget::Thread(thread_arg("thread")?) };
+            let text = text(args, "text", ctx.origin)?;
+            let draft = Draft { text: text.clone(), attachments: Vec::new(), updated_ms: now_ms() };
+            conn.call(Command::SaveDraft { target, draft }).await?;
+            let human = if text.trim().is_empty() { "Cleared the draft.".to_owned() } else { "Saved the draft.".to_owned() };
+            Ok(Outcome::ok(json!({"saved": !text.trim().is_empty()}), human))
+        }
+        ["generate"] => {
+            let input = text(args, "input", ctx.origin)?;
+            let task = match s(args, "task").unwrap_or("custom") {
+                "title" => TextTask::ThreadTitle,
+                "commit" => TextTask::CommitMessage,
+                "pr" => TextTask::PullRequest,
+                _ => TextTask::Custom {
+                    instructions: s(args, "instructions")
+                        .ok_or_else(|| CliError::usage("`custom` needs --instructions."))?
+                        .to_owned(),
+                },
+            };
+            let thread = match s(args, "thread") {
+                Some(sel) => Some(select::thread(&conn.state(), &ctx.env, sel)?),
+                None => None,
+            };
+            let Reply::Text(text) = conn.call(Command::GenerateText { thread, task, input }).await? else {
+                return Err(CliError::engine("Unexpected reply."));
+            };
+            Ok(Outcome::ok(json!({"text": text}), text))
         }
         ["settle"] => {
             let id = thread_arg("thread")?;
@@ -258,6 +347,11 @@ async fn run(ctx: &Ctx, conn: &Conn, spec: &Spec, args: &Map<String, Value>, out
             Ok(Outcome::ok(json!({"thread": id.to_string(), "snoozed_until_ms": until}), human))
         }
         ["diff"] => diff(conn, thread_arg("thread")?, args).await,
+        ["undo-turn"] if flag(args, "redo") => {
+            let id = thread_arg("thread")?;
+            conn.call(Command::UndoRestore { thread: id }).await?;
+            Ok(Outcome::ok(json!({"thread": id.to_string(), "undid_restore": true}), format!("Put {id}’s files back as they were before the last restore.")))
+        }
         ["undo-turn"] => {
             let id = thread_arg("thread")?;
             let turns = conn.state().threads.get(&id).map(|t| t.turns).unwrap_or(0);
@@ -268,7 +362,7 @@ async fn run(ctx: &Ctx, conn: &Conn, spec: &Spec, args: &Map<String, Value>, out
             conn.call(Command::RestoreCheckpoint { thread: id, turn }).await?;
             Ok(Outcome::ok(
                 json!({"thread": id.to_string(), "restored_before_turn": turn}),
-                format!("Restored {id} to before turn {turn}. Undo with `orbit undo-turn {id} --turn {}`.", turns + 1),
+                format!("Restored {id} to before turn {turn}. Put the files back with `orbit undo-turn {id} --redo`."),
             ))
         }
         ["terminal", "run"] => terminal_run(ctx, conn, args, out).await,
@@ -521,8 +615,9 @@ async fn new_thread(ctx: &Ctx, conn: &Conn, args: &Map<String, Value>) -> Result
     }
     if flag(args, "wait") {
         let mut outcome = wait_and_report(ctx, conn, vec![id], Until::Finished, false, args, Some(started)).await?;
-        if let Some(thread) = conn.state().threads.get(&id) {
-            outcome.value["details"] = json::thread(&conn.state(), thread);
+        let state = conn.state();
+        if let Some(thread) = state.threads.get(&id) {
+            outcome.value["details"] = json::thread(&state, thread);
         }
         return Ok(outcome);
     }
@@ -890,6 +985,8 @@ async fn diff(conn: &Conn, id: ThreadId, args: &Map<String, Value>) -> Result<Ou
     let turns = conn.state().threads.get(&id).map(|t| t.turns).unwrap_or(0);
     let (scope, label) = if let Some(turn) = int(args, "turn") {
         (DiffScope::Turn(turn as u32), format!("turn {turn}"))
+    } else if let Some(turn) = int(args, "since-turn") {
+        (DiffScope::SinceTurn(turn as u32), format!("since turn {turn}"))
     } else if flag(args, "last") {
         if turns == 0 {
             return Err(CliError::usage("This thread has no turns yet."));
@@ -934,6 +1031,53 @@ async fn diff(conn: &Conn, id: ThreadId, args: &Map<String, Value>) -> Result<Ou
     }
     let human = if stat || patch.is_empty() { render::diff_stat(&files) } else { patch };
     Ok(Outcome::ok(value, human))
+}
+
+// ── Merging ─────────────────────────────────────────────────────────────
+
+async fn merge(ctx: &Ctx, conn: &Conn, id: ThreadId, args: &Map<String, Value>) -> Result<Outcome, CliError> {
+    let dry_run = flag(args, "dry-run");
+    if !dry_run {
+        check_lineage(ctx, conn, id, Lineage::Control)?;
+    }
+    let (into, message) = {
+        let state = conn.state();
+        let thread = state.threads.get(&id).ok_or_else(|| CliError::not_found("That thread no longer exists."))?;
+        let base = thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p)).and_then(|p| p.base_branch.clone());
+        let into = s(args, "into").map(str::to_owned).or(base).unwrap_or_else(|| "main".into());
+        let message = s(args, "message").map(str::to_owned).unwrap_or_else(|| json::title(thread).to_owned());
+        (into, message)
+    };
+    let Reply::Merge(info) = conn.call(Command::MergeLocal { thread: id, into, message, dry_run }).await? else {
+        return Err(CliError::engine("Unexpected reply."));
+    };
+    let value = json!({
+        "thread": id.to_string(),
+        "dry_run": dry_run,
+        "source": info.source,
+        "target": info.target,
+        "commits": info.commits,
+        "uncommitted": info.uncommitted,
+        "files": info.files.iter().map(json::file).collect::<Vec<_>>(),
+        "conflicts": info.conflicts,
+        "fast_forward": info.fast_forward,
+        "merged": info.merged,
+    });
+    let mut human = format!(
+        "{} {} into {}: {} commits, {} files{}{}",
+        if dry_run { "Would merge" } else { "Merged" },
+        info.source,
+        info.target,
+        info.commits,
+        info.files.len(),
+        if info.uncommitted > 0 { format!(", {} uncommitted files committed first", info.uncommitted) } else { String::new() },
+        if info.fast_forward { " (fast-forward)" } else { "" },
+    );
+    if !info.conflicts.is_empty() {
+        human.push_str(&format!("\nConflicts: {}", info.conflicts.join(", ")));
+    }
+    let exit = if dry_run && !info.conflicts.is_empty() { exit::ERROR } else { exit::OK };
+    Ok(Outcome { value, exit, human: Some(human) })
 }
 
 // ── Terminals ───────────────────────────────────────────────────────────

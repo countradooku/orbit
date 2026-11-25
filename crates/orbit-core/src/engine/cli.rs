@@ -44,14 +44,16 @@ impl TermRecord {
 impl CliState {
     /// Keeps the newest output of every terminal, so `orbit terminal read`
     /// works for terminals the desktop app opened too. A memcpy per chunk.
-    pub(crate) fn capture(&mut self, term: TermId, data: &[u8]) {
+    /// Returns whether this is a command terminal (no screen attached).
+    pub(crate) fn capture(&mut self, term: TermId, data: &[u8]) -> bool {
         let record =
             self.terminals.entry(term).or_insert_with(|| TermRecord::new(term, String::new(), String::new()));
+        let headless = !record.info.command.is_empty();
         if data.len() >= TAIL_BYTES {
             record.dropped += (record.tail.len() + data.len() - TAIL_BYTES) as u64;
             record.tail.clear();
             record.tail.extend(&data[data.len() - TAIL_BYTES..]);
-            return;
+            return headless;
         }
         let overflow = (record.tail.len() + data.len()).saturating_sub(TAIL_BYTES);
         if overflow > 0 {
@@ -59,6 +61,7 @@ impl CliState {
             record.dropped += overflow as u64;
         }
         record.tail.extend(data);
+        headless
     }
 
     pub(crate) fn exited(&mut self, term: TermId, code: Option<i32>) {
@@ -75,6 +78,15 @@ impl CliState {
 }
 
 impl Orchestrator {
+    /// Output of any terminal. A command terminal has no screen to answer
+    /// the pseudoconsole's cursor-position query (`ESC[6n`, sent by ConPTY
+    /// at startup), and the command would wait for it forever; answer it.
+    pub(crate) fn cli_terminal_output(&mut self, term: TermId, data: &[u8]) {
+        if self.cli.capture(term, data) && memchr::memmem::find(data, b"[6n").is_some() {
+            self.terminals.input(term, b"[1;1R");
+        }
+    }
+
     pub(crate) fn cli_command(&mut self, command: Command) -> CommandResult {
         match command {
             Command::StartThread(start) => self.start_thread(start),

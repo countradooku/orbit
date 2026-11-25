@@ -37,6 +37,8 @@ pub enum Internal {
     SnoozeEnded { thread: ThreadId, until: u64 },
     /// A thread's worktree finished setting up (or failed to).
     WorktreeReady { thread: ThreadId, result: Result<Workspace, String>, setup_log: Option<String> },
+    /// Review engine results (live refresh, conflicts).
+    Review(super::review::ReviewInternal),
     /// A generated title for a thread still titled `seed`.
     TitleGenerated { thread: ThreadId, seed: String, title: String },
 }
@@ -44,8 +46,6 @@ pub enum Internal {
 /// Starts provider sessions. Tests replace it with scripted fakes.
 pub type Launcher = Box<dyn FnMut(ProviderKind, SessionSpec, EventSender) -> SessionHandle + Send>;
 
-/// Bytes of tool output kept inline on an item; the rest goes to a blob.
-const INLINE_OUTPUT: usize = 64 * 1024;
 /// Thread titles taken from the first message are cut to this many chars.
 const TITLE_CHARS: usize = 72;
 /// Streaming items are persisted at most this often.
@@ -124,6 +124,8 @@ pub struct Orchestrator {
     pub(crate) open: HashSet<ThreadId>,
     pub(crate) git: Git,
     pub(crate) terminals: Terminals,
+    pub(crate) review: super::review::ReviewState,
+    pub(crate) files: super::files::FileIndex,
     /// How one-shot text is generated.
     pub(crate) generator: super::textgen::Generator,
     pub(crate) seeded_titles: super::textgen::SeededTitles,
@@ -171,6 +173,8 @@ impl Orchestrator {
             open: HashSet::new(),
             git,
             terminals: Terminals::new(terminal_output, terminal_exits),
+            review: Default::default(),
+            files: Default::default(),
             generator: super::textgen::Generator::Native,
             seeded_titles: Default::default(),
             cli: Default::default(),
@@ -239,6 +243,10 @@ impl Orchestrator {
                 Some(base) => Some((base, None)),
                 None => return Outcome::Ready(Err("Nothing has run in this thread yet.".into())),
             },
+            DiffScope::SinceTurn(n) => match self.since_turn_range(thread, *n) {
+                Some(range) => Some(range),
+                None => return Outcome::Ready(Err("This turn has no snapshot to compare.".into())),
+            },
             _ => None,
         };
         Outcome::Deferred(Box::pin(async move {
@@ -302,6 +310,7 @@ impl Orchestrator {
                     Ok(Reply::Branches { current, all: branches.into_iter().map(|b| b.name).collect() })
                 }))
             }
+            command @ (Command::UndoRestore { .. } | Command::MergeLocal { .. }) => self.review_command(command),
             other => Outcome::Ready(self.handle_command(other)),
         }
     }
@@ -330,7 +339,7 @@ impl Orchestrator {
     }
 
     pub fn terminal_output(&mut self, term: TermId, data: Vec<u8>) {
-        self.cli.capture(term, &data);
+        self.cli_terminal_output(term, &data);
         self.emit(Event::TerminalOutput { term, data });
     }
 
@@ -379,6 +388,7 @@ impl Orchestrator {
                 self.store.unload_timeline(id);
             }
         }
+        self.rearm_quota_resets();
     }
 
     pub fn store(&self) -> &Store {
@@ -446,11 +456,7 @@ impl Orchestrator {
             (ItemBody::Assistant { text } | ItemBody::Reasoning { text }, Delta::Text(d) | Delta::Reasoning(d)) => {
                 text.push_str(d)
             }
-            (ItemBody::Tool(call), Delta::ToolOutput(d)) => {
-                if call.output.len() < INLINE_OUTPUT {
-                    call.output.push_str(d);
-                }
-            }
+            (ItemBody::Tool(call), Delta::ToolOutput(d)) => append_output_tail(&mut call.output, d),
             (ItemBody::Tool(call), Delta::ToolInput(d)) => {
                 if call.input.len() < INLINE_OUTPUT {
                     call.input.push_str(d);
@@ -556,6 +562,9 @@ impl Orchestrator {
                             self.notice(thread, NoticeLevel::Warning, format!("The setup script failed:\n{log}"));
                         }
                         self.start_next_queued(thread);
+                        if self.open.contains(&thread) {
+                            self.watch_workspace(thread);
+                        }
                     }
                     Err(message) => {
                         self.notice(thread, NoticeLevel::Error, message.clone());
@@ -578,17 +587,8 @@ impl Orchestrator {
                 }
             }
             Internal::TitleGenerated { thread, seed, title } => self.on_title_generated(thread, seed, title),
-            Internal::QuotaReset(thread) => {
-                let limited = matches!(
-                    self.store.thread(thread).map(|t| &t.status),
-                    Some(ThreadStatus::RateLimited { .. })
-                );
-                if limited {
-                    self.update_thread(thread, |t| t.status = ThreadStatus::Idle);
-                    self.notice(thread, NoticeLevel::Info, "Your quota has reset.".into());
-                    self.start_next_queued(thread);
-                }
-            }
+            Internal::QuotaReset(thread) => self.quota_reset(thread),
+            Internal::Review(msg) => self.handle_review(msg),
         }
     }
 
@@ -599,13 +599,20 @@ impl Orchestrator {
     pub fn handle(&mut self, command: Command) -> Outcome {
         match command {
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
+            Command::SearchFiles { thread, project, query, limit } => {
+                Outcome::Deferred(self.search_files(thread, project, query, limit))
+            }
+            Command::ExportThread { thread } => Outcome::Deferred(self.export_thread(thread)),
+            Command::ReadBlob { hash } => Outcome::Deferred(self.read_blob(hash)),
             Command::GenerateText { thread, task, input } => Outcome::Deferred(self.generate_text(thread, task, input)),
             command @ (Command::Diff { .. }
             | Command::RevertPatch { .. }
             | Command::RestoreCheckpoint { .. }
             | Command::Commit { .. }
             | Command::CreatePullRequest { .. }
-            | Command::Branches { .. }) => self.git_command(command),
+            | Command::Branches { .. }
+            | Command::UndoRestore { .. }
+            | Command::MergeLocal { .. }) => self.git_command(command),
             command => Outcome::Ready(self.handle_command(command)),
         }
     }
@@ -636,6 +643,7 @@ impl Orchestrator {
             Command::OpenThread { id } => self.open_thread(id),
             Command::CloseThread { id } => {
                 self.open.remove(&id);
+                self.unwatch_workspace(id);
                 let busy = self.runtimes.get(&id).is_some_and(|r| r.turn.is_some());
                 if !busy {
                     self.flush_thread(id);
@@ -647,6 +655,9 @@ impl Orchestrator {
             Command::EditQueued { thread, item, text } => self.edit_queued(thread, item, text),
             Command::EditAndResend { thread, item, text } => self.edit_and_resend(thread, item, text),
             Command::Interrupt { thread } => self.interrupt(thread),
+            Command::ForceStop { thread } => self.force_stop(thread),
+            Command::Retry { thread } => self.retry(thread),
+            Command::ReadBlob { hash } => futures_block_on(self.read_blob(hash)),
             Command::Resolve { thread, request, decision } => self.resolve(thread, request, decision),
             Command::Search { query, limit } => {
                 // Synchronous callers (tests) get a blocking scan.
@@ -666,6 +677,13 @@ impl Orchestrator {
                 self.emit(Event::DefaultsChanged(config));
                 Ok(Reply::Done)
             }
+            Command::SaveDraft { target, draft } => self.save_draft(target, draft),
+            Command::MoveQueued { thread, item, to } => self.move_queued(thread, item, to),
+            Command::SteerQueued { thread, item } => self.steer_queued(thread, item),
+            Command::SearchFiles { thread, project, query, limit } => {
+                futures_block_on(self.search_files(thread, project, query, limit))
+            }
+            Command::ExportThread { thread } => futures_block_on(self.export_thread(thread)),
             Command::UpdateSettings { settings } => self.update_settings(settings),
             Command::NewSession { thread } => self.new_session(thread),
             // Needs the engine's runtime free; only `handle` runs it.
@@ -675,7 +693,9 @@ impl Orchestrator {
             | Command::RestoreCheckpoint { .. }
             | Command::Commit { .. }
             | Command::CreatePullRequest { .. }
-            | Command::Branches { .. } => futures_block_on(match self.git_command(command) {
+            | Command::Branches { .. }
+            | Command::UndoRestore { .. }
+            | Command::MergeLocal { .. } => futures_block_on(match self.git_command(command) {
                 Outcome::Ready(result) => return result,
                 Outcome::Deferred(future) => future,
             }),
@@ -877,6 +897,7 @@ impl Orchestrator {
             session.send(SessionInput::Shutdown);
         }
         self.open.remove(&id);
+        self.unwatch_workspace(id);
         self.dirty.retain(|(t, _)| *t != id);
         self.emit(Event::ThreadRemoved(id));
         if let Err(err) = self.store.collect_garbage() {
@@ -928,6 +949,7 @@ impl Orchestrator {
             return Err("That thread no longer exists.".into());
         }
         self.open.insert(id);
+        self.watch_workspace(id);
         let items = self.store.load_timeline(id).map_err(|e| e.to_string())?.items().to_vec();
         // Everything emitted before this mark is in `items`.
         let mark = next_raw_id();
@@ -952,6 +974,7 @@ impl Orchestrator {
         if text.trim().is_empty() && attachments.is_empty() {
             return Err("Write a message first.".into());
         }
+        validate_message(&text, &attachments)?;
         if thread.archived {
             return Err("This thread is archived. Unarchive it to continue.".into());
         }
@@ -1455,16 +1478,12 @@ impl Orchestrator {
                 let Some(mut item) = self.item(thread_id, id) else { return };
                 if let ItemBody::Tool(call) = &mut item.body {
                     if output.len() > INLINE_OUTPUT {
-                        let mut cut = INLINE_OUTPUT;
-                        while !output.is_char_boundary(cut) {
-                            cut -= 1;
-                        }
                         call.output_blob = self
                             .store
                             .put_blob(format!("{call_id}.txt"), "text/plain".into(), output.as_bytes())
                             .ok()
                             .map(|a| a.hash);
-                        call.output = output[..cut].to_owned();
+                        call.output = output_tail(&output, INLINE_OUTPUT).to_owned();
                     } else if !output.is_empty() {
                         call.output = output;
                     }

@@ -626,6 +626,209 @@ fn push_path(out: &mut String, prefix: &str, path: &str) {
     out.push('"');
 }
 
+/// The patch that undoes reverse-applying `patch`: its reverse application
+/// puts back what reverse-applying `patch` took away. Works on patches from
+/// [`hunks_patch`] and on text file sections from [`file_patch`] (renames,
+/// mode changes, creations and deletions are swapped); binary patches and
+/// copies return `None`.
+pub fn invert_patch(patch: &str) -> Option<String> {
+    let mut out = String::with_capacity(patch.len());
+    let mut lines = patch.split_inclusive('\n');
+    while let Some(raw) = lines.next() {
+        let (line, eol) = split_eol(raw);
+        if line == "GIT binary patch" || line.starts_with("Binary files ") || line.starts_with("copy from ") {
+            return None;
+        }
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            let (a, b) = git_header_paths(trim_cr(rest))?;
+            out.push_str("diff --git ");
+            push_path(&mut out, "a/", &b);
+            out.push(' ');
+            push_path(&mut out, "b/", &a);
+        } else if let Some(mode) = line.strip_prefix("new file mode ") {
+            out.push_str("deleted file mode ");
+            out.push_str(mode);
+        } else if let Some(mode) = line.strip_prefix("deleted file mode ") {
+            out.push_str("new file mode ");
+            out.push_str(mode);
+        } else if let Some(mode) = line.strip_prefix("old mode ") {
+            out.push_str("new mode ");
+            out.push_str(mode);
+        } else if let Some(mode) = line.strip_prefix("new mode ") {
+            out.push_str("old mode ");
+            out.push_str(mode);
+        } else if let Some(p) = line.strip_prefix("rename from ") {
+            out.push_str("rename to ");
+            out.push_str(p);
+        } else if let Some(p) = line.strip_prefix("rename to ") {
+            out.push_str("rename from ");
+            out.push_str(p);
+        } else if let Some(rest) = line.strip_prefix("index ") {
+            let (ids, mode) = match rest.split_once(' ') {
+                Some((ids, mode)) => (ids, Some(mode)),
+                None => (rest, None),
+            };
+            let (a, b) = ids.split_once("..")?;
+            out.push_str("index ");
+            out.push_str(b);
+            out.push_str("..");
+            out.push_str(a);
+            if let Some(mode) = mode {
+                out.push(' ');
+                out.push_str(mode);
+            }
+        } else if let Some(minus) = line.strip_prefix("--- ") {
+            // `---` and `+++` come in pairs: emit them swapped.
+            let (plus, plus_eol) = split_eol(lines.next()?);
+            let plus = plus.strip_prefix("+++ ")?;
+            out.push_str("--- ");
+            out.push_str(&swap_side(plus, "b/", "a/"));
+            out.push_str(plus_eol);
+            out.push_str("+++ ");
+            out.push_str(&swap_side(minus, "a/", "b/"));
+        } else if let Some((os, ol, ns, nl, heading)) = parse_hunk_header(line) {
+            out.push_str(&format!("@@ -{ns},{nl} +{os},{ol} @@"));
+            if !heading.is_empty() {
+                out.push(' ');
+                out.push_str(&line[heading]);
+            }
+        } else if let Some(rest) = line.strip_prefix('+') {
+            out.push('-');
+            out.push_str(rest);
+        } else if let Some(rest) = line.strip_prefix('-') {
+            out.push('+');
+            out.push_str(rest);
+        } else {
+            out.push_str(line);
+        }
+        out.push_str(eol);
+    }
+    Some(out)
+}
+
+/// A line and its ending (`\n`, or `\n` after a kept `\r`, or nothing).
+fn split_eol(raw: &str) -> (&str, &str) {
+    match raw.strip_suffix('\n') {
+        Some(line) => (line, "\n"),
+        None => (raw, ""),
+    }
+}
+
+/// Re-prefixes a `---`/`+++` path for the other side; `/dev/null` stays.
+fn swap_side(path: &str, from: &str, to: &str) -> String {
+    if path.starts_with("/dev/null") {
+        return path.to_owned();
+    }
+    if let Some(rest) = path.strip_prefix('"').and_then(|p| p.strip_prefix(from)) {
+        return format!("\"{to}{rest}");
+    }
+    match path.strip_prefix(from) {
+        Some(rest) => format!("{to}{rest}"),
+        None => path.to_owned(),
+    }
+}
+
+/// A stable identity for a hunk: its file and its changed lines, not its
+/// position, so it survives edits elsewhere in the file and changes when the
+/// hunk itself changes. Use it to remember per-hunk review state.
+pub fn hunk_id(file: &FileDiff, hunk_ix: usize) -> u64 {
+    let mut h = Fnv::new();
+    h.write(file.path().as_bytes());
+    if let Some(hunk) = file.hunks.get(hunk_ix) {
+        for line in &hunk.lines {
+            let tag = match line.kind {
+                LineKind::Added => b'+',
+                LineKind::Removed => b'-',
+                LineKind::NoNewline => b'\\',
+                LineKind::Context => continue,
+            };
+            h.write(&[0, tag]);
+            h.write(file.line_text(line).as_bytes());
+        }
+    }
+    h.finish()
+}
+
+/// A stable identity for a whole file's change (paths, kind and every
+/// hunk), for "viewed" marks that reset when the file changes again.
+pub fn file_id(file: &FileDiff) -> u64 {
+    let mut h = Fnv::new();
+    h.write(file.old_path.as_deref().unwrap_or_default().as_bytes());
+    h.write(&[0]);
+    h.write(file.new_path.as_deref().unwrap_or_default().as_bytes());
+    h.write(&[file.kind as u8, file.binary as u8]);
+    for ix in 0..file.hunks.len() {
+        h.write(&hunk_id(file, ix).to_le_bytes());
+    }
+    if file.binary {
+        h.write(file.text(file.header).as_bytes());
+    }
+    h.finish()
+}
+
+/// FNV-1a: tiny, and stable across runs and platforms.
+struct Fnv(u64);
+
+impl Fnv {
+    fn new() -> Self {
+        Fnv(0xcbf2_9ce4_8422_2325)
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 ^= u64::from(b);
+            self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Which version of a file a line number refers to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Side {
+    Old,
+    New,
+}
+
+/// The diff lines from `start` through `end` (1-based line numbers on the
+/// given sides), in patch order, each with its `+`, `-` or space marker: the
+/// excerpt a review comment quotes. Only lines the patch carries are known.
+pub fn excerpt(file: &FileDiff, start: (Side, u32), end: (Side, u32)) -> String {
+    let number = |line: &DiffLine, side: Side| match side {
+        Side::Old => line.old_no,
+        Side::New => line.new_no,
+    };
+    let mut out = String::new();
+    let mut inside = false;
+    for hunk in &file.hunks {
+        for line in &hunk.lines {
+            if !inside {
+                if number(line, start.0).is_some_and(|n| n >= start.1) {
+                    inside = true;
+                } else {
+                    continue;
+                }
+            }
+            if number(line, end.0).is_some_and(|n| n > end.1) {
+                return out;
+            }
+            out.push(match line.kind {
+                LineKind::Added => '+',
+                LineKind::Removed => '-',
+                LineKind::Context => ' ',
+                LineKind::NoNewline => '\\',
+            });
+            out.push_str(file.line_text(line));
+            out.push('\n');
+            if number(line, end.0) == Some(end.1) {
+                return out;
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Word-level highlights
 
@@ -1135,6 +1338,51 @@ diff --git \"a/\\346\\227\\245\\346\\234\\254.md\" \"b/\\346\\227\\245\\346\\234
         let long_a: String = (0..400).map(|i| format!("w{i} ")).collect();
         let long_b: String = (0..400).map(|i| format!("w{} ", i * 7)).collect();
         let _ = inline_ranges(&long_a, &long_b);
+    }
+
+    #[test]
+    fn inverted_patches_swap_sides_and_invert_twice_to_the_original() {
+        let f = &parse(MODIFY)[0];
+        let p = hunk_patch(f, 0);
+        let inv = invert_patch(&p).unwrap();
+        assert_eq!(
+            inv,
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,5 +1,4 @@ fn main() {\n one\n+two\n-deux\n-zwei\n three\n four\n"
+        );
+        let back = invert_patch(&inv).unwrap();
+        assert_eq!(parse(&back)[0].hunks[0].lines, parse(&p)[0].hunks[0].lines);
+
+        let added = &parse("diff --git a/n b/n\nnew file mode 100755\n--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+x\n")[0];
+        let inv = invert_patch(&hunk_patch(added, 0)).unwrap();
+        assert_eq!(inv, "diff --git a/n b/n\ndeleted file mode 100755\n--- a/n\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-x\n");
+        let renamed = "diff --git a/old b/new\nsimilarity index 90%\nrename from old\nrename to new\nindex 1111111..2222222 100644\n--- a/old\n+++ b/new\n@@ -1 +1 @@\n-a\n+b\n";
+        let inv = invert_patch(renamed).unwrap();
+        assert!(inv.starts_with("diff --git a/new b/old\nsimilarity index 90%\nrename to old\nrename from new\nindex 2222222..1111111 100644\n--- a/new\n+++ b/old\n"), "{inv}");
+        assert!(invert_patch("diff --git a/i b/i\nindex 1..2 100644\nBinary files a/i and b/i differ\n").is_none());
+    }
+
+    #[test]
+    fn hunk_ids_follow_content_not_position() {
+        let a = &parse(MODIFY)[0];
+        let shifted = MODIFY.replace("@@ -10,2 +11,2 @@", "@@ -40,2 +41,2 @@").replace(" ten\n", " TEN\n");
+        let b = &parse(&shifted)[0];
+        assert_eq!(hunk_id(a, 1), hunk_id(b, 1), "moved and with new context: same change");
+        assert_ne!(hunk_id(a, 0), hunk_id(a, 1));
+        let edited = MODIFY.replace("+onze", "+eleven!");
+        let c = &parse(&edited)[0];
+        assert_ne!(hunk_id(a, 1), hunk_id(c, 1), "a changed hunk is a new hunk");
+        assert_eq!(file_id(a), file_id(b));
+        assert_ne!(file_id(a), file_id(c));
+    }
+
+    #[test]
+    fn excerpts_quote_the_selected_lines_with_markers() {
+        let f = &parse(MODIFY)[0];
+        assert_eq!(excerpt(f, (Side::New, 2), (Side::New, 3)), "+deux\n+zwei\n");
+        assert_eq!(excerpt(f, (Side::Old, 2), (Side::New, 3)), "-two\n+deux\n+zwei\n");
+        assert_eq!(excerpt(f, (Side::New, 4), (Side::New, 4)), " three\n");
+        assert_eq!(excerpt(f, (Side::New, 12), (Side::New, 12)), "+onze\n");
+        assert_eq!(excerpt(f, (Side::New, 99), (Side::New, 120)), "");
     }
 
     #[test]

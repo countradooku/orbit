@@ -77,6 +77,19 @@ ORBIT_HOST=ws://host:7840/ ORBIT_TOKEN=<token> cargo run -p orbit-app --release
 It listens on loopback by default; reach it from other machines through an
 SSH tunnel or a private network such as Tailscale.
 
+### Command line and MCP (`orbit`)
+
+While the app or `orbitd` runs, the `orbit` CLI drives it, and `orbit mcp`
+lets agents start and supervise threads of their own:
+
+```sh
+cargo run -p orbit-cli --release -- threads --needs-you
+orbit new "Fix the flaky login test" --worktree --wait
+orbit mcp install            # print the Claude Code and Codex registration
+```
+
+See [docs/CLI.md](docs/CLI.md).
+
 ## Benchmarks
 
 ```sh

@@ -231,13 +231,19 @@ fn threads_flow_from_new_to_wait_log_and_diff() {
     let hits = h.json("search again", 0);
     assert_eq!(hits["hits"][0]["thread"], id.as_str());
     assert_eq!(h.json(&format!("diff {id} --stat"), 0)["files"], json!([]));
+    assert_eq!(h.json(&format!("diff {id} --since-turn 1 --stat"), 0)["scope"], "since turn 1");
+    let digest = h.json(&format!("export {id}"), 0);
+    assert!(digest["digest"].as_str().unwrap().contains("hello there"), "{digest}");
+    let files = h.json("files READ", 0);
+    assert_eq!(files["files"][0]["path"], "README.md");
+    h.json(&format!("draft {id} --text \"half a thought\""), 0);
 
     // settle hides it from the default list; --all shows it.
     h.json(&format!("settle {id}"), 0);
     assert_eq!(h.json("threads", 0)["total"], 0);
     assert_eq!(h.json("threads --all", 0)["total"], 1);
     h.json(&format!("archive {id}"), 0);
-    let e = h.json("send latest nope", 1);
+    let e = h.json(&format!("send {id} nope"), 1);
     assert!(e["message"].as_str().unwrap().contains("archived"), "{e}");
 }
 
@@ -314,6 +320,9 @@ fn worktree_children_are_linked_to_their_parent() {
     assert_eq!(h.json(&format!("threads --parent {parent}"), 0)["total"], 1);
     let (_, out, _) = h.run_with(env, "threads --parent self --json");
     assert!(out.contains(&child_id));
+    // A dry-run merge previews without changing anything.
+    let preview = h.json(&format!("merge {child_id} --dry-run --into main"), 0);
+    assert_eq!((preview["target"].as_str(), preview["dry_run"].as_bool()), (Some("main"), Some(true)));
     // The parent's detail lists its children.
     assert_eq!(h.json(&format!("status {parent}"), 0)["children"][0]["id"], child_id.as_str());
 }
@@ -324,9 +333,12 @@ fn terminal_run_streams_output_and_passes_the_exit_code() {
     let (code, out, err) = h.run("terminal run echo orbit-terminal-ok");
     assert_eq!(code, 0, "{out}{err}");
     assert!(out.contains("orbit-terminal-ok"), "{out:?}");
-    let failing = if cfg!(windows) { "terminal run \"exit 3\"" } else { "terminal run \"exit 3\"" };
-    assert_eq!(h.run(failing).0, 3);
-    let r = h.json("terminal run --detach echo later", 0);
+    // `exit 3` means the same in PowerShell, cmd and POSIX shells.
+    assert_eq!(h.run("terminal run \"exit 3\"").0, 3);
+    // Flags after the command belong to the command, so --json goes first.
+    let (code, out, _) = h.run("--json terminal run --detach echo later");
+    assert_eq!(code, 0);
+    let r = serde_json::from_str::<Value>(&out).unwrap()["result"].clone();
     let term = r["terminal"].as_str().unwrap().to_owned();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -381,7 +393,7 @@ fn binary() -> Process {
 #[test]
 fn the_binary_talks_to_the_endpoint_quickly() {
     let h = Harness::new();
-    h.json("new \"from the binary test\" --wait", 0);
+    h.json("new \"from the binary test\" --title \"from the binary test\" --wait", 0);
     let mut times = Vec::new();
     for _ in 0..5 {
         let started = Instant::now();

@@ -82,6 +82,7 @@ fn main() {
         orbit_terminal::init(cx);
         theme::install(cx);
         actions::bind(cx);
+        thread::init(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         // Orbit is one window. Windows quits when its last window closes;
         // macOS and Linux keep the process alive with nothing to show, so

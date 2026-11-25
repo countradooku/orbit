@@ -11,6 +11,7 @@ pub mod endpoint;
 #[cfg(feature = "engine")]
 pub mod server;
 pub mod state;
+mod ws_lite;
 
 use crossfire::oneshot::{RxOneshot, oneshot};
 #[cfg(feature = "engine")]

@@ -8,15 +8,12 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use bytes::Bytes;
 use crossfire::oneshot::{RxOneshot, TxOneshot, oneshot};
 use crossfire::{AsyncRx, BlockingTxTrait, MTx, mpsc};
 use orbit_proto::*;
 use std::sync::{Arc, Mutex};
 
-use sockudo_ws::client::WebSocketClient;
-use sockudo_ws::{Config, Http1, Message};
-
+use crate::ws_lite::{self, Incoming};
 use crate::{ConnectionStatus, Update, ready};
 
 enum Outgoing {
@@ -76,15 +73,12 @@ async fn run(
     let mut next_id = 1u32;
     loop {
         let _ = updates.send(Update::Status(ConnectionStatus::Connecting));
-        let config = Config::builder().max_payload_length(64 * 1024 * 1024).build();
-        let client = WebSocketClient::<Http1>::new(config);
-        let reason = match client.connect_to_url(&url, Some(WS_SUBPROTOCOL)).await {
+        let reason = match ws_lite::connect(&url, WS_SUBPROTOCOL).await {
             Err(e) => format!("Couldn’t reach the host: {e}"),
-            Ok((ws, _)) => {
+            Ok((mut reader, mut writer)) => {
                 backoff = Duration::from_millis(250);
-                let (mut reader, mut writer) = ws.split();
                 let hello = ClientMsg::Hello { version: PROTOCOL_VERSION, token: token.clone(), epoch, since };
-                if let Err(e) = writer.send(Message::Binary(Bytes::from(encode(&hello)))).await {
+                if let Err(e) = writer.binary(&encode(&hello)).await {
                     format!("The host closed the connection: {e}")
                 } else {
                     let mut welcomed = false;
@@ -93,10 +87,15 @@ async fn run(
                         tokio::select! {
                             msg = reader.next() => {
                                 let data = match msg {
-                                    Some(Ok(Message::Binary(data))) => data,
-                                    Some(Ok(Message::Close(_))) | None => break "The host closed the connection.".to_string(),
-                                    Some(Ok(_)) => continue,
-                                    Some(Err(e)) => break format!("Connection lost: {e}"),
+                                    Ok(Incoming::Binary(data)) => data,
+                                    Ok(Incoming::Ping(data)) => {
+                                        if let Err(e) = writer.pong(&data).await {
+                                            break format!("Connection lost: {e}");
+                                        }
+                                        continue;
+                                    }
+                                    Ok(Incoming::Close) => break "The host closed the connection.".to_string(),
+                                    Err(e) => break format!("Connection lost: {e}"),
                                 };
                                 match codec.decode::<ServerMsg>(&data) {
                                     Ok(ServerMsg::Welcome { snapshot, .. }) => {
@@ -132,7 +131,7 @@ async fn run(
                                     let id = next_id;
                                     next_id = next_id.wrapping_add(1).max(1);
                                     let msg = ClientMsg::Call { id, command };
-                                    match writer.send(Message::Binary(Bytes::from(encode(&msg)))).await {
+                                    match writer.binary(&encode(&msg)).await {
                                         Ok(()) => { pending.insert(id, reply); }
                                         Err(e) => {
                                             reply.send(Err(format!("Connection lost: {e}")));
@@ -141,7 +140,7 @@ async fn run(
                                     }
                                 }
                                 Ok(Outgoing::Close) | Err(_) => {
-                                    let _ = writer.close(1000, "bye").await;
+                                    writer.close().await;
                                     return;
                                 }
                             },

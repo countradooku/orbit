@@ -10,9 +10,8 @@
 //! `Project`, `Item` and everything inside them):
 //!
 //! * Appending an enum variant is compatible while the variant count stays
-//!   within its packing class (2, 3, 4, 6, 16, 256 variants). `ItemBody` has
-//!   room; `Event` crossed 16 in version 3 and now has room up to 256;
-//!   crossing a boundary needs a new version.
+//!   within its packing class (2, 3, 4, 6, 16, 256 variants). `ItemBody` and
+//!   `Event` have room; crossing a boundary needs a new version.
 //! * Adding, removing or reordering a struct field always needs a new
 //!   schema version and a frozen copy of the old struct here.
 
@@ -260,18 +259,14 @@ pub mod v1 {
     }
 }
 
-/// Version 2: the layout before `Event::FocusRequested`, which took `Event`
-/// from 16 variants to 17 and so out of its packing class. Every type
-/// inside is unchanged; only the enum's tag width differs.
+/// Version 2: versioned logs with provider instances, before drafts.
+/// `Event` had 16 variants; `DraftSaved` made it 17, past the 16-variant
+/// packing class, so version 2 records are read with their own layout
+/// rather than trusting the new one to agree. The payload types are
+/// unchanged.
 pub mod v2 {
     use super::*;
     use crate::settings::Settings;
-
-    #[derive(Clone, Debug, PartialEq, Encode, Decode)]
-    pub struct Envelope {
-        pub seq: u64,
-        pub event: Event,
-    }
 
     #[derive(Clone, Debug, PartialEq, Encode, Decode)]
     pub enum Event {
@@ -291,6 +286,12 @@ pub mod v2 {
         TerminalOutput { term: TermId, data: Vec<u8> },
         TimelineMark { thread: ThreadId, mark: u64 },
         TerminalExited { term: TermId, code: Option<i32> },
+    }
+
+    #[derive(Clone, Debug, PartialEq, Encode, Decode)]
+    pub struct Envelope {
+        pub seq: u64,
+        pub event: Event,
     }
 
     impl From<Event> for crate::wire::Event {
@@ -333,10 +334,9 @@ pub fn decode_envelope(version: u32, payload: &[u8]) -> Result<Envelope, FrameEr
             Ok(old) => Ok(Envelope { seq: old.seq, event: old.event.into() }),
             Err(_) => Ok(Envelope { seq: 0, event: Event::Providers(Vec::new()) }),
         },
-        2 => {
-            let old = bitcode::decode::<v2::Envelope>(payload).map_err(FrameError::Decode)?;
-            Ok(Envelope { seq: old.seq, event: old.event.into() })
-        }
+        2 => bitcode::decode::<v2::Envelope>(payload)
+            .map(|old| Envelope { seq: old.seq, event: old.event.into() })
+            .map_err(FrameError::Decode),
         _ => bitcode::decode(payload).map_err(FrameError::Decode),
     }
 }
@@ -344,6 +344,44 @@ pub fn decode_envelope(version: u32, payload: &[u8]) -> Result<Envelope, FrameEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_3_records_stay_readable_after_focus_requested() {
+        // `FocusRequested` was appended within the 17–256 packing class, so
+        // records written before it decode unchanged at version 3.
+        #[derive(Encode)]
+        #[allow(dead_code)]
+        enum Before {
+            ProjectUpserted(Project),
+            ProjectRemoved(ProjectId),
+            ThreadUpserted(Thread),
+            ThreadRemoved(ThreadId),
+            ItemUpserted { thread: ThreadId, item: Item },
+            ItemDelta { thread: ThreadId, item: ItemId, delta: Delta },
+            ItemRemoved { thread: ThreadId, item: ItemId },
+            Providers(Vec<ProviderInfo>),
+            DefaultsChanged(ThreadConfig),
+            SettingsChanged(crate::settings::Settings),
+            WorkspaceChanged { thread: ThreadId, files: Vec<FileChange> },
+            UsageChanged { thread: ThreadId, usage: Usage },
+            Conflicts(Vec<Conflict>),
+            TerminalOutput { term: TermId, data: Vec<u8> },
+            TimelineMark { thread: ThreadId, mark: u64 },
+            TerminalExited { term: TermId, code: Option<i32> },
+            DraftSaved { target: DraftTarget, draft: Draft },
+        }
+        #[derive(Encode)]
+        struct BeforeEnvelope {
+            seq: u64,
+            event: Before,
+        }
+        let thread = Thread { id: ThreadId(5), title: "Parent".into(), parent: Some(ThreadId(4)), ..Default::default() };
+        let bytes = bitcode::encode(&BeforeEnvelope { seq: 8, event: Before::ThreadUpserted(thread.clone()) });
+        let env = decode_envelope(META_VERSION, &bytes).unwrap();
+        assert_eq!(env, Envelope { seq: 8, event: Event::ThreadUpserted(thread) });
+        let bytes = bitcode::encode(&BeforeEnvelope { seq: 9, event: Before::ThreadRemoved(ThreadId(5)) });
+        assert_eq!(decode_envelope(META_VERSION, &bytes).unwrap().event, Event::ThreadRemoved(ThreadId(5)));
+    }
 
     #[test]
     fn a_version_1_thread_decodes_with_its_provider() {
@@ -422,27 +460,22 @@ mod tests {
     }
 
     #[test]
+    fn a_version_2_log_decodes_after_drafts_were_added() {
+        let thread = Thread { id: ThreadId(9), title: "Before drafts".into(), turns: 2, ..Default::default() };
+        let old = v2::Envelope { seq: 5, event: v2::Event::ThreadUpserted(thread.clone()) };
+        let bytes = bitcode::encode(&old);
+        let env = decode_envelope(2, &bytes).unwrap();
+        assert_eq!((env.seq, env.event), (5, Event::ThreadUpserted(thread)));
+        let exited = v2::Envelope { seq: 6, event: v2::Event::TerminalExited { term: TermId(1), code: Some(0) } };
+        let env = decode_envelope(2, &bitcode::encode(&exited)).unwrap();
+        assert_eq!(env.event, Event::TerminalExited { term: TermId(1), code: Some(0) });
+    }
+
+    #[test]
     fn unreadable_version_1_records_are_skipped_not_fatal() {
         let env = decode_envelope(1, &[0xff, 0xff, 0xff]).unwrap();
         assert_eq!(env.event, Event::Providers(Vec::new()));
         assert!(decode_envelope(2, &[0xff, 0xff, 0xff]).is_err());
-        assert!(decode_envelope(3, &[0xff, 0xff, 0xff]).is_err());
-    }
-
-    #[test]
-    fn a_version_2_record_decodes_after_event_grew_past_16_variants() {
-        let thread = Thread { id: ThreadId(9), title: "Before focus".into(), turns: 2, ..Default::default() };
-        let records = [
-            v2::Envelope { seq: 1, event: v2::Event::ThreadUpserted(thread.clone()) },
-            v2::Envelope { seq: 2, event: v2::Event::TerminalExited { term: TermId(3), code: Some(1) } },
-        ];
-        let env = decode_envelope(2, &bitcode::encode(&records[0])).unwrap();
-        assert_eq!(env, Envelope { seq: 1, event: Event::ThreadUpserted(thread) });
-        let env = decode_envelope(2, &bitcode::encode(&records[1])).unwrap();
-        assert_eq!(env.event, Event::TerminalExited { term: TermId(3), code: Some(1) });
-        // The current layout reads its own records.
-        let now = Envelope { seq: 3, event: Event::FocusRequested { thread: None } };
-        assert_eq!(decode_envelope(META_VERSION, &bitcode::encode(&now)).unwrap(), now);
     }
 
     #[test]

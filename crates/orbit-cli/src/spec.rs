@@ -145,6 +145,7 @@ pub const MODES: &[&str] = &["build", "plan"];
 pub const ACCESS: &[&str] = &["readonly", "ask", "auto-edit", "full"];
 pub const SHELLS: &[&str] = &["bash", "zsh", "fish", "powershell", "elvish"];
 pub const CLIENTS: &[&str] = &["claude", "codex", "all"];
+pub const TASKS: &[&str] = &["title", "commit", "pr", "custom"];
 
 const THREAD: Arg = pos("thread", Kind::Thread, "The thread: its id, a unique part of its id or title, `latest`, or `self`.");
 const REQUEST: Arg = arg("request", Kind::Str, "The request id, when the thread has more than one pending.");
@@ -321,7 +322,95 @@ pub static SPECS: &[Spec] = &[
         details: "Interrupts the running turn; queued messages stay queued.",
         tool: write("stop_thread", "Stop a thread"),
         aliases: &["interrupt"],
-        ..spec(&["stop"], "Stop a thread's running turn", &[THREAD])
+        ..spec(
+            &["stop"],
+            "Stop a thread's running turn",
+            &[THREAD, arg("force", Kind::Flag, "End the agent's process now, for when a normal stop did not take.")],
+        )
+    },
+    Spec {
+        details: "Runs the last failed or rate-limited turn again from where it started; the failed attempt stays in the timeline.",
+        tool: write("retry_thread", "Retry a failed turn"),
+        ..spec(&["retry"], "Retry a thread's failed turn", &[THREAD])
+    },
+    Spec {
+        details: "Ends the agent's session; the next message starts a fresh one in the same thread (what /clear does).",
+        aliases: &["clear"],
+        ..spec(&["new-session"], "Start the thread's agent afresh", &[THREAD])
+    },
+    Spec {
+        details: "A readable digest of the thread's messages and replies, for another agent or a person to read.",
+        tool: read("export_thread", "Export a thread's digest"),
+        ..spec(&["export"], "Print a thread's digest", &[THREAD])
+    },
+    Spec {
+        details: "Merges the thread's branch into another branch locally, without a pull request. Uncommitted work is                   committed first. --dry-run previews commits, files and conflicts without changing anything.",
+        tool: Some(Tool { name: "merge_thread", title: "Merge a thread's branch", read_only: false, destructive: true, idempotent: false }),
+        examples: &["orbit merge latest --dry-run", "orbit merge thr_1a2b --into main"],
+        ..spec(
+            &["merge"],
+            "Merge a thread's branch locally",
+            &[
+                THREAD,
+                arg("into", Kind::Str, "The branch to merge into; default: the project's base branch."),
+                arg("message", Kind::Str, "Commit message for uncommitted work; default: the thread's title.").short('m'),
+                arg("dry-run", Kind::Flag, "Preview only."),
+            ],
+        )
+    },
+    Spec {
+        details: "Fuzzy-finds files and folders in a thread's working folder, or a project's.",
+        tool: read("search_files", "Find files"),
+        ..spec(
+            &["files"],
+            "Find files in a thread's or project's folder",
+            &[
+                pos("query", Kind::Text, "Part of a path."),
+                arg("thread", Kind::Thread, "Search this thread's working folder.").short('t'),
+                arg("project", Kind::Project, "Search this project's folder; default: the current one.").short('p'),
+                arg("limit", Kind::Int, "At most this many.").default("50"),
+            ],
+        )
+    },
+    Spec {
+        details: "Moves a queued message within the queue (0 = next), or with --now sends it right away (into the                   running turn, or as the next turn).",
+        examples: &["orbit queue latest itm_18c0 --now", "orbit queue latest itm_18c0 --to 0"],
+        ..spec(
+            &["queue"],
+            "Reorder or send a queued message",
+            &[
+                THREAD,
+                pos("item", Kind::Str, "The queued message's item id."),
+                arg("to", Kind::Int, "Its new place in the queue (0 = next)."),
+                arg("now", Kind::Flag, "Send it now instead of waiting."),
+            ],
+        )
+    },
+    Spec {
+        details: "Keeps an unsent message in the thread's composer (or the new-thread composer with --home) in every                   client; empty text clears it.",
+        ..spec(
+            &["draft"],
+            "Save a draft in a thread's composer",
+            &[
+                opt_pos("thread", Kind::Thread, "The thread; omit with --home."),
+                arg("text", Kind::Str, "The draft (`-` reads standard input); empty clears it."),
+                arg("home", Kind::Flag, "The new-thread composer instead of a thread's."),
+            ],
+        )
+    },
+    Spec {
+        details: "One-shot text from an available agent in a cheap mode: a thread title, a commit message, a pull                   request title and body, or anything with --instructions.",
+        examples: &["git diff --staged | orbit generate commit -", "orbit generate custom --instructions \"Summarize\" -"],
+        ..spec(
+            &["generate"],
+            "Generate text with an agent",
+            &[
+                pos("task", Kind::Choice(TASKS), "What to write."),
+                pos("input", Kind::Text, "The material (`-` reads standard input)."),
+                arg("instructions", Kind::Str, "For `custom`: what to do with the input."),
+                arg("thread", Kind::Thread, "Use this thread's agent.").short('t'),
+            ],
+        )
     },
     Spec {
         details: "Done for now: kept and searchable, out of the active list. A new message brings it back.",
@@ -355,6 +444,7 @@ pub static SPECS: &[Spec] = &[
             &[
                 THREAD,
                 arg("turn", Kind::Int, "Only this turn's changes."),
+                arg("since-turn", Kind::Int, "Everything from before this turn to now (what undoing it would revert)."),
                 arg("last", Kind::Flag, "Only the last turn's changes."),
                 arg("base", Kind::Str, "The working tree against this branch or commit."),
                 arg("uncommitted", Kind::Flag, "Uncommitted changes in the thread's working tree."),
@@ -369,7 +459,11 @@ pub static SPECS: &[Spec] = &[
         ..spec(
             &["undo-turn"],
             "Restore the files to before a turn",
-            &[THREAD, arg("turn", Kind::Int, "The turn to undo, with everything after it; default: the last.")],
+            &[
+                THREAD,
+                arg("turn", Kind::Int, "The turn to undo, with everything after it; default: the last."),
+                arg("redo", Kind::Flag, "Undo the last restore instead (put the files back)."),
+            ],
         )
     },
     Spec {

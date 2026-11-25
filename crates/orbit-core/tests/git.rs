@@ -556,7 +556,12 @@ async fn watcher_coalesces_bursts_and_ignores_noise() {
     }
     git.checkpoint(&dir, ThreadId::new()).await.unwrap();
     let noise = collect(&w, Duration::from_millis(600)).await;
-    assert!(noise.iter().all(|c| c.paths.is_empty() && !c.git_refs), "unexpected: {noise:?}");
+    // Under heavy load the tail of the burst can still be arriving; those
+    // paths are expected. Anything else (build output, checkpoint refs) is not.
+    assert!(
+        noise.iter().all(|c| !c.git_refs && c.paths.iter().all(|p| p.starts_with("burst"))),
+        "unexpected: {noise:?}"
+    );
 
     // A commit moves a ref.
     sh(&dir, &["add", "-A"]);

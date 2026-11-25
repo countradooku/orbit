@@ -26,6 +26,8 @@ pub enum AppEvent {
     Workspace(ThreadId),
     TerminalOutput { term: TermId, data: Vec<u8> },
     TerminalExited { term: TermId, code: Option<i32> },
+    /// A composer's saved draft changed (here or on another client).
+    Draft(DraftTarget),
 }
 
 pub struct AppState {
@@ -101,6 +103,9 @@ impl AppState {
         }
         for (term, code) in changes.exited_terminals {
             cx.emit(AppEvent::TerminalExited { term, code });
+        }
+        for target in changes.drafts {
+            cx.emit(AppEvent::Draft(target));
         }
         if shell {
             cx.notify();
