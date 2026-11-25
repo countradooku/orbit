@@ -167,6 +167,23 @@ impl Composer {
         input.update(cx, |input, cx| input.set_value(text, window, cx));
     }
 
+    /// Adds `markdown` (a quotation the reader is replying to) to the end of
+    /// the draft, keeps what was already written, and puts the caret after
+    /// it with focus in the box. Used by the timeline's Reply and Quote.
+    pub fn append_to_draft(composer: &Entity<Self>, markdown: &str, window: &mut Window, cx: &mut App) {
+        let input = composer.read(cx).input.clone();
+        input.update(cx, |input, cx| {
+            let draft = input.value();
+            let text = match draft.trim_end() {
+                "" => format!("{markdown}\n\n"),
+                draft => format!("{draft}\n\n{markdown}\n\n"),
+            };
+            input.set_value("", window, cx);
+            input.insert(text, window, cx);
+            input.focus(window, cx);
+        });
+    }
+
     /// The provider's slash commands matching the word being typed, while
     /// the text is a lone `/word`.
     fn slash_matches(&self, cx: &App) -> Vec<SlashCommand> {
