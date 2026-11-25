@@ -348,11 +348,22 @@ struct Inner {
     restart: Option<RestartWhen>,
     /// Set once the app quits: nothing is started any more.
     closed: bool,
+    /// Whether the first host this app reached was already running.
+    found_running: Option<bool>,
 }
 
 impl LocalHost {
     pub fn new(data_dir: PathBuf, binary: Option<PathBuf>) -> Self {
-        let inner = Inner { data_dir, binary, child: None, link: HostLink::Starting, outdated: None, restart: None, closed: false };
+        let inner = Inner {
+            data_dir,
+            binary,
+            child: None,
+            link: HostLink::Starting,
+            outdated: None,
+            restart: None,
+            closed: false,
+            found_running: None,
+        };
         Self { inner: std::sync::Arc::new(std::sync::Mutex::new(inner)) }
     }
 
@@ -362,6 +373,12 @@ impl LocalHost {
 
     pub fn link(&self) -> HostLink {
         self.lock().link.clone()
+    }
+
+    /// The host was running before this app started (it kept working while
+    /// Orbit was closed), rather than started by it.
+    pub fn found_running(&self) -> bool {
+        self.lock().found_running == Some(true)
     }
 
     /// Finds or starts the host now (blocking). An outdated host is not an
@@ -408,11 +425,14 @@ impl LocalHost {
         };
         // Without the lock: starting the host can take a moment, and the
         // interface reads the link meanwhile.
+        let had_child = child.is_some();
         let result = ensure_running(&data_dir, binary.as_deref(), &mut child);
         let mut inner = self.lock();
+        let spawned = !had_child && child.is_some();
         inner.child = child;
         match result {
             Ok(info) => {
+                inner.found_running.get_or_insert(!spawned);
                 inner.link = HostLink::Ready { version: info.version.clone(), pid: info.pid };
                 inner.outdated = None;
                 inner.restart = None;

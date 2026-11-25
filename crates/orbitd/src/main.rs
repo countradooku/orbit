@@ -127,6 +127,8 @@ fn init_local_log(data: &Path) {
         builder.target(env_logger::Target::Pipe(Box::new(file)));
     }
     builder.init();
+    // There is no stderr to print a panic to.
+    std::panic::set_hook(Box::new(|info| log::error!("{info}")));
 }
 
 fn main() {

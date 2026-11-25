@@ -116,8 +116,12 @@ fn a_terminal_reattaches_with_its_scrollback_and_nothing_is_lost_or_doubled() {
     let after = output_until(&mut h, term, "orbit-after", Duration::from_secs(10)).expect("held output");
     // What the screen drew (the scrollback, then what was held and what
     // followed) is exactly what the terminal wrote: nothing lost or doubled.
+    // (The replay leaves out the shell's cursor query: nothing may answer it
+    // twice.)
     let Reply::TerminalTail { data: written, .. } = h.call(Command::ReadTerminal { term, max_bytes: 0 }) else { panic!() };
-    let drawn = [scrollback.as_slice(), after.as_slice()].concat();
+    let without_queries = |bytes: &[u8]| String::from_utf8_lossy(bytes).replace("\x1b[6n", "").into_bytes();
+    let written = without_queries(&written);
+    let drawn = without_queries(&[scrollback.as_slice(), after.as_slice()].concat());
     assert!(
         written.starts_with(&drawn),
         "drawn {:?}\nwritten {:?}",

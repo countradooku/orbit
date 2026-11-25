@@ -84,7 +84,8 @@ struct Modes(u16);
 
 /// Mode numbers in bit order. 1049/1047/47 are the alternate screen; 25 is
 /// cursor visibility (on by default, so its bit means "hidden").
-const TRACKED_MODES: [u16; 9] = [1049, 1047, 47, 1, 1000, 1002, 1003, 1006, 2004];
+/// 1004 is focus reporting and 9001 ConPTY's win32 input mode.
+const TRACKED_MODES: [u16; 11] = [1049, 1047, 47, 1, 1000, 1002, 1003, 1006, 2004, 1004, 9001];
 const CURSOR_HIDDEN: u16 = 1 << 15;
 
 impl Modes {
@@ -200,24 +201,86 @@ impl Scrollback {
     /// What a fresh screen replays: when older output was dropped, the
     /// modes in effect at the cut, then the kept output from its first line
     /// or escape-sequence boundary (never half a sequence or character).
+    /// Queries a program sent to its terminal (cursor position, device
+    /// attributes, colors) are left out: answering them again would type
+    /// the answers into whatever runs now.
     pub fn replay(&self) -> Vec<u8> {
-        if self.dropped == 0 {
-            return self.tail(0);
-        }
         let (a, b) = self.buf.as_slices();
-        let head_len = a.len().min(4096);
-        let head = &a[..head_len];
-        let start = match (memchr::memchr(0x1b, head), memchr::memchr(b'\n', head)) {
-            (Some(esc), Some(nl)) => esc.min(nl + 1),
-            (Some(esc), None) => esc,
-            (None, Some(nl)) => nl + 1,
-            (None, None) => 0,
-        };
-        let mut out = self.modes_at_cut.prefix();
-        out.reserve(self.buf.len() - start);
-        out.extend_from_slice(&a[start..]);
-        out.extend_from_slice(b);
+        let mut out = Vec::new();
+        let mut start = 0;
+        if self.dropped > 0 {
+            let head = &a[..a.len().min(4096)];
+            start = match (memchr::memchr(0x1b, head), memchr::memchr(b'\n', head)) {
+                (Some(esc), Some(nl)) => esc.min(nl + 1),
+                (Some(esc), None) => esc,
+                (None, Some(nl)) => nl + 1,
+                (None, None) => 0,
+            };
+            out = self.modes_at_cut.prefix();
+        }
+        let mut kept = Vec::with_capacity(self.buf.len() - start);
+        kept.extend_from_slice(&a[start..]);
+        kept.extend_from_slice(b);
+        out.extend_from_slice(&strip_queries(&kept));
         out
+    }
+}
+
+/// `bytes` without terminal queries: `CSI 5 n`, `CSI 6 n` (status, cursor
+/// position), `CSI c` in its forms (device attributes) and `OSC 10/11/12 ; ?`
+/// (colors).
+fn strip_queries(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let mut out: Option<Vec<u8>> = None;
+    let mut copied = 0;
+    let mut at = 0;
+    while let Some(found) = memchr::memchr(0x1b, &bytes[at..]) {
+        let esc = at + found;
+        at = esc + 1;
+        let Some(len) = query_len(&bytes[esc..]) else { continue };
+        let out = out.get_or_insert_with(|| Vec::with_capacity(bytes.len()));
+        out.extend_from_slice(&bytes[copied..esc]);
+        copied = esc + len;
+        at = copied;
+    }
+    match out {
+        None => std::borrow::Cow::Borrowed(bytes),
+        Some(mut out) => {
+            out.extend_from_slice(&bytes[copied..]);
+            std::borrow::Cow::Owned(out)
+        }
+    }
+}
+
+/// The length of the query starting at `seq[0]` (an ESC), if it is one.
+fn query_len(seq: &[u8]) -> Option<usize> {
+    match seq.get(1)? {
+        b'[' => {
+            let mut i = 2;
+            let private = matches!(seq.get(i), Some(b'?' | b'>' | b'='));
+            if private {
+                i += 1;
+            }
+            let params_start = i;
+            while seq.get(i).is_some_and(|b| b.is_ascii_digit() || *b == b';') {
+                i += 1;
+            }
+            let params = &seq[params_start..i];
+            match seq.get(i)? {
+                b'c' => Some(i + 1),
+                b'n' if matches!(params, b"5" | b"6") => Some(i + 1),
+                _ => None,
+            }
+        }
+        b']' => {
+            let body = seq.get(2..)?;
+            let query = [b"10;?", b"11;?", b"12;?"].iter().find(|q| body.starts_with(&q[..]))?;
+            match body.get(query.len())? {
+                0x07 => Some(2 + query.len() + 1),
+                0x1b if body.get(query.len() + 1) == Some(&b'\\') => Some(2 + query.len() + 2),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -965,6 +1028,17 @@ mod tests {
         ring.push(b"\x1b[?1049hx\x1b[?1049l\x1b[?25h");
         ring.push(&[b'y'; 40]);
         assert!(!ring.replay().starts_with(b"\x1b[?"));
+    }
+
+    #[test]
+    fn a_replay_asks_the_screen_nothing() {
+        let mut ring = Scrollback::new(1024);
+        ring.push(b"a\x1b[6nb\x1b[>cc\x1b[0cd\x1b]11;?\x07e\x1b]10;?\x1b\\f\x1b[5ng");
+        // Sequences that only look alike stay.
+        ring.push(b"\x1b[2J\x1b[31mred\x1b[0m\x1b[3n\x1b]0;title\x07");
+        assert_eq!(ring.replay(), b"abcdefg\x1b[2J\x1b[31mred\x1b[0m\x1b[3n\x1b]0;title\x07");
+        // The raw tail keeps everything.
+        assert!(memchr::memmem::find(&ring.tail(0), b"\x1b[6n").is_some());
     }
 
     #[test]

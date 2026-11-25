@@ -2,9 +2,17 @@
 
 //! Orbit: a native control surface for coding agents.
 //!
-//! The engine runs in this process on its own thread, unless Settings ›
-//! Remote names an `orbitd` host (or `ORBIT_HOST` and `ORBIT_TOKEN` do, which
-//! win). `ORBIT_DATA` moves the data folder.
+//! Where the engine runs:
+//!
+//! * Settings › Remote names an `orbitd` host (or `ORBIT_HOST` and
+//!   `ORBIT_TOKEN` do, which win): there.
+//! * Otherwise in the background host, `orbitd --local` next to this
+//!   executable, which this app starts when it is not running and which
+//!   outlives the window (`docs/HOST.md`).
+//! * In this process when the host cannot start (a notice says why), or
+//!   with `--in-process` / `ORBIT_IN_PROCESS=1`.
+//!
+//! `ORBIT_DATA` moves the data folder.
 
 mod actions;
 mod app_state;
@@ -18,6 +26,7 @@ mod fleet;
 mod forge;
 mod format;
 mod home;
+mod host;
 mod inbox;
 mod instance;
 mod keymap;
@@ -39,12 +48,27 @@ mod ui;
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 use orbit_core::{EngineHandle, EngineOptions};
+use orbit_net::host::LocalHost;
 use orbit_net::{Backend, RemoteClient};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-fn backend() -> std::io::Result<(Backend, settings::Startup)> {
+/// The engine, the background host when the engine runs in one, and why
+/// the engine runs in this process instead when the host could not start.
+struct Started {
+    backend: Backend,
+    host: Option<LocalHost>,
+    fallback: Option<String>,
+}
+
+/// The engine runs in this process: asked for, for tests and benchmarks.
+fn in_process_requested() -> bool {
+    std::env::var("ORBIT_IN_PROCESS").is_ok_and(|v| !v.is_empty() && v != "0")
+        || std::env::args().any(|a| a == "--in-process")
+}
+
+fn backend() -> std::io::Result<(Started, settings::Startup)> {
     let data_dir: std::path::PathBuf =
         std::env::var_os("ORBIT_DATA").map(Into::into).unwrap_or_else(EngineOptions::default_data_dir);
     let remote = settings::read_connection(&data_dir);
@@ -60,11 +84,16 @@ fn backend() -> std::io::Result<(Backend, settings::Startup)> {
         connected_host: target.as_ref().map(|(host, _)| host.clone()),
         host_from_env: env_host.is_some(),
     };
-    let backend = match target {
-        Some((host, token)) => Backend::Remote(RemoteClient::connect(host, token)?),
-        None => Backend::Local(EngineHandle::start(EngineOptions { data_dir, probe_providers: true })?),
+    let in_process = || EngineHandle::start(EngineOptions { data_dir: data_dir.clone(), probe_providers: true });
+    let started = match target {
+        Some((host, token)) => Started { backend: Backend::Remote(RemoteClient::connect(host, token)?), host: None, fallback: None },
+        None if in_process_requested() => Started { backend: Backend::Local(in_process()?), host: None, fallback: None },
+        None => {
+            let chosen = orbit_net::host::local_backend(data_dir.clone(), orbit_net::host::locate_binary(), in_process)?;
+            Started { backend: chosen.backend, host: chosen.host, fallback: chosen.fallback }
+        }
     };
-    Ok((backend, startup))
+    Ok((started, startup))
 }
 
 /// Serves the in-process engine to the `orbit` CLI on loopback.
@@ -79,6 +108,8 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     // One Orbit per data folder: a second launch hands over and exits.
     let launch = instance::this_launch();
+    // Restarted for an update: the previous window is still closing.
+    host::wait_for_previous(&launch.args);
     let data_dir: std::path::PathBuf =
         std::env::var_os("ORBIT_DATA").map(Into::into).unwrap_or_else(EngineOptions::default_data_dir);
     let instance = match instance::claim(&data_dir, &launch) {
@@ -89,24 +120,11 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let (backend, startup) = match backend() {
-        Ok(started) => started,
-        Err(err) => {
-            eprintln!("Orbit couldn’t start its engine: {err}");
-            std::process::exit(1);
-        }
-    };
-    let shutdown = backend.clone();
-    let endpoint = control_endpoint(&backend, &startup.data_dir);
-    // Chat bots run beside the engine they drive: only with a local one.
-    let chat_bots = match &backend {
-        Backend::Local(engine) => orbit_bots::Bots::start(engine.clone(), &startup.data_dir)
-            .inspect_err(|err| log::warn!("no chat bots: {err}"))
-            .ok(),
-        Backend::Remote(_) => None,
-    };
-    let chat_bots = std::sync::Mutex::new(chat_bots);
-    let quit_data_dir = startup.data_dir.clone();
+    // Reaching the engine (starting the background host and waiting for it)
+    // overlaps with the interface's own setup; it is joined just before the
+    // first view needs it.
+    let starting = std::thread::Builder::new().name("orbit-start".into()).spawn(backend).expect("spawn the startup thread");
+    let quit_data_dir = data_dir.clone();
 
     // The preview browser's WebKitGTK embeds only into X11 windows
     // (XWayland under Wayland), so Linux runs on X11.
@@ -122,8 +140,9 @@ fn main() {
         cx.set_app_identity("dev.orbit.Orbit", "Orbit");
         orbit_terminal::init(cx);
         theme::install(cx);
-        prefs::init(&startup.data_dir, cx);
-        keymap::install(&startup.data_dir, cx);
+        prefs::init(&data_dir, cx);
+        host::init(&data_dir, cx);
+        keymap::install(&data_dir, cx);
         thread::init(cx);
         // The user's bindings go last so they win over every default.
         keymap::reload(cx);
@@ -141,7 +160,31 @@ fn main() {
         // macOS shows an application menu even without one; give it Quit.
         #[cfg(target_os = "macos")]
         cx.set_menus([Menu::new("Orbit").items([MenuItem::action("Quit Orbit", actions::Quit)])]);
+        let (Started { backend, host: local_host, fallback }, startup) = match starting.join() {
+            Ok(Ok(started)) => started,
+            Ok(Err(err)) => {
+                eprintln!("Orbit couldn’t start its engine: {err}");
+                std::process::exit(1);
+            }
+            Err(_) => std::process::exit(1),
+        };
+        let shutdown = backend.clone();
+        let endpoint = control_endpoint(&backend, &startup.data_dir);
+        // Chat bots run beside the engine they drive: only with an
+        // in-process one (the background host runs its own).
+        let chat_bots = match &backend {
+            Backend::Local(engine) => orbit_bots::Bots::start(engine.clone(), &startup.data_dir)
+                .inspect_err(|err| log::warn!("no chat bots: {err}"))
+                .ok(),
+            Backend::Remote(_) => None,
+        };
+        let chat_bots = std::sync::Mutex::new(chat_bots);
+        let quit_data_dir = quit_data_dir.clone();
+        let app = cx.new(|cx| app_state::AppState::new(backend, local_host, cx));
+        let quitting = app.downgrade();
         cx.on_app_quit(move |cx| {
+            // Terminals stay in the background host; start no host again.
+            let _ = quitting.update(cx, |app, _| app.detach());
             endpoint.iter().for_each(orbit_net::endpoint::LocalEndpoint::close);
             if let Some(bots) = chat_bots.lock().ok().and_then(|mut b| b.take()) {
                 bots.stop();
@@ -153,7 +196,6 @@ fn main() {
         })
         .detach();
 
-        let app = cx.new(|cx| app_state::AppState::new(backend, cx));
         settings::init(app.clone(), startup, cx);
         forge::init(app.clone(), cx);
         bots::init(app.clone(), cx);
@@ -163,13 +205,31 @@ fn main() {
             app_id: Some("dev.orbit.Orbit".into()),
             ..TitleBar::window_options()
         };
+        let host_app = app.clone();
         let opened = gpui_kit::open_window(options, cx, |window, cx| {
             settings::reapply_appearance(window, cx);
             window.set_window_title("Orbit");
+            // Closing the window leaves its terminals running in the host
+            // (on Windows the window closes before the app quits).
+            let closing = app.downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                let _ = closing.update(cx, |app, _| app.detach());
+                true
+            });
             cx.new(|cx| shell::Workspace::new(app, window, cx))
         });
         match opened {
             Ok((window, workspace)) => {
+                // What the window should know about the background host.
+                if let Some(reason) = fallback {
+                    let _ = window.update(cx, |_, window, cx| host::show_fallback(&reason, window, cx));
+                }
+                cx.subscribe(&host_app, move |app, event: &app_state::AppEvent, cx| {
+                    if let app_state::AppEvent::Host(notice) = event {
+                        let _ = window.update(cx, |_, window, cx| host::show(notice, &app, window, cx));
+                    }
+                })
+                .detach();
                 // This launch's own arguments, then later launches' as they come.
                 let mut instance = instance;
                 let _ = window.update(cx, |_, window, cx| {

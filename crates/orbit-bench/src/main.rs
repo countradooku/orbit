@@ -337,71 +337,115 @@ fn network() -> Vec<Result> {
         });
     });
     let url = format!("ws://{}/", rx.recv().unwrap());
-    let backend = Backend::Remote(RemoteClient::connect(url, "bench-token".into()).unwrap());
+    let ws = link(&url, "bench-token");
+
+    // The background host's transport: the endpoint `orbitd --local` serves.
+    let control = std::sync::Arc::new(orbit_net::host::HostControl::default());
+    let options = orbit_net::endpoint::EndpointOptions { control: Some(control), local: true };
+    let endpoint = orbit_net::endpoint::start_with(engine.clone(), dir.path(), "host", options).unwrap();
+    let info = endpoint.info().clone();
+    let local = link(&info.local, &info.token);
+    endpoint.close();
+
+    // In-process: the UI thread calls the engine thread directly.
+    let Ok(Ok(Reply::Thread(id))) =
+        block_on(engine.call(Command::CreateThread { project: None, config: ThreadConfig::default(), worktree: false }))
+    else {
+        panic!("thread")
+    };
+    let mut in_process = Vec::with_capacity(5_000);
+    for _ in 0..5_000 {
+        let start = Instant::now();
+        engine.call(Command::UpdateThread { id, patch: ThreadPatch::default() }).recv().unwrap().unwrap();
+        in_process.push(start.elapsed());
+    }
+    in_process.sort();
+    engine.shutdown();
+    let pipe = if cfg!(windows) { "Named pipe" } else { "Unix socket" };
+    vec![
+        Result {
+            name: "In-process command round trip p50",
+            value: percentile(&in_process, 0.5).as_secs_f64() * 1e6,
+            unit: "µs",
+            note: format!("p99 {:.1} µs, UI thread → engine thread → reply", percentile(&in_process, 0.99).as_secs_f64() * 1e6),
+        },
+        Result {
+            name: "WebSocket round trip p50",
+            value: percentile(&ws.round_trips, 0.5).as_secs_f64() * 1e6,
+            unit: "µs",
+            note: format!("p99 {:.0} µs, loopback, includes the engine", percentile(&ws.round_trips, 0.99).as_secs_f64() * 1e6),
+        },
+        Result {
+            name: "WebSocket streaming",
+            value: ws.deltas as f64 / ws.streaming.as_secs_f64() / 1e6,
+            unit: "M deltas/s",
+            note: format!("{} deltas engine → socket → client state", ws.deltas),
+        },
+        Result {
+            name: if cfg!(windows) { "Named pipe round trip p50" } else { "Unix socket round trip p50" },
+            value: percentile(&local.round_trips, 0.5).as_secs_f64() * 1e6,
+            unit: "µs",
+            note: format!(
+                "p99 {:.0} µs, app → background host, includes the engine",
+                percentile(&local.round_trips, 0.99).as_secs_f64() * 1e6
+            ),
+        },
+        Result {
+            name: if cfg!(windows) { "Named pipe streaming" } else { "Unix socket streaming" },
+            value: local.deltas as f64 / local.streaming.as_secs_f64() / 1e6,
+            unit: "M deltas/s",
+            note: format!("{} deltas engine → {} → client state", local.deltas, pipe.to_lowercase()),
+        },
+    ]
+}
+
+struct LinkNumbers {
+    round_trips: Vec<Duration>,
+    deltas: usize,
+    streaming: Duration,
+}
+
+/// Round trips of a command that is pure engine work, then a streamed turn,
+/// over a client connected to `url`.
+fn link(url: &str, token: &str) -> LinkNumbers {
+    let backend = Backend::Remote(RemoteClient::connect(url.to_owned(), token.to_owned()).unwrap());
     let mut feed = backend.feed();
     wait_for(&mut feed, |u| matches!(u, Update::Status(orbit_net::ConnectionStatus::Connected)));
-
-    // Round trips: a cheap command answered by the engine.
     let Ok(Ok(Reply::Thread(id))) =
         block_on(backend.call(Command::CreateThread { project: None, config: ThreadConfig::default(), worktree: false }))
     else {
         panic!("thread")
     };
-    // A command that is pure engine work (an empty patch changes nothing).
+    // An empty patch changes nothing.
     let noop = || Command::UpdateThread { id, patch: ThreadPatch::default() };
-    let mut samples = Vec::with_capacity(5_000);
+    for _ in 0..500 {
+        backend.call(noop()).recv().unwrap().unwrap();
+    }
+    let mut round_trips = Vec::with_capacity(5_000);
     for _ in 0..5_000 {
         let start = Instant::now();
         backend.call(noop()).recv().unwrap().unwrap();
-        samples.push(start.elapsed());
+        round_trips.push(start.elapsed());
     }
-    samples.sort();
-    let mut local = Vec::with_capacity(5_000);
-    for _ in 0..5_000 {
-        let start = Instant::now();
-        engine.call(noop()).recv().unwrap().unwrap();
-        local.push(start.elapsed());
-    }
-    local.sort();
+    round_trips.sort();
 
-    // Streaming throughput over the socket.
     block_on(backend.call(Command::OpenThread { id })).unwrap().unwrap();
     let start = Instant::now();
     backend.send(Command::Send { thread: id, text: "go".into(), attachments: vec![], steer: false });
-    let mut seen = 0usize;
+    let mut deltas = 0usize;
     wait_for(&mut feed, |u| {
         if let Update::Events(envs) = u {
             for env in envs {
                 match &env.event {
-                    Event::ItemDelta { .. } => seen += 1,
-                    Event::ThreadUpserted(t) if t.turns == 1 && t.status == ThreadStatus::Idle => return true,
+                    Event::ItemDelta { thread, .. } if *thread == id => deltas += 1,
+                    Event::ThreadUpserted(t) if t.id == id && t.turns == 1 && t.status == ThreadStatus::Idle => return true,
                     _ => {}
                 }
             }
         }
         false
     });
-    let elapsed = start.elapsed();
+    let streaming = start.elapsed();
     backend.shutdown();
-    engine.shutdown();
-    vec![
-        Result {
-            name: "In-process command round trip p50",
-            value: percentile(&local, 0.5).as_secs_f64() * 1e6,
-            unit: "µs",
-            note: format!("p99 {:.1} µs, UI thread → engine thread → reply", percentile(&local, 0.99).as_secs_f64() * 1e6),
-        },
-        Result {
-            name: "WebSocket round trip p50",
-            value: percentile(&samples, 0.5).as_secs_f64() * 1e6,
-            unit: "µs",
-            note: format!("p99 {:.0} µs, loopback, includes the engine", percentile(&samples, 0.99).as_secs_f64() * 1e6),
-        },
-        Result {
-            name: "WebSocket streaming",
-            value: seen as f64 / elapsed.as_secs_f64() / 1e6,
-            unit: "M deltas/s",
-            note: format!("{seen} deltas engine → socket → client state"),
-        },
-    ]
+    LinkNumbers { round_trips, deltas, streaming }
 }
