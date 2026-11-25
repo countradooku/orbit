@@ -307,3 +307,36 @@ async fn a_refused_token_stops_until_it_changes() {
     }
     panic!("never reconnected");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn needs_you_from_other_threads_is_pushed_to_paired_chats() {
+    let telegram = FakeTelegram::start(0).await;
+    let mut world = World::new();
+    world.start_bots(endpoints(&telegram.http.url, NOWHERE, NOWHERE));
+    connected(&world, &telegram).await;
+    let options = BotOptions { notify: BotNotify::Always, ..BotOptions::default() };
+    world.bots(BotCommand::SetOptions(options)).await.unwrap();
+    // A thread started in the app, not from the chat, asks for approval.
+    let start = ThreadStart { prompt: Some("ask".into()), title: "From the app".into(), ..Default::default() };
+    world.call(Command::StartThread(start)).await.unwrap();
+    let pushed = telegram.wait_text(5, "Run this command?").await;
+    assert!(pushed.get("text").and_then(|t| t.as_str()).unwrap().contains("From the app"));
+    let yes = pushed.get("reply_markup").and_then(|k| k.get("inline_keyboard")).and_then(|k| k.as_array()).unwrap().iter().next().unwrap()
+        .as_array().unwrap().iter().next().unwrap().get("callback_data").and_then(|v| v.as_str()).unwrap().to_owned();
+    telegram.press(&yes);
+    eventually(5, "the request answered", || {
+        telegram.http.calls("/editMessageText").iter().find(|r| r.text().contains("→ Approved")).cloned()
+    })
+    .await;
+    // The chat isn't driving that thread: its answer stays in the app.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!telegram.sent_texts().iter().any(|t| t.contains("decision: Allow")));
+
+    // While the app is in front (and the setting says so), nothing is pushed.
+    world.bots(BotCommand::SetOptions(BotOptions::default())).await.unwrap();
+    world.bots(BotCommand::AppActive(true)).await.unwrap();
+    let start = ThreadStart { prompt: Some("ask".into()), title: "Quiet".into(), ..Default::default() };
+    world.call(Command::StartThread(start)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(!telegram.sent_texts().iter().any(|t| t.contains("Quiet")));
+}

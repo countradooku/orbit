@@ -37,18 +37,25 @@ pub const SLACK_MANIFEST: &str = r#"{
     "bot_user": {
       "display_name": "Orbit",
       "always_online": true
-    }
+    },
+    "slash_commands": [
+      {
+        "command": "/orbit",
+        "description": "Orbit: status, new, threads, switch, stop, diff, help",
+        "usage_hint": "status",
+        "should_escape": false
+      }
+    ]
   },
   "oauth_config": {
     "scopes": {
       "bot": [
         "app_mentions:read",
         "chat:write",
+        "commands",
         "im:history",
         "im:read",
         "im:write",
-        "channels:history",
-        "groups:history",
         "files:write",
         "users:read"
       ]

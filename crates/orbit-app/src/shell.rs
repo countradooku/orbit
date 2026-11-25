@@ -190,7 +190,7 @@ impl Workspace {
     fn run_debug_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(route) = self.debug_route.take() else { return };
         let state = self.app.read(cx).state();
-        if state.threads.is_empty() {
+        if state.threads.is_empty() && route != "settings" {
             self.debug_route = Some(route);
             return;
         }

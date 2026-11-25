@@ -327,8 +327,7 @@ fn links(text: &str, flavor: Flavor) -> String {
 fn pairs(text: &str, delim: &str, (open, close): (&str, &str)) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    loop {
-        let Some(start) = rest.find(delim) else { break };
+    while let Some(start) = rest.find(delim) {
         let inner_start = start + delim.len();
         let inner = &rest[inner_start..];
         let starts_word = inner.chars().next().is_some_and(|c| !c.is_whitespace());

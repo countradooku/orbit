@@ -28,7 +28,19 @@ use crate::assets::Lucide;
 use crate::theme;
 
 pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoElement {
-    div().size_full().child(SettingsView::new("orbit-settings").pages([
+    let view = SettingsView::new("orbit-settings");
+    // Debug builds: ORBIT_DEBUG_SETTINGS_PAGE=<page>[.<group>] opens there
+    // (zero-based), for screenshots and visual checks.
+    let target = if cfg!(debug_assertions) { std::env::var("ORBIT_DEBUG_SETTINGS_PAGE").ok() } else { None };
+    let target = target.and_then(|t| {
+        let (page, group) = t.split_once('.').map_or((t.as_str(), None), |(p, g)| (p, g.parse().ok()));
+        Some(gpui_kit::component::setting::SelectIndex { page_ix: page.parse().ok()?, group_ix: group })
+    });
+    let view = match target {
+        Some(index) => view.default_selected_index(index),
+        None => view,
+    };
+    div().size_full().child(view.pages([
         general(),
         appearance(cx),
         composer(cx),
