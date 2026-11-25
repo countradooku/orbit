@@ -164,6 +164,15 @@ impl OnboardingView {
     }
 
     fn continue_(&mut self, _: &OnboardingContinue, window: &mut Window, cx: &mut Context<Self>) {
+        // A focused button takes Enter itself (it clicks once).
+        if !self.focus.is_focused(window) {
+            cx.propagate();
+            return;
+        }
+        self.advance(window, cx);
+    }
+
+    fn advance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.step.next() {
             Some(next) => self.go(next, window, cx),
             None => self.start_task(window, cx),
@@ -934,7 +943,7 @@ impl OnboardingView {
                     .label(primary)
                     .loading(self.starting)
                     .disabled(primary_disabled)
-                    .on_click(cx.listener(|this, _, window, cx| this.continue_(&OnboardingContinue, window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.advance(window, cx))),
             )
     }
 }
