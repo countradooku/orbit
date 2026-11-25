@@ -161,7 +161,7 @@ impl RenderOnce for ContextMeter {
 
 /// `Claude Code · Opus 5.5`, from the provider's own catalog.
 pub fn model_label(config: &ThreadConfig, providers: &[ProviderInfo]) -> String {
-    let provider = providers.iter().find(|p| p.kind == config.provider);
+    let provider = providers.iter().find(|p| p.serves(config));
     let model = provider.and_then(|p| {
         p.models
             .iter()
@@ -180,7 +180,7 @@ pub fn model_label(config: &ThreadConfig, providers: &[ProviderInfo]) -> String 
             .unwrap_or_else(|| model.name.clone()),
         Some(model) => model.name.clone(),
         None if !config.model.is_empty() => config.model.clone(),
-        None => config.provider.label().to_owned(),
+        None => provider.map(|p| p.display_name()).unwrap_or(config.provider.label()).to_owned(),
     }
 }
 
@@ -274,6 +274,9 @@ pub fn provider_icon(kind: ProviderKind, cx: &App) -> Icon {
     match kind {
         ProviderKind::Claude => Icon::new(IconName::Asterisk).text_color(theme.warning),
         ProviderKind::Codex => Icon::new(IconName::Bot).text_color(theme.foreground),
+        ProviderKind::Acp => Icon::new(Lucide::Plug).text_color(theme.info),
+        ProviderKind::OpenCode => Icon::new(Lucide::Terminal).text_color(theme.foreground),
+        ProviderKind::Pi => Icon::new(Lucide::Sparkle).text_color(theme.success),
     }
 }
 
