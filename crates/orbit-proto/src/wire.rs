@@ -2,6 +2,7 @@
 
 use bitcode::{Decode, Encode};
 
+use crate::forge::{ForgeCommand, ForgeReply};
 use crate::ids::*;
 use crate::model::*;
 use crate::settings::Settings;
@@ -191,6 +192,16 @@ pub enum Command {
     /// applies what affects it (provider binaries and environment, git and
     /// worktree locations) and broadcasts [`Event::SettingsChanged`].
     UpdateSettings { settings: Settings },
+
+    /// Pull requests, checks, merges and issues; see [`ForgeCommand`].
+    /// Replies [`Reply::Forge`] (or `Thread` / `Done`, per command).
+    Forge(ForgeCommand),
+    /// Drafts a commit message for the thread's uncommitted changes with the
+    /// thread's own agent, in a one-shot run. Replies [`Reply::CommitMessage`].
+    GenerateCommitMessage { thread: ThreadId },
+    /// Drafts a pull request title and body for the thread's branch.
+    /// Replies [`Reply::PrText`].
+    GeneratePrText { thread: ThreadId },
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -206,6 +217,9 @@ pub enum Reply {
     Blob(Attachment),
     Terminal(TermId),
     PullRequest { url: String },
+    Forge(ForgeReply),
+    CommitMessage(String),
+    PrText { title: String, body: String },
 }
 
 /// A path that more than one thread's worktree changed.

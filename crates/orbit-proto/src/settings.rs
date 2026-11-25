@@ -28,6 +28,7 @@ pub struct Settings {
     pub review: ReviewSettings,
     pub notifications: NotificationSettings,
     pub advanced: AdvancedSettings,
+    pub integrations: IntegrationSettings,
 }
 
 impl Settings {
@@ -67,6 +68,13 @@ impl Settings {
         trim(&mut self.workspace.worktree_root);
         trim(&mut self.advanced.git_binary);
         trim(&mut self.advanced.gh_binary);
+        let i = &mut self.integrations;
+        for field in [&mut i.glab_binary, &mut i.linear_api_key, &mut i.jira_url, &mut i.jira_email, &mut i.jira_api_token] {
+            trim(field);
+        }
+        while i.jira_url.ends_with('/') {
+            i.jira_url.pop();
+        }
         self
     }
 
@@ -368,6 +376,48 @@ impl Default for AdvancedSettings {
     }
 }
 
+// ── Integrations ─────────────────────────────────────────────────────────
+
+/// Hosts and issue trackers. Tokens are stored with the other settings in
+/// Orbit's data folder and never written to logs: `Debug` redacts them.
+#[derive(Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct IntegrationSettings {
+    /// Explicit GitLab CLI binary; empty uses `glab` from PATH.
+    pub glab_binary: String,
+    /// A Linear personal API key (Linear › Settings › Security & access).
+    pub linear_api_key: String,
+    /// Jira site, e.g. `https://acme.atlassian.net`, or a Server / Data
+    /// Center base URL.
+    pub jira_url: String,
+    /// The Atlassian account email for a Jira Cloud API token; empty sends
+    /// the token as a bearer token (Server / Data Center personal tokens).
+    pub jira_email: String,
+    pub jira_api_token: String,
+}
+
+impl IntegrationSettings {
+    pub fn linear_configured(&self) -> bool {
+        !self.linear_api_key.is_empty()
+    }
+
+    pub fn jira_configured(&self) -> bool {
+        !self.jira_url.is_empty() && !self.jira_api_token.is_empty()
+    }
+}
+
+impl std::fmt::Debug for IntegrationSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let secret = |s: &str| if s.is_empty() { "" } else { "<redacted>" };
+        f.debug_struct("IntegrationSettings")
+            .field("glab_binary", &self.glab_binary)
+            .field("linear_api_key", &secret(&self.linear_api_key))
+            .field("jira_url", &self.jira_url)
+            .field("jira_email", &self.jira_email)
+            .field("jira_api_token", &secret(&self.jira_api_token))
+            .finish()
+    }
+}
+
 // ── Remote ───────────────────────────────────────────────────────────────
 
 /// Which engine the client drives. Kept by the client, never by an engine.
@@ -425,6 +475,22 @@ mod tests {
         // Codex is at its defaults, so nothing is stored for it.
         assert_eq!(s.agents.providers.len(), 1);
         assert_eq!(s.clone().sanitized(), s);
+    }
+
+    #[test]
+    fn tokens_never_show_in_debug_output() {
+        let mut s = Settings::default();
+        s.integrations.linear_api_key = "lin_api_SECRET".into();
+        s.integrations.jira_api_token = " ATATT-SECRET ".into();
+        s.integrations.jira_url = "https://acme.atlassian.net/".into();
+        let s = s.sanitized();
+        assert_eq!(s.integrations.jira_api_token, "ATATT-SECRET");
+        assert_eq!(s.integrations.jira_url, "https://acme.atlassian.net");
+        let shown = format!("{s:?}");
+        assert!(!shown.contains("SECRET"), "{shown}");
+        assert!(shown.contains("<redacted>"));
+        let back: Settings = decode(&encode(&s)).unwrap();
+        assert_eq!(back, s);
     }
 
     #[test]

@@ -16,6 +16,7 @@
 
 pub mod codec;
 pub mod diff;
+pub mod forge;
 pub mod ids;
 pub mod model;
 pub mod settings;
@@ -25,6 +26,7 @@ pub use codec::{Codec, FRAME_HEADER, FrameError, FrameReader, decode, encode, wr
 pub use diff::{
     DiffLine, FileDiff, FileDiffKind, Hunk, LineKind, LineRanges, Span, file_patch, hunk_patch, hunks_patch, word_diff,
 };
+pub use forge::*;
 pub use ids::*;
 pub use model::*;
 pub use settings::*;
