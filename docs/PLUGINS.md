@@ -461,8 +461,9 @@ host API.
 - **Storage** is one JSON object per plugin (at most 1 MiB), in
   `<data>/plugins/data/<id>/storage.json` on the host. Panels read it;
   actions and the module write it.
-- **Settings** are declared and typed; the user edits them on the host
-  (`PluginCommand::Setting`), and the module reads them with `settings.get`:
+- **Settings** are declared and typed; the user edits them in Settings ›
+  Plugins (the plugin's menu › Settings…), values are checked on the host
+  against their type, and the module reads them with `settings.get`:
 
   ```toml
   [[settings]]
