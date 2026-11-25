@@ -595,6 +595,28 @@ impl ReviewView {
         self.diff.update(cx, |d, cx| d.set_file_collapsed(&path, reviewed, cx));
     }
 
+    /// The change as text for writing a commit message or pull request:
+    /// the thread's title, then the patch, cut at a size a model reads well.
+    fn change_context(&self, cx: &App) -> String {
+        const BUDGET: usize = 48 * 1024;
+        let mut out = String::new();
+        if let Some(t) = self.thread_record(cx) {
+            out.push_str(&format!("Task: {}\n\n", crate::thread::display_title(&t)));
+        }
+        let mut left = Vec::new();
+        for f in &self.data.files {
+            if out.len() + f.raw.len() <= BUDGET {
+                out.push_str(&f.raw);
+            } else {
+                left.push(f.path());
+            }
+        }
+        if !left.is_empty() {
+            out.push_str(&format!("\n…and {} more changed files: {}\n", left.len(), left.join(", ")));
+        }
+        out
+    }
+
     fn reviewed_files(&self) -> usize {
         self.visible.iter().filter(|&&ix| self.data.file_reviewed(ix, &self.reviewed)).count()
     }
@@ -1039,7 +1061,7 @@ impl ReviewView {
                     .small()
                     .icon(Lucide::GitCommitHorizontal)
                     .label("Commit…")
-                    .on_click(cx.listener(|this, _, window, cx| dialogs::commit(this.app.clone(), this.thread, cx.weak_entity(), window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| dialogs::commit(this.app.clone(), this.thread, this.change_context(cx), cx.weak_entity(), window, cx))),
             )
             .child(
                 Button::new("pull-request")
@@ -1049,7 +1071,7 @@ impl ReviewView {
                     .label("Pull request…")
                     .on_click(cx.listener(|this, _, window, cx| {
                         let files = this.data.files.iter().map(|f| f.path().to_owned()).collect();
-                        dialogs::create_pr(this.app.clone(), this.thread, files, window, cx)
+                        dialogs::create_pr(this.app.clone(), this.thread, files, this.change_context(cx), window, cx)
                     })),
             )
             .when(mergeable, |el| {
@@ -1157,7 +1179,7 @@ impl ReviewView {
                         let item = |label: &'static str, checked: bool, f: fn(&mut ReviewView, &mut Context<ReviewView>)| {
                             let v = view.clone();
                             PopupMenuItem::new(label).checked(checked).on_click(move |_, _, cx| {
-                                let _ = v.update(cx, |this, cx| f(this, cx));
+                                let _ = v.update(cx, f);
                             })
                         };
                         menu.min_w(px(240.))

@@ -12,6 +12,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use orbit_proto::*;
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use super::state::ReviewMarks;
 use crate::app_state::AppState;
 
@@ -23,20 +26,98 @@ fn notify_error(window: &mut Window, title: &str, message: String, cx: &mut App)
     window.push_notification(Notification::error(message).title(title.to_owned()), cx);
 }
 
-/// Commit everything in the thread's workspace, optionally pushing.
-pub fn commit(app: Entity<AppState>, thread: ThreadId, view: WeakEntity<super::ReviewView>, window: &mut Window, cx: &mut App) {
-    let message = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 10).default_value(thread_title(&app, thread, cx)));
-    let push = std::rc::Rc::new(std::cell::Cell::new(true));
-    window.open_dialog(cx, move |dialog, _, _| {
+/// Has the engine write text for `task` from `input` (the change), then
+/// hands it to `apply`. `busy` is set while it writes.
+#[allow(clippy::too_many_arguments)]
+fn generate(
+    app: &Entity<AppState>,
+    thread: ThreadId,
+    task: TextTask,
+    input: String,
+    busy: Rc<Cell<bool>>,
+    window: &mut Window,
+    cx: &mut App,
+    apply: impl FnOnce(String, &mut Window, &mut App) + 'static,
+) {
+    if busy.replace(true) {
+        return;
+    }
+    window.refresh();
+    let task = app.update(cx, |app, cx| app.call(Command::GenerateText { thread: Some(thread), task, input }, cx));
+    window
+        .spawn(cx, async move |cx| {
+            let result = task.await;
+            let _ = cx.update(|window, cx| {
+                busy.set(false);
+                window.refresh();
+                match result {
+                    Ok(Reply::Text(text)) if !text.trim().is_empty() => apply(text.trim().to_owned(), window, cx),
+                    Ok(_) => {}
+                    Err(message) => notify_error(window, "Couldn’t write it", message, cx),
+                }
+            });
+        })
+        .detach();
+}
+
+/// A labelled field header with a "Generate" button.
+fn field_header(label: &'static str, id: &'static str, busy: bool, muted: Hsla, on_click: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
+    h_flex()
+        .justify_between()
+        .child(div().text_xs().text_color(muted).child(label))
+        .child(
+            Button::new(id)
+                .xsmall()
+                .ghost()
+                .icon(crate::assets::Lucide::Sparkles)
+                .label(if busy { "Writing…" } else { "Generate" })
+                .loading(busy)
+                .disabled(busy)
+                .on_click(move |_, window, cx| on_click(window, cx)),
+        )
+}
+
+/// Commit everything in the thread's workspace, optionally pushing. The
+/// message is written from `context` (the change) while the dialog opens,
+/// unless the user starts typing first.
+pub fn commit(
+    app: Entity<AppState>,
+    thread: ThreadId,
+    context: String,
+    view: WeakEntity<super::ReviewView>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let initial = thread_title(&app, thread, cx);
+    let message = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 10).default_value(initial.clone()));
+    let push = Rc::new(Cell::new(true));
+    let busy = Rc::new(Cell::new(false));
+    let write = {
+        let (app, message, busy, context) = (app.clone(), message.clone(), busy.clone(), context.clone());
+        Rc::new(move |force: bool, window: &mut Window, cx: &mut App| {
+            let (message, initial) = (message.clone(), initial.clone());
+            generate(&app, thread, TextTask::CommitMessage, context.clone(), busy.clone(), window, cx, move |text, window, cx| {
+                if force || message.read(cx).value().trim() == initial.trim() {
+                    message.update(cx, |m, cx| m.set_value(text, window, cx));
+                }
+            });
+        })
+    };
+    write(false, window, cx);
+    window.open_dialog(cx, move |dialog, _, cx| {
         let (message, app, push, view) = (message.clone(), app.clone(), push.clone(), view.clone());
         let push_box = push.clone();
+        let write = write.clone();
+        let header = field_header("Message", "generate-commit", busy.get(), cx.theme().muted_foreground, move |window, cx| {
+            write(true, window, cx)
+        });
         dialog
             .title("Commit changes")
             .w(px(520.))
             .child(
                 v_flex()
                     .gap_3()
-                    .child(Textarea::new(&message))
+                    .child(v_flex().gap_1().child(header).child(Textarea::new(&message)))
                     .child(
                         Checkbox::new("push")
                             .label("Push after committing")
@@ -76,16 +157,41 @@ pub fn commit(app: Entity<AppState>, thread: ThreadId, view: WeakEntity<super::R
 }
 
 /// Push the branch and open a pull request.
-pub fn create_pr(app: Entity<AppState>, thread: ThreadId, files: Vec<String>, window: &mut Window, cx: &mut App) {
-    let title = cx.new(|cx| InputState::new(window, cx).default_value(thread_title(&app, thread, cx)));
+/// Push the branch and open a pull request; title and body are written
+/// from `context` while the dialog opens, unless the user edits them first.
+pub fn create_pr(app: Entity<AppState>, thread: ThreadId, files: Vec<String>, context: String, window: &mut Window, cx: &mut App) {
+    let initial_title = thread_title(&app, thread, cx);
+    let title = cx.new(|cx| InputState::new(window, cx).default_value(initial_title.clone()));
     let body_text = format!("## Changes\n\n{}", files.iter().map(|f| format!("- `{f}`")).collect::<Vec<_>>().join("\n"));
-    let body = cx.new(|cx| TextareaState::new(window, cx).auto_grow(6, 16).default_value(body_text));
-    window.open_dialog(cx, move |dialog, _, _| {
+    let body = cx.new(|cx| TextareaState::new(window, cx).auto_grow(6, 16).default_value(body_text.clone()));
+    let busy = Rc::new(Cell::new(false));
+    let write = {
+        let (app, title, body, busy) = (app.clone(), title.clone(), body.clone(), busy.clone());
+        Rc::new(move |force: bool, window: &mut Window, cx: &mut App| {
+            let (title, body, initial_title, body_text) = (title.clone(), body.clone(), initial_title.clone(), body_text.clone());
+            generate(&app, thread, TextTask::PullRequest, context.clone(), busy.clone(), window, cx, move |text, window, cx| {
+                let (head, rest) = text.split_once('\n').unwrap_or((&text, ""));
+                let head = head.trim().trim_start_matches('#').trim().to_owned();
+                if force || title.read(cx).value().trim() == initial_title.trim() {
+                    title.update(cx, |t, cx| t.set_value(head, window, cx));
+                }
+                if !rest.trim().is_empty() && (force || body.read(cx).value() == body_text.as_str()) {
+                    body.update(cx, |b, cx| b.set_value(rest.trim().to_owned(), window, cx));
+                }
+            });
+        })
+    };
+    write(false, window, cx);
+    window.open_dialog(cx, move |dialog, _, cx| {
         let (title, body, app) = (title.clone(), body.clone(), app.clone());
+        let write = write.clone();
+        let header = field_header("Title and description", "generate-pr", busy.get(), cx.theme().muted_foreground, move |window, cx| {
+            write(true, window, cx)
+        });
         dialog
             .title("Create pull request")
             .w(px(600.))
-            .child(v_flex().gap_3().child(Input::new(&title)).child(Textarea::new(&body)))
+            .child(v_flex().gap_3().child(v_flex().gap_1().child(header).child(Input::new(&title))).child(Textarea::new(&body)))
             .footer(
                 h_flex()
                     .gap_2()
