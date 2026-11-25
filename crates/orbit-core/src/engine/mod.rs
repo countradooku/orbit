@@ -10,6 +10,7 @@ mod bus;
 pub use bus::Bus;
 mod drafts;
 mod files;
+mod forge;
 mod orchestrator;
 mod review;
 mod queue;

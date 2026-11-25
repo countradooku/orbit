@@ -186,7 +186,7 @@ pub struct ClientState {
     /// Unsent messages saved on the host, per composer.
     pub drafts: HashMap<DraftTarget, Draft>,
     /// Live status evidence per thread (quiet, unverified, terminal
-    /// agents); absent means nothing to qualify. See [`Glyph::of`].
+    /// agents); absent means nothing to qualify. See [`LiveStatus::of`].
     pub live: HashMap<ThreadId, ThreadLive>,
     /// Agents running in terminals, bound to a thread or not.
     pub terminal_agents: HashMap<TermId, TerminalAgent>,
@@ -286,9 +286,9 @@ impl ClientState {
     }
 
     /// The status glyph of a thread, with its live evidence: what every
-    /// surface draws (see [`Glyph`]).
-    pub fn glyph(&self, thread: &Thread) -> Glyph {
-        Glyph::of(thread, self.live.get(&thread.id))
+    /// surface draws (see [`LiveStatus`]).
+    pub fn live_status(&self, thread: &Thread) -> LiveStatus {
+        LiveStatus::of(thread, self.live.get(&thread.id))
     }
 
     /// Threads in sidebar order: pinned first, then most recently updated.
@@ -525,9 +525,9 @@ mod tests {
             Envelope { seq: 0, event: Event::ThreadLive { thread: id, live: quiet } },
         ])]);
         assert!(changes.affects_shell());
-        assert_eq!(state.glyph(&thread), Glyph::Quiet);
+        assert_eq!(state.live_status(&thread), LiveStatus::Quiet);
         state.apply(vec![Update::Events(vec![Envelope { seq: 0, event: Event::ThreadLive { thread: id, live: ThreadLive::default() } }])]);
-        assert_eq!(state.glyph(&thread), Glyph::Working);
+        assert_eq!(state.live_status(&thread), LiveStatus::Working);
         assert!(state.live.is_empty());
         let agent = TerminalAgent {
             term: TermId(7),

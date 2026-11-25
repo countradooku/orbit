@@ -1,0 +1,17 @@
+{"id":"10007","key":"PROJ-7","fields":{
+ "summary":"Settings don't save on Windows","labels":["windows"],
+ "status":{"name":"In Progress","statusCategory":{"key":"indeterminate"}},
+ "assignee":{"displayName":"Alice Doe"},"reporter":{"displayName":"Bob"},"updated":"2025-11-24T17:00:00.000+0100",
+ "description":{"type":"doc","version":1,"content":[
+   {"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Steps"}]},
+   {"type":"orderedList","attrs":{"order":1},"content":[
+     {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"Open "},{"type":"text","text":"Settings","marks":[{"type":"strong"}]}]}]},
+     {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"Press "},{"type":"text","text":"Save","marks":[{"type":"code"}]}]}]}
+   ]},
+   {"type":"paragraph","content":[{"type":"text","text":"See "},{"type":"text","text":"the log","marks":[{"type":"link","attrs":{"href":"https://example.com/log"}}]},{"type":"text","text":"."}]},
+   {"type":"codeBlock","attrs":{"language":"rust"},"content":[{"type":"text","text":"let x = 1;"}]}
+ ]},
+ "comment":{"total":2,"comments":[
+   {"author":{"displayName":"Bob"},"created":"2025-11-24T18:00:00.000+0000","body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Fixed in the next build?"}]}]}},
+   {"author":{"displayName":"Alice Doe"},"created":"2025-11-24T17:30:00.000+0000","body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"First look: it is the cache."}]}]}}
+ ]}}}

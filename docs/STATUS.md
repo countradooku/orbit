@@ -16,12 +16,12 @@ passed in), `crates/orbit-core/src/engine/status.rs` (the engine side), and
 | Durable status | `ThreadStatus` on `Thread` | Logged | What the engine last decided: `Idle`, `Starting`, `Running`, `Waiting`, `RateLimited`, `Failed`. |
 | Live evidence | `ThreadLive` | Never logged. Sent as `Event::ThreadLive` and in `Snapshot::live` | How fresh that decision is (`Liveness`), and which agents run in the thread's terminals (`TerminalAgent`). |
 
-`Glyph::of(thread, live)` combines both layers into the glyph that every surface
-draws. `ClientState::glyph` is the same call for clients. The glyphs, from most
+`LiveStatus::of(thread, live)` combines both layers into the glyph that every surface
+draws. `ClientState::live_status` is the same call for clients. The glyphs, from most
 to least urgent, are `Permission`, `NeedsYou`, `Failed`, `RateLimited`,
 `Working`, `Quiet`, `Unverified`, `DoneUnread` and `Idle`. A thread's glyph is
 the most urgent of its own glyph and the glyphs of its terminal agents.
-`liveness_line` and `agent_line` give the text for a glyph's hover.
+The app's `ui::Glyph` (owned by the shell) draws these: `Quiet` maps to its working glyph with the "No output for…" line, and `Unverified` maps to its dashed ring. `liveness_line` and `agent_line` give the text for a glyph's hover.
 
 Live evidence is ephemeral by design. After a restart nothing is running, so
 nothing needs it. The wire protocol is version 3 (`PROTOCOL_VERSION`). The meta

@@ -103,7 +103,7 @@ fn a_silent_turn_shows_no_output_instead_of_working() {
         let live = r.live(id).expect("a live update");
         assert!(matches!(live.liveness, Liveness::Quiet { tool: None, .. }), "{live:?}");
         let thread = r.o.store.thread(id).unwrap().clone();
-        assert_eq!(Glyph::of(&thread, Some(&live)), Glyph::Quiet);
+        assert_eq!(LiveStatus::of(&thread, Some(&live)), LiveStatus::Quiet);
         // The snapshot carries it to clients that connect now.
         assert!(r.o.snapshot().live.iter().any(|(t, l)| *t == id && matches!(l.liveness, Liveness::Quiet { .. })));
         // The agent speaks again: live, and the glyph is plain Working.
@@ -165,7 +165,7 @@ fn after_sleep_running_turns_are_unverified_until_the_agent_reports() {
         let Liveness::Unverified { reason, .. } = &live.liveness else { panic!("{live:?}") };
         assert!(reason.contains("asleep for 1h"), "{reason}");
         let thread = r.o.store.thread(id).unwrap().clone();
-        assert_eq!(Glyph::of(&thread, Some(&live)), Glyph::Unverified);
+        assert_eq!(LiveStatus::of(&thread, Some(&live)), LiveStatus::Unverified);
         r.agent_tx.send((id, AgentEvent::Usage(Usage::default()))).unwrap();
         r.pump().await;
         assert_eq!(r.live(id).unwrap().liveness, Liveness::Live);
@@ -221,7 +221,7 @@ fn a_crash_during_an_approval_closes_the_request() {
         assert!(matches!(thread.status, ThreadStatus::Failed { .. }));
         assert!(thread.pending.is_empty());
         assert_eq!(r.o.item(id, item).unwrap().status, ItemStatus::Cancelled, "no live approval card for a dead agent");
-        assert_eq!(Glyph::of(&thread, None), Glyph::Failed);
+        assert_eq!(LiveStatus::of(&thread, None), LiveStatus::Failed);
     });
 }
 
@@ -279,7 +279,7 @@ fn terminal_hooks_reach_the_thread_and_unknown_tokens_do_not() {
         assert_eq!((live.terminals[0].state, live.terminals[0].evidence), (AgentState::Working, Evidence::Hook));
         assert!(r.seen.iter().any(|e| matches!(e, Event::TerminalAgent { term: t, agent: Some(_) } if *t == term)));
         let thread = r.o.store.thread(id).unwrap().clone();
-        assert_eq!(Glyph::of(&thread, Some(&live)), Glyph::Working);
+        assert_eq!(LiveStatus::of(&thread, Some(&live)), LiveStatus::Working);
 
         r.o.handle_internal(hook("Notification", "permission_prompt"));
         r.pump().await;

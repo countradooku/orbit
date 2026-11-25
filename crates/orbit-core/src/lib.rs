@@ -1,6 +1,7 @@
 //! Orbit engine.
 
 pub mod engine;
+pub mod forge;
 pub mod fuzzy;
 pub mod git;
 pub mod provider;

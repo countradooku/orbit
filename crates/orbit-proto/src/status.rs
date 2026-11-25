@@ -6,7 +6,7 @@
 //! true right now and is recomputed from live evidence, so it is never
 //! logged: whether the agent is still talking, has gone quiet, or can no
 //! longer be confirmed, and which agents run as plain TUIs in the thread's
-//! terminals. [`Glyph::of`] folds both into the one state every surface
+//! terminals. [`LiveStatus::of`] folds both into the one state every surface
 //! draws, so the sidebar, tabs and tray never disagree.
 //!
 //! The rule behind every type here: Orbit never guesses "idle" or
@@ -119,10 +119,12 @@ pub enum NeedKind {
     Auth,
 }
 
-/// The one glyph vocabulary every surface draws (rows, tabs, tiles, the
-/// tray). Ordered by how much it needs the user: `Permission` first.
+/// The status a thread shows once its live evidence is counted: the input
+/// to the one glyph vocabulary every surface draws (`orbit-app`'s
+/// `ui::Glyph`). `Quiet` draws as working with its "No output for…" line.
+/// Ordered by how much it needs the user: `Permission` first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Glyph {
+pub enum LiveStatus {
     /// Amber shield: approve something.
     Permission,
     /// Amber `?`: answer a question or sign in.
@@ -143,59 +145,59 @@ pub enum Glyph {
     Idle,
 }
 
-impl Glyph {
+impl LiveStatus {
     /// The glyph of a thread: its own status and freshness, and the most
     /// urgent of the agents in its terminals.
-    pub fn of(thread: &Thread, live: Option<&ThreadLive>) -> Glyph {
+    pub fn of(thread: &Thread, live: Option<&ThreadLive>) -> LiveStatus {
         let own = Self::of_thread(thread, live.map(|l| &l.liveness));
         let terminals = live.into_iter().flat_map(|l| l.terminals.iter()).map(|a| Self::of_agent(a.state));
         terminals.fold(own, Ord::min)
     }
 
-    fn of_thread(thread: &Thread, liveness: Option<&Liveness>) -> Glyph {
+    fn of_thread(thread: &Thread, liveness: Option<&Liveness>) -> LiveStatus {
         if thread.status == ThreadStatus::Waiting || !thread.pending.is_empty() {
             let permission = thread.pending.iter().any(|p| {
                 matches!(p.request.kind, RequestKind::Command { .. } | RequestKind::FileChange { .. } | RequestKind::Tool { .. })
             });
-            return if permission { Glyph::Permission } else { Glyph::NeedsYou };
+            return if permission { LiveStatus::Permission } else { LiveStatus::NeedsYou };
         }
         match &thread.status {
-            ThreadStatus::Failed { .. } => Glyph::Failed,
-            ThreadStatus::RateLimited { .. } => Glyph::RateLimited,
+            ThreadStatus::Failed { .. } => LiveStatus::Failed,
+            ThreadStatus::RateLimited { .. } => LiveStatus::RateLimited,
             ThreadStatus::Running | ThreadStatus::Starting => match liveness {
-                Some(Liveness::Unverified { .. }) => Glyph::Unverified,
-                Some(Liveness::Quiet { .. }) => Glyph::Quiet,
-                _ => Glyph::Working,
+                Some(Liveness::Unverified { .. }) => LiveStatus::Unverified,
+                Some(Liveness::Quiet { .. }) => LiveStatus::Quiet,
+                _ => LiveStatus::Working,
             },
-            _ if thread.unread => Glyph::DoneUnread,
-            _ => Glyph::Idle,
+            _ if thread.unread => LiveStatus::DoneUnread,
+            _ => LiveStatus::Idle,
         }
     }
 
     /// The glyph of a terminal agent's state.
-    pub fn of_agent(state: AgentState) -> Glyph {
+    pub fn of_agent(state: AgentState) -> LiveStatus {
         match state {
-            AgentState::Working => Glyph::Working,
-            AgentState::NeedsYou(NeedKind::Permission) => Glyph::Permission,
-            AgentState::NeedsYou(_) => Glyph::NeedsYou,
-            AgentState::Idle => Glyph::Idle,
-            AgentState::Failed => Glyph::Failed,
-            AgentState::RateLimited => Glyph::RateLimited,
-            AgentState::Unverified => Glyph::Unverified,
+            AgentState::Working => LiveStatus::Working,
+            AgentState::NeedsYou(NeedKind::Permission) => LiveStatus::Permission,
+            AgentState::NeedsYou(_) => LiveStatus::NeedsYou,
+            AgentState::Idle => LiveStatus::Idle,
+            AgentState::Failed => LiveStatus::Failed,
+            AgentState::RateLimited => LiveStatus::RateLimited,
+            AgentState::Unverified => LiveStatus::Unverified,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Glyph::Permission => "Needs your approval",
-            Glyph::NeedsYou => "Needs you",
-            Glyph::Failed => "Failed",
-            Glyph::RateLimited => "Waiting for quota",
-            Glyph::Working => "Working",
-            Glyph::Quiet => "No recent output",
-            Glyph::Unverified => "Unverified",
-            Glyph::DoneUnread => "New result",
-            Glyph::Idle => "Idle",
+            LiveStatus::Permission => "Needs your approval",
+            LiveStatus::NeedsYou => "Needs you",
+            LiveStatus::Failed => "Failed",
+            LiveStatus::RateLimited => "Waiting for quota",
+            LiveStatus::Working => "Working",
+            LiveStatus::Quiet => "No recent output",
+            LiveStatus::Unverified => "Unverified",
+            LiveStatus::DoneUnread => "New result",
+            LiveStatus::Idle => "Idle",
         }
     }
 }
@@ -275,14 +277,14 @@ mod tests {
     #[test]
     fn quiet_and_unverified_turns_never_draw_as_working() {
         let running = Thread { status: ThreadStatus::Running, ..Default::default() };
-        assert_eq!(Glyph::of(&running, None), Glyph::Working);
+        assert_eq!(LiveStatus::of(&running, None), LiveStatus::Working);
         let quiet = ThreadLive { liveness: Liveness::Quiet { since_ms: 0, tool: None }, ..Default::default() };
-        assert_eq!(Glyph::of(&running, Some(&quiet)), Glyph::Quiet);
+        assert_eq!(LiveStatus::of(&running, Some(&quiet)), LiveStatus::Quiet);
         let lost = ThreadLive { liveness: Liveness::Unverified { since_ms: 0, reason: "x".into() }, ..Default::default() };
-        assert_eq!(Glyph::of(&running, Some(&lost)), Glyph::Unverified);
+        assert_eq!(LiveStatus::of(&running, Some(&lost)), LiveStatus::Unverified);
         // Freshness qualifies a running turn only.
         let idle = Thread { unread: true, ..Default::default() };
-        assert_eq!(Glyph::of(&idle, Some(&lost)), Glyph::DoneUnread);
+        assert_eq!(LiveStatus::of(&idle, Some(&lost)), LiveStatus::DoneUnread);
     }
 
     #[test]
@@ -294,16 +296,16 @@ mod tests {
         };
         let mut thread = Thread { status: ThreadStatus::Waiting, ..Default::default() };
         thread.pending = vec![request(RequestKind::Question { question: "?".into(), options: vec![], multi_select: false })];
-        assert_eq!(Glyph::of(&thread, None), Glyph::NeedsYou);
+        assert_eq!(LiveStatus::of(&thread, None), LiveStatus::NeedsYou);
         thread.pending = vec![request(RequestKind::Command { command: "ls".into(), cwd: ".".into(), reason: String::new() })];
-        assert_eq!(Glyph::of(&thread, None), Glyph::Permission);
+        assert_eq!(LiveStatus::of(&thread, None), LiveStatus::Permission);
 
         let idle = Thread::default();
         let live = ThreadLive {
             terminals: vec![agent(AgentState::Idle, Evidence::Hook), agent(AgentState::NeedsYou(NeedKind::Permission), Evidence::Heuristic)],
             ..Default::default()
         };
-        assert_eq!(Glyph::of(&idle, Some(&live)), Glyph::Permission);
+        assert_eq!(LiveStatus::of(&idle, Some(&live)), LiveStatus::Permission);
     }
 
     #[test]
