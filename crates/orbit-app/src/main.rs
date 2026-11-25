@@ -95,6 +95,7 @@ fn main() {
     };
     let shutdown = backend.clone();
     let endpoint = control_endpoint(&backend, &startup.data_dir);
+    let quit_data_dir = startup.data_dir.clone();
 
     gpui_kit::application().with_assets(assets::OrbitAssets).run(move |cx| {
         gpui_kit::init(cx);
@@ -123,6 +124,7 @@ fn main() {
         cx.set_menus([Menu::new("Orbit").items([MenuItem::action("Quit Orbit", actions::Quit)])]);
         cx.on_app_quit(move |cx| {
             endpoint.iter().for_each(orbit_net::endpoint::LocalEndpoint::close);
+            instance::remove_endpoint_file(&quit_data_dir);
             settings::flush(cx);
             let backend = shutdown.clone();
             async move { backend.shutdown() }

@@ -154,6 +154,7 @@ async fn serve_lines(
 ) -> std::io::Result<()> {
     let ctx = Rc::new(ctx);
     let running: Rc<RefCell<HashMap<String, tokio::task::AbortHandle>>> = Rc::default();
+    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     while let Some(line) = input.recv().await {
         let line = line?;
         if line.trim().is_empty() {
@@ -200,16 +201,18 @@ async fn serve_lines(
                     let _ = tx2.send(reply);
                 });
                 running.borrow_mut().insert(key, task.abort_handle());
+                tasks.retain(|t| !t.is_finished());
+                tasks.push(task);
             }
             "resources/list" => drop(tx.send(response(&id, json!({"resources": []})))),
             "prompts/list" => drop(tx.send(response(&id, json!({"prompts": []})))),
             _ => drop(tx.send(error(&id, METHOD_NOT_FOUND, &format!("Method not found: {method}")))),
         }
     }
-    // Input closed: the client is gone, so nobody reads answers any more.
-    let pending: Vec<tokio::task::AbortHandle> = running.borrow().values().cloned().collect();
-    for handle in pending {
-        handle.abort();
+    // Input closed: answer the calls in flight, then stop. (A client that
+    // wants out sooner ends the process, as the stdio transport specifies.)
+    for task in tasks {
+        let _ = task.await;
     }
     Ok(())
 }

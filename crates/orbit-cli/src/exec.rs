@@ -1229,6 +1229,12 @@ async fn launch_desktop(ctx: &Ctx, thread: Option<ThreadId>) -> Result<(), CliEr
                 return Err(CliError::unavailable(if message.is_empty() { "Orbit didn’t open.".to_owned() } else { message.to_owned() }));
             }
             Ok(None) if Instant::now() >= deadline => return Ok(()),
+            // It is the app, and its engine is up.
+            Ok(None) if conn::resolve(&ctx.global, &ctx.env)
+                .is_ok_and(|t| t.endpoint.is_some_and(|e| e.pid == child.id())) =>
+            {
+                return Ok(());
+            }
             Ok(None) => tokio::time::sleep(Duration::from_millis(25)).await,
             Err(e) => return Err(CliError::unavailable(e.to_string())),
         }
