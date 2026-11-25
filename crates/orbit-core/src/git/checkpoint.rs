@@ -48,7 +48,7 @@ impl Git {
     /// Snapshots the working tree as checkpoint `n + 1` of `thread` (0 for
     /// the first). Never touches the user's index or HEAD.
     pub async fn checkpoint(&self, repo: &Path, thread: ThreadId) -> Result<Checkpoint> {
-        let info = self.repo(repo).await?;
+        let info = self.checkpoint_repo(repo).await?;
         let index = thread_index(&info, thread);
         let lock = self.index_lock(&index);
         let _guard = lock.lock().await;
@@ -63,14 +63,14 @@ impl Git {
 
     /// The thread's checkpoints, oldest first.
     pub async fn checkpoints(&self, repo: &Path, thread: ThreadId) -> Result<Vec<Checkpoint>> {
-        let info = self.repo(repo).await?;
+        let info = self.checkpoint_repo(repo).await?;
         let list = self.load_checkpoints(&info, thread).await?;
         Ok(list.into_iter().map(|(n, tree)| Checkpoint { thread, n, tree }).collect())
     }
 
     /// The tree of checkpoint `n`.
     pub async fn checkpoint_tree(&self, repo: &Path, thread: ThreadId, n: u32) -> Result<TreeId> {
-        let info = self.repo(repo).await?;
+        let info = self.checkpoint_repo(repo).await?;
         let list = self.load_checkpoints(&info, thread).await?;
         list.into_iter()
             .find(|(m, _)| *m == n)
@@ -81,7 +81,7 @@ impl Git {
     /// The tree of the working tree right now, without recording it. Uses
     /// its own persistent index, so it is as cheap as a checkpoint.
     pub async fn snapshot(&self, repo: &Path) -> Result<TreeId> {
-        let info = self.repo(repo).await?;
+        let info = self.checkpoint_repo(repo).await?;
         let index = info.orbit_dir().join("index-live");
         let lock = self.index_lock(&index);
         let _guard = lock.lock().await;
@@ -91,7 +91,7 @@ impl Git {
     /// Deletes all but the baseline and the newest `keep_last` checkpoints
     /// of a thread. Returns how many were deleted.
     pub async fn prune(&self, repo: &Path, thread: ThreadId, keep_last: usize) -> Result<usize> {
-        let info = self.repo(repo).await?;
+        let info = self.checkpoint_repo(repo).await?;
         let index = thread_index(&info, thread);
         let lock = self.index_lock(&index);
         let _guard = lock.lock().await;
@@ -113,7 +113,7 @@ impl Git {
     /// Removes every checkpoint, the undo point and the private index of a
     /// thread.
     pub async fn delete_thread(&self, repo: &Path, thread: ThreadId) -> Result<()> {
-        let info = self.repo(repo).await?;
+        let info = self.checkpoint_repo(repo).await?;
         let index = thread_index(&info, thread);
         let lock = self.index_lock(&index);
         let _guard = lock.lock().await;
@@ -129,7 +129,7 @@ impl Git {
     /// example after a crash between deleting a thread and its refs).
     /// Returns how many refs were deleted.
     pub async fn prune_orphans(&self, repo: &Path, live: &[ThreadId]) -> Result<usize> {
-        let info = self.repo(repo).await?;
+        let info = self.checkpoint_repo(repo).await?;
         let live: HashSet<ThreadId> = live.iter().copied().collect();
         let refs = self.list_refs(&info, "refs/orbit/").await?;
         let dead: Vec<String> = refs
@@ -160,7 +160,7 @@ impl Git {
     /// The current state is checkpointed first (as the thread's undo point),
     /// so the restore can itself be undone.
     pub async fn restore(&self, repo: &Path, thread: ThreadId, tree: &TreeId) -> Result<Restored> {
-        let info = self.repo(repo).await?;
+        let info = self.checkpoint_repo(repo).await?;
         let index = thread_index(&info, thread);
         let lock = self.index_lock(&index);
         let _guard = lock.lock().await;
@@ -183,7 +183,7 @@ impl Git {
 
     /// Undoes the thread's last [`Git::restore`].
     pub async fn undo_restore(&self, repo: &Path, thread: ThreadId) -> Result<Restored> {
-        let info = self.repo(repo).await?;
+        let info = self.checkpoint_repo(repo).await?;
         let out = self
             .git_output(&info.root, ["rev-parse", "--verify", "-q", &format!("{UNDO}/{thread}")], Opts::default())
             .await?;
@@ -198,7 +198,7 @@ impl Git {
     /// [`orbit_proto::diff::file_patch`]) to the working tree. The patch is
     /// checked first and nothing changes unless all of it applies.
     pub async fn revert_patch(&self, repo: &Path, patch: &str) -> Result<()> {
-        let info = self.repo(repo).await?;
+        let info = self.checkpoint_repo(repo).await?;
         let opts = Opts { stdin: Some(patch.as_bytes()), ..Opts::default() };
         let check = self
             .git_output(&info.root, ["apply", "-R", "--check", "--whitespace=nowarn", "-"], opts)
@@ -215,7 +215,7 @@ impl Git {
     /// version of a hunk). Checked first: nothing changes unless all of it
     /// applies.
     pub async fn apply_patch(&self, repo: &Path, patch: &str) -> Result<()> {
-        let info = self.repo(repo).await?;
+        let info = self.checkpoint_repo(repo).await?;
         let opts = Opts { stdin: Some(patch.as_bytes()), ..Opts::default() };
         let check = self.git_output(&info.root, ["apply", "--check", "--whitespace=nowarn", "-"], opts).await?;
         if !check.ok() {

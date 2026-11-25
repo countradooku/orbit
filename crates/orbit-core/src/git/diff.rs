@@ -69,7 +69,7 @@ impl Git {
         self.inner
             .diffs
             .get_or_try_init(key, || async move {
-                let info = self.repo(&repo).await?;
+                let info = self.checkpoint_repo(&repo).await?;
                 let mut argv: Vec<&str> = vec!["diff"];
                 argv.extend_from_slice(DIFF_FLAGS);
                 argv.extend([from.as_str(), to.as_str(), "--"]);
@@ -153,7 +153,7 @@ impl Git {
         self.inner
             .names
             .get_or_try_init(key, || async move {
-                let info = self.repo(&repo).await?;
+                let info = self.checkpoint_repo(&repo).await?;
                 let out = self
                     .git(
                         &info.root,
