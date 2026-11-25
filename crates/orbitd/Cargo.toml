@@ -1,6 +1,6 @@
 [package]
 name = "orbitd"
-description = "Headless Orbit host: runs the engine and serves it over WebSockets."
+description = "Orbit's host: the engine headless, as a server for remote clients or as the desktop's background host."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,3 +14,9 @@ tokio = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
 mimalloc = { workspace = true }
+orbit-proto = { workspace = true }
+crossfire = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+

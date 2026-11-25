@@ -92,6 +92,7 @@ fn general() -> SettingPage {
             )
             .description("Deleting removes the thread’s history, checkpoints and worktree."),
         ),
+        crate::host::settings_group(),
     ])
 }
 

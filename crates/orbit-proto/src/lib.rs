@@ -20,6 +20,7 @@ pub mod codec;
 pub mod diff;
 pub mod forge;
 pub mod guard;
+pub mod host;
 pub mod ids;
 pub mod legacy;
 pub mod link;
@@ -42,6 +43,7 @@ pub use diff::{
 pub use bots::*;
 pub use forge::*;
 pub use guard::*;
+pub use host::*;
 pub use ids::*;
 pub use model::*;
 pub use settings::*;
@@ -68,8 +70,9 @@ pub use workspace::*;
 /// `git` and `runs`, `Event::ProjectConfigChanged`, `GitStatus` and
 /// `RunChanged`, `Command::Workspace`, `Reply::Workspace`); version 11,
 /// quota and usage (`Snapshot::quota`, `Event::Quota`, `Command::Usage`,
-/// `Reply::Usage`).
-pub const PROTOCOL_VERSION: u16 = 11;
+/// `Reply::Usage`); version 12, the background host (`Command::Host`,
+/// `Reply::Host`, `Event::TerminalSleep`; see [`host`]).
+pub const PROTOCOL_VERSION: u16 = 12;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

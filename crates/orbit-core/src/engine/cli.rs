@@ -10,33 +10,32 @@ use std::path::Path;
 use orbit_proto::*;
 
 use super::orchestrator::{CommandResult, Orchestrator};
-use crate::terminal::{Shell, TermSize};
+use crate::terminal::{SCROLLBACK_BYTES, Scrollback, Shell, TermSize};
 
-/// Bytes of output kept per terminal for [`Command::ReadTerminal`].
-const TAIL_BYTES: usize = 128 * 1024;
+/// Bytes of output kept per terminal for [`Command::ReadTerminal`] and for
+/// re-attaching screens (`engine/host.rs`).
+const TAIL_BYTES: usize = SCROLLBACK_BYTES;
 /// Exited terminals whose output and exit code are kept for reading.
 const KEEP_EXITED: usize = 16;
 
 /// What the automation commands remember between calls.
 #[derive(Default)]
 pub(crate) struct CliState {
-    terminals: HashMap<TermId, TermRecord>,
+    pub(crate) terminals: HashMap<TermId, TermRecord>,
     /// Exited terminals, oldest first; trimmed to [`KEEP_EXITED`].
     exited: VecDeque<TermId>,
 }
 
-struct TermRecord {
-    info: TerminalInfo,
-    tail: VecDeque<u8>,
-    dropped: u64,
+pub(crate) struct TermRecord {
+    pub(crate) info: TerminalInfo,
+    pub(crate) tail: Scrollback,
 }
 
 impl TermRecord {
     fn new(id: TermId, command: String, cwd: String) -> Self {
         Self {
             info: TerminalInfo { id, command, cwd, running: true, exit_code: None },
-            tail: VecDeque::new(),
-            dropped: 0,
+            tail: Scrollback::new(TAIL_BYTES),
         }
     }
 }
@@ -48,20 +47,8 @@ impl CliState {
     pub(crate) fn capture(&mut self, term: TermId, data: &[u8]) -> bool {
         let record =
             self.terminals.entry(term).or_insert_with(|| TermRecord::new(term, String::new(), String::new()));
-        let headless = !record.info.command.is_empty();
-        if data.len() >= TAIL_BYTES {
-            record.dropped += (record.tail.len() + data.len() - TAIL_BYTES) as u64;
-            record.tail.clear();
-            record.tail.extend(&data[data.len() - TAIL_BYTES..]);
-            return headless;
-        }
-        let overflow = (record.tail.len() + data.len()).saturating_sub(TAIL_BYTES);
-        if overflow > 0 {
-            record.tail.drain(..overflow);
-            record.dropped += overflow as u64;
-        }
-        record.tail.extend(data);
-        headless
+        record.tail.push(data);
+        !record.info.command.is_empty()
     }
 
     /// Keeps a command terminal's output and status like one started with
@@ -199,12 +186,11 @@ impl Orchestrator {
             }
             return Err("That terminal is closed, or was closed too long ago to read.".into());
         };
-        let keep = if max_bytes == 0 { record.tail.len() } else { (max_bytes as usize).min(record.tail.len()) };
-        let skip = record.tail.len() - keep;
-        let data: Vec<u8> = record.tail.iter().skip(skip).copied().collect();
+        let data = record.tail.tail(max_bytes as usize);
+        let skip = record.tail.len() - data.len();
         let mut info = record.info.clone();
         info.running = info.running && running;
-        Ok(Reply::TerminalTail { info, data, dropped: record.dropped + skip as u64 })
+        Ok(Reply::TerminalTail { info, data, dropped: record.tail.dropped() + skip as u64 })
     }
 
     fn terminal_list(&self) -> Vec<TerminalInfo> {
@@ -250,12 +236,12 @@ mod tests {
         state.capture(term, b"0123456789XYZ");
         let record = &state.terminals[&term];
         assert_eq!(record.tail.len(), TAIL_BYTES);
-        assert_eq!(record.dropped, 3);
-        assert!(record.tail.iter().rev().take(3).eq(b"ZYX".iter()));
+        assert_eq!(record.tail.dropped(), 3);
+        assert_eq!(record.tail.tail(3), b"XYZ");
         state.capture(term, &vec![b'b'; TAIL_BYTES + 5]);
         let record = &state.terminals[&term];
         assert_eq!(record.tail.len(), TAIL_BYTES);
-        assert_eq!(record.dropped, 3 + TAIL_BYTES as u64 + 5);
+        assert_eq!(record.tail.dropped(), 3 + TAIL_BYTES as u64 + 5);
     }
 
     #[test]

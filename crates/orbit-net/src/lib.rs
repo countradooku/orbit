@@ -8,9 +8,11 @@
 
 pub mod client;
 pub mod endpoint;
+pub mod host;
 #[cfg(feature = "engine")]
 pub mod server;
 pub mod state;
+pub mod transport;
 mod ws_lite;
 
 use crossfire::oneshot::{RxOneshot, oneshot};
@@ -21,6 +23,7 @@ use orbit_core::{EngineHandle, engine::EventRx};
 use orbit_proto::*;
 
 pub use client::RemoteClient;
+pub use host::{HostLink, LocalHost};
 #[cfg(feature = "engine")]
 pub use server::{ServerOptions, serve};
 

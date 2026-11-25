@@ -148,6 +148,8 @@ pub struct Orchestrator {
     pub(crate) workspaces: super::workspaces::WorkspacesState,
     /// Quota, usage ledger and failover (`engine/usage.rs`).
     pub(crate) usage: super::usage::UsageState,
+    /// Terminal sessions that outlive the app (`engine/host.rs`).
+    pub(crate) host: super::host::HostState,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -206,6 +208,7 @@ impl Orchestrator {
             teams,
             workspaces: Default::default(),
             usage: Default::default(),
+            host: Default::default(),
         }
     }
 
@@ -392,8 +395,10 @@ impl Orchestrator {
         match command {
             Command::OpenTerminal { cwd, cols, rows } => self.open_terminal(&cwd, TermSize::new(cols.max(2), rows.max(1))),
             Command::TerminalInput { term, data } => {
-                self.status_terminal_input(term, &data);
-                self.terminals.input(term, &data);
+                if !self.host_terminal_input(term, &data) {
+                    self.status_terminal_input(term, &data);
+                    self.terminals.input(term, &data);
+                }
                 Ok(Reply::Done)
             }
             Command::ResizeTerminal { term, cols, rows } => {
@@ -401,6 +406,7 @@ impl Orchestrator {
                 Ok(Reply::Done)
             }
             Command::CloseTerminal { term } => {
+                self.host_terminal_closed(term);
                 self.terminals.close(term);
                 self.status_terminal_closed(term);
                 Ok(Reply::Done)
@@ -413,10 +419,15 @@ impl Orchestrator {
     pub fn terminal_output(&mut self, term: TermId, data: Vec<u8>) {
         self.status_terminal_output(term, &data);
         self.cli_terminal_output(term, &data);
-        self.emit(Event::TerminalOutput { term, data });
+        if self.host_terminal_output(term) {
+            self.emit(Event::TerminalOutput { term, data });
+        }
     }
 
     pub fn terminal_exited(&mut self, term: TermId, code: Option<i32>) {
+        if self.host_terminal_exited(term) {
+            return;
+        }
         self.terminals.remove_exited(term);
         self.status_terminal_closed(term);
         self.cli.exited(term, code);
@@ -566,6 +577,7 @@ impl Orchestrator {
         self.automations_tick();
         self.teams_tick();
         self.usage_tick();
+        self.host_tick();
         let now = Instant::now();
         for runtime in self.runtimes.values_mut() {
             let idle = runtime.turn.is_none() && !runtime.checkpointing && runtime.held_prompt.is_none();
@@ -839,6 +851,7 @@ impl Orchestrator {
                 Outcome::Ready(result) => result,
                 Outcome::Deferred(future) => futures_block_on(future),
             },
+            Command::Host(command) => self.host_command(command),
         }
     }
 

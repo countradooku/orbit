@@ -5,6 +5,12 @@
 //! it never begins at a wrong width, keystrokes typed before it exists are
 //! kept, and closing the panel or the thread closes the shell.
 //!
+//! The panel attaches to the thread's terminal rather than opening one: the
+//! background host keeps terminals when the window closes, and a panel that
+//! comes back replays the scrollback. Closing the window therefore leaves the
+//! shell running. A terminal the host put to sleep shows a "Sleeping" mark
+//! and wakes when the panel is focused or typed into.
+//!
 //! Selected output goes to the thread's composer as a chip: right-click ›
 //! "Add selection to composer", or Ctrl+Shift+L (Cmd+Shift+L on macOS).
 
@@ -39,6 +45,11 @@ pub struct TerminalPanel {
     pending: Vec<u8>,
     size: (u16, u16),
     exited: Option<Option<i32>>,
+    /// The host stopped the shell to save resources; focus wakes it.
+    sleeping: bool,
+    /// Wake a sleeping terminal when attaching (not for a panel restored
+    /// at startup: it wakes on focus).
+    wake: bool,
     title: Option<String>,
     error: Option<String>,
     /// Draws its own header; off inside the dock's tab bar.
@@ -50,7 +61,14 @@ pub struct TerminalPanel {
 impl EventEmitter<TerminalPanelEvent> for TerminalPanel {}
 
 impl TerminalPanel {
-    pub fn new(app: Entity<AppState>, thread: ThreadId, cwd: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        app: Entity<AppState>,
+        thread: ThreadId,
+        cwd: String,
+        wake: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let view = cx.new(|cx| TerminalView::new(window, cx));
         let mut panel = Self {
             app: app.clone(),
@@ -62,6 +80,8 @@ impl TerminalPanel {
             pending: Vec::new(),
             size: (0, 0),
             exited: None,
+            sleeping: false,
+            wake,
             title: None,
             error: None,
             chrome: true,
@@ -69,8 +89,7 @@ impl TerminalPanel {
             _subscriptions: Vec::new(),
         };
         panel._subscriptions = vec![
-            cx.subscribe(&view, |this, _, event: &TerminalEvent, cx| this.on_view_event(event, cx)),
-            cx.subscribe(&app, |this, _, event: &AppEvent, cx| match event {
+            cx.subscribe_in(&app, window, |this, _, event: &AppEvent, window, cx| match event {
                 AppEvent::TerminalOutput { term, data } if Some(*term) == this.term => {
                     this.view.update(cx, |view, cx| view.feed(data, cx));
                     let urls = this.urls.feed(data);
@@ -81,17 +100,38 @@ impl TerminalPanel {
                 AppEvent::TerminalExited { term, code } if Some(*term) == this.term => {
                     this.exited = Some(*code);
                     this.term = None;
+                    this.sleeping = false;
                     cx.notify();
                 }
+                AppEvent::TerminalSleep { term, sleeping } if Some(*term) == this.term => {
+                    this.sleeping = *sleeping;
+                    cx.notify();
+                }
+                // The host may have restarted: attach again, to a fresh
+                // screen (the scrollback is replayed).
+                AppEvent::Reconnected if this.term.is_some() || this.opening => this.reattach(window, cx),
                 _ => {}
             }),
             cx.on_release(|this, cx| {
-                if let Some(term) = this.term {
+                // Closing the window leaves the shell running in the host.
+                if let Some(term) = this.term
+                    && !this.app.read(cx).detaching()
+                {
                     this.app.update(cx, |app, _| app.send(Command::CloseTerminal { term }));
                 }
             }),
         ];
+        panel.watch_view(window, cx);
         panel
+    }
+
+    /// Follows the current screen: its input and size, and focus (which
+    /// wakes a sleeping terminal).
+    fn watch_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = self.view.clone();
+        let focus = view.read(cx).focus_handle(cx);
+        self._subscriptions.push(cx.subscribe(&view, |this, _, event: &TerminalEvent, cx| this.on_view_event(event, cx)));
+        self._subscriptions.push(cx.on_focus(&focus, window, |this, _, cx| this.wake(cx)));
     }
 
     pub fn focus(panel: &Entity<Self>, window: &mut Window, cx: &mut App) {
@@ -124,6 +164,8 @@ impl TerminalPanel {
         }
     }
 
+    /// Attaches to the thread's terminal (the host opens one when it has
+    /// none) and draws what it showed.
     fn open(&mut self, cx: &mut Context<Self>) {
         let (cols, rows) = self.size;
         if cols == 0 || rows == 0 {
@@ -132,18 +174,24 @@ impl TerminalPanel {
         self.opening = true;
         self.exited = None;
         self.error = None;
-        let task = self.app.update(cx, |app, cx| app.call(Command::OpenTerminal { cwd: self.cwd.clone(), cols, rows }, cx));
+        let command = HostCommand::AttachTerminal { thread: self.thread, cwd: self.cwd.clone(), cols, rows, wake: self.wake };
+        let task = self.app.update(cx, |app, cx| app.call(Command::Host(command), cx));
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.opening = false;
                 match result {
-                    Ok(Reply::Terminal(term)) => {
+                    Ok(Reply::Host(HostReply::Terminal { session, scrollback })) => {
+                        let term = session.term;
                         this.term = Some(term);
-                        // Said explicitly: the engine binds by folder only when
-                        // exactly one thread works there.
-                        let thread = Some(this.thread);
-                        this.app.update(cx, |app, _| app.send(Command::BindTerminal { term, thread }));
+                        this.sleeping = session.sleeping;
+                        // From now on the panel wakes what it attaches to.
+                        this.wake = true;
+                        if !scrollback.is_empty() {
+                            this.view.update(cx, |view, cx| view.feed(&scrollback, cx));
+                        }
+                        // Output after the reply was held for this screen.
+                        this.app.update(cx, |app, _| app.send(Command::Host(HostCommand::TerminalReady { term })));
                         if !this.pending.is_empty() {
                             let data = std::mem::take(&mut this.pending);
                             this.app.update(cx, |app, _| app.send(Command::TerminalInput { term, data }));
@@ -156,6 +204,31 @@ impl TerminalPanel {
             });
         })
         .detach();
+    }
+
+    /// A sleeping terminal starts a fresh shell when the panel is focused.
+    fn wake(&mut self, cx: &mut Context<Self>) {
+        let (Some(term), true) = (self.term, self.sleeping) else { return };
+        let (cols, rows) = self.size;
+        self.app.update(cx, |app, _| {
+            app.send(Command::Host(HostCommand::WakeTerminal { term }));
+            if cols > 0 && rows > 0 {
+                app.send(Command::ResizeTerminal { term, cols, rows });
+            }
+        });
+    }
+
+    /// Attaches again on a fresh screen, after the connection came back: the
+    /// scrollback is drawn anew, so nothing shows twice. A sleeping terminal
+    /// stays asleep.
+    fn reattach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.term = None;
+        self.opening = false;
+        self.wake = !self.sleeping;
+        self.view = cx.new(|cx| TerminalView::new(window, cx));
+        self.watch_view(window, cx);
+        self.open(cx);
+        cx.notify();
     }
 
     /// Hands the selected output to the composer; nothing when none is selected.
@@ -184,8 +257,9 @@ impl TerminalPanel {
         }
         // A fresh screen for the fresh shell.
         self.view = cx.new(|cx| TerminalView::new(window, cx));
-        let view = self.view.clone();
-        self._subscriptions.push(cx.subscribe(&view, |this, _, event: &TerminalEvent, cx| this.on_view_event(event, cx)));
+        self.watch_view(window, cx);
+        self.sleeping = false;
+        self.wake = true;
         self.exited = None;
         self.error = None;
         self.pending.clear();
@@ -228,6 +302,20 @@ impl Render for TerminalPanel {
                             Some(0) | None => "Exited".to_string(),
                             Some(code) => format!("Exited with {code}"),
                         })
+                    })
+                    .when(self.sleeping && !ended, |el| {
+                        el.child(
+                            Button::new("terminal-sleeping")
+                                .ghost()
+                                .xsmall()
+                                .label("Sleeping")
+                                .tooltip("Its shell stopped while idle. Click or type to start a new one in this folder.")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.wake(cx);
+                                    let handle = this.view.read(cx).focus_handle(cx);
+                                    handle.focus(window, cx);
+                                })),
+                        )
                     })
                     .when(ended, |el| {
                         el.child(

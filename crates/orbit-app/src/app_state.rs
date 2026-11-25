@@ -11,13 +11,20 @@
 //! * [`AppEvent::Usage`] for the live context meter.
 //!
 //! A streamed token therefore re-renders one message, never the window.
+//!
+//! With the background host (`docs/HOST.md`) it also attaches this window
+//! to the host on every connection, learns which terminals the host kept,
+//! and tells the window about the host ([`AppEvent::Host`]).
 
 use std::collections::HashMap;
 
 use gpui_kit::*;
+use orbit_net::host::{HostLink, LocalHost};
 use orbit_net::state::{ClientState, ItemChange};
 use orbit_net::{Backend, ConnectionStatus};
 use orbit_proto::*;
+
+use crate::host::HostNotice;
 
 pub enum AppEvent {
     /// A thread's timeline changed. `None` means it was (re)loaded whole.
@@ -34,6 +41,15 @@ pub enum AppEvent {
     Git(WorkspaceRoot),
     /// A thread's run targets started, ended or were stopped.
     Runs(ThreadId),
+    /// A terminal's shell was stopped to save resources, or started again.
+    TerminalSleep { term: TermId, sleeping: bool },
+    /// The connection came back after it was lost (the host may have
+    /// restarted): screens attached to the host attach again.
+    Reconnected,
+    /// The host's kept terminals were read ([`AppState::take_kept_terminal`]).
+    HostTerminals,
+    /// Something to tell the user about the background host.
+    Host(HostNotice),
 }
 
 pub struct AppState {
@@ -41,13 +57,22 @@ pub struct AppState {
     state: ClientState,
     /// How many views show each thread; the timeline is released at zero.
     open: HashMap<ThreadId, usize>,
+    /// The background host, when the engine runs in one.
+    host: Option<LocalHost>,
+    /// The window is closing: terminals stay running in the host.
+    detaching: bool,
+    /// Terminals the host kept for threads, until a view shows them.
+    kept_terminals: HashMap<ThreadId, TermSession>,
+    was_connected: bool,
+    /// The outdated-host notice was shown for this host version.
+    outdated_shown: Option<String>,
     _pump: Task<()>,
 }
 
 impl EventEmitter<AppEvent> for AppState {}
 
 impl AppState {
-    pub fn new(backend: Backend, cx: &mut Context<Self>) -> Self {
+    pub fn new(backend: Backend, host: Option<LocalHost>, cx: &mut Context<Self>) -> Self {
         // The pump applies every update, so a remote reply can wait for the
         // events before it: what a command did is shown when it returns.
         if let Backend::Remote(client) = &backend {
@@ -61,7 +86,41 @@ impl AppState {
                 }
             }
         });
-        Self { backend, state: ClientState::default(), open: HashMap::new(), _pump: pump }
+        Self {
+            backend,
+            state: ClientState::default(),
+            open: HashMap::new(),
+            host,
+            detaching: false,
+            kept_terminals: HashMap::new(),
+            was_connected: false,
+            outdated_shown: None,
+            _pump: pump,
+        }
+    }
+
+    /// The background host, when the engine runs in one.
+    pub fn host(&self) -> Option<&LocalHost> {
+        self.host.as_ref()
+    }
+
+    /// The window is closing or Orbit quits: leave terminals running in the
+    /// host (their panels close without closing them) and start no host.
+    pub fn detach(&mut self) {
+        self.detaching = true;
+        if let Some(host) = &self.host {
+            host.close();
+        }
+    }
+
+    pub fn detaching(&self) -> bool {
+        self.detaching
+    }
+
+    /// The terminal the host kept for `thread`, once: the view that shows
+    /// it takes it.
+    pub fn take_kept_terminal(&mut self, thread: ThreadId) -> Option<TermSession> {
+        self.kept_terminals.remove(&thread)
     }
 
     pub fn state(&self) -> &ClientState {
@@ -78,6 +137,12 @@ impl AppState {
             return;
         }
         let shell = changes.affects_shell() || changes.reset;
+        if changes.connection {
+            self.on_connection(cx);
+        }
+        for &(term, sleeping) in &changes.sleeping_terminals {
+            cx.emit(AppEvent::TerminalSleep { term, sleeping });
+        }
         if changes.settings || changes.reset {
             crate::settings::receive(self.state.settings.clone(), cx);
         }
@@ -127,6 +192,76 @@ impl AppState {
         if shell {
             cx.notify();
         }
+    }
+
+    // ── The background host ──────────────────────────────────────────────
+
+    fn on_connection(&mut self, cx: &mut Context<Self>) {
+        match &self.state.connection {
+            Some(ConnectionStatus::Connected) => {
+                if let Some(host) = &self.host {
+                    self.send(Command::Host(HostCommand::AttachUi));
+                    // A host from another build that still speaks this
+                    // protocol (an update that left it running): it restarts
+                    // into this build once nothing is working.
+                    if let HostLink::Ready { version, .. } = host.link()
+                        && version != env!("CARGO_PKG_VERSION")
+                    {
+                        self.send(Command::Host(HostCommand::Restart { when: RestartWhen::WhenIdle }));
+                    }
+                }
+                // Usage limits are read only while a window was in front
+                // lately: say so again to this (possibly new) host. The
+                // first connection is the window opening, in front.
+                let reconnect = self.was_connected;
+                if !reconnect || cx.active_window().is_some() {
+                    self.send(Command::Usage(UsageCommand::Seen));
+                }
+                if std::mem::replace(&mut self.was_connected, true) {
+                    cx.emit(AppEvent::Reconnected);
+                } else if self.host.as_ref().is_some_and(LocalHost::found_running) {
+                    self.tell_kept_work(cx);
+                }
+                self.fetch_kept_terminals(cx);
+            }
+            Some(ConnectionStatus::Disconnected { .. }) => {
+                if let Some(HostLink::Outdated { version, status, restart }) = self.host.as_ref().map(LocalHost::link)
+                    && restart.is_none()
+                    && self.outdated_shown.as_ref() != Some(&version)
+                {
+                    self.outdated_shown = Some(version.clone());
+                    cx.emit(AppEvent::Host(HostNotice::Outdated { version, status }));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// On the first connection to a host that was already running: what it
+    /// kept doing while Orbit was closed.
+    fn tell_kept_work(&self, cx: &mut Context<Self>) {
+        let reply = self.call(Command::Host(HostCommand::Activity), cx);
+        cx.spawn(async move |this, cx| {
+            if let Ok(Reply::Host(HostReply::Activity(activity))) = reply.await
+                && let Some(summary) = activity.summary()
+            {
+                let _ = this.update(cx, |_, cx| cx.emit(AppEvent::Host(HostNotice::KeptWorking(summary))));
+            }
+        })
+        .detach();
+    }
+
+    fn fetch_kept_terminals(&self, cx: &mut Context<Self>) {
+        let reply = self.call(Command::Host(HostCommand::Terminals), cx);
+        cx.spawn(async move |this, cx| {
+            if let Ok(Reply::Host(HostReply::Terminals(sessions))) = reply.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.kept_terminals = sessions.into_iter().filter_map(|s| Some((s.thread?, s))).collect();
+                    cx.emit(AppEvent::HostTerminals);
+                });
+            }
+        })
+        .detach();
     }
 
     // ── Timelines ────────────────────────────────────────────────────────

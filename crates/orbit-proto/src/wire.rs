@@ -6,6 +6,7 @@ use crate::automation::*;
 use crate::bots::{BotCommand, BotReply, BotsState, Via, ViaAction};
 use crate::forge::{ForgeCommand, ForgeReply};
 use crate::guard::GuardSettings;
+use crate::host::{HostCommand, HostReply};
 use crate::ids::*;
 use crate::model::*;
 use crate::settings::Settings;
@@ -149,6 +150,9 @@ pub enum Event {
     /// The quota board changed: limits read, history advanced, settings
     /// replaced. Ephemeral; the latest board is in the snapshot.
     Quota(Box<QuotaBoard>),
+    /// A terminal's shell was stopped to save resources (its scrollback is
+    /// kept) or started again. Ephemeral; see [`HostCommand::Terminals`].
+    TerminalSleep { term: TermId, sleeping: bool },
 }
 
 impl Event {
@@ -171,6 +175,7 @@ impl Event {
                 | Event::GitStatus { .. }
                 | Event::RunChanged(_)
                 | Event::Quota(_)
+                | Event::TerminalSleep { .. }
         )
     }
 }
@@ -368,6 +373,8 @@ pub enum Command {
     /// Quota, usage stats and account failover; see [`UsageCommand`].
     /// Replies [`Reply::Usage`], `Text` or `Done`, per command.
     Usage(UsageCommand),
+    /// The background host and its terminals; see [`HostCommand`].
+    Host(HostCommand),
 }
 
 impl From<TeamCommand> for Command {
@@ -448,6 +455,7 @@ pub enum Reply {
     Team(TeamReply),
     Workspace(WorkspaceReply),
     Usage(Box<UsageReply>),
+    Host(HostReply),
 }
 
 /// A local merge of a thread's branch, previewed or done.

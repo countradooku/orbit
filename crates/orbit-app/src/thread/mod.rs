@@ -275,6 +275,14 @@ impl ThreadView {
             }
         }));
         view.refresh_ship(false, Duration::ZERO, cx);
+        // A terminal the background host kept while Orbit was closed.
+        let app = view.app.clone();
+        view._subscriptions.push(cx.subscribe_in(&app, window, |this, _, event: &AppEvent, window, cx| {
+            if matches!(event, AppEvent::HostTerminals) {
+                this.restore_terminal(window, cx);
+            }
+        }));
+        view.restore_terminal(window, cx);
         view
     }
 
@@ -304,7 +312,24 @@ impl ThreadView {
             cx.notify();
             return;
         }
+        self.show_terminal(false, window, cx);
+    }
+
+    /// Shows the terminal the background host kept for this thread, if it
+    /// kept one (Orbit was closed with it open). It is not focused, and a
+    /// sleeping one stays asleep until it is.
+    fn restore_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.id;
+        if self.terminal.is_none() && self.app.update(cx, |app, _| app.take_kept_terminal(id)).is_some() {
+            self.show_terminal(true, window, cx);
+        }
+    }
+
+    fn show_terminal(&mut self, restored: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(thread) = self.thread(cx).cloned() else { return };
+        // Shown now: not to be restored again later.
+        let id = self.id;
+        self.app.update(cx, |app, _| app.take_kept_terminal(id));
         let state = self.app.read(cx).state();
         let cwd = thread
             .workspace
@@ -312,7 +337,7 @@ impl ThreadView {
             .clone()
             .or_else(|| thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p)).map(|p| p.path.clone()))
             .unwrap_or_else(|| orbit_core::EngineOptions::default_data_dir().display().to_string());
-        let panel = cx.new(|cx| TerminalPanel::new(self.app.clone(), self.id, cwd, window, cx));
+        let panel = cx.new(|cx| TerminalPanel::new(self.app.clone(), self.id, cwd, !restored, window, cx));
         let sub = cx.subscribe_in(&panel, window, |this, _, event: &TerminalPanelEvent, window, cx| match event {
             TerminalPanelEvent::Close => this.toggle_terminal(window, cx),
             TerminalPanelEvent::Urls(urls) => this.offer_urls(urls.clone(), cx),
@@ -324,8 +349,10 @@ impl ThreadView {
             }
         });
         self._subscriptions.push(sub);
-        let focus = panel.clone();
-        window.defer(cx, move |window, cx| TerminalPanel::focus(&focus, window, cx));
+        if !restored {
+            let focus = panel.clone();
+            window.defer(cx, move |window, cx| TerminalPanel::focus(&focus, window, cx));
+        }
         self.terminal = Some(panel);
         self.sync_dock_shell(cx);
         cx.notify();

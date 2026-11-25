@@ -27,6 +27,19 @@ against 1.56 %: upstream keeps redrawing), at the cost of 28 ms more to the
 first window and about 10 MB more private memory (its composition surfaces).
 T3 Code's idle CPU varies between runs (2.34 % in an earlier session).
 
+### With the background host
+
+Since the engine moved into `orbitd --local` (see [HOST.md](HOST.md)),
+measured 2026-11-25 with `-Runs 5` on the same machine, both on one build:
+
+| Engine | Window up | Processes | Working set | Private | Idle CPU |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Background host (default) | 238 ms | 2 | 92.8 MB (host 20.3) | 121.5 MB (host 27.6) | 0.00 % |
+| In-process (`--in-process`) | 245 ms | 1 | 79.1 MB | 104.1 MB | 0.00 % |
+
+A call from the window to the host takes 30.5 µs p50 over the named pipe
+(35 µs over loopback WebSockets, 0.4 µs in-process).
+
 ## Engine, protocol, storage, network (`orbit-bench`)
 
 Median of three runs on 2026-11-25, release builds, on the same machine and

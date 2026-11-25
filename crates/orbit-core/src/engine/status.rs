@@ -260,6 +260,12 @@ impl Orchestrator {
     /// the thread whose folder it opens in, if exactly one open thread
     /// works there.
     pub(crate) fn open_terminal(&mut self, cwd: &str, size: TermSize) -> Result<Reply, String> {
+        self.open_terminal_as(None, cwd, size).map(Reply::Terminal)
+    }
+
+    /// Opens an interactive shell, under `id` when given (a sleeping
+    /// terminal waking up keeps its id).
+    pub(crate) fn open_terminal_as(&mut self, id: Option<TermId>, cwd: &str, size: TermSize) -> Result<TermId, String> {
         let endpoint = self.hook_endpoint();
         let token = new_token();
         let mut shell = Shell::user_default();
@@ -272,11 +278,13 @@ impl Orchestrator {
         }
         let term = self
             .terminals
-            .open(Path::new(cwd), size, Some(shell))
+            // Not `unwrap_or_default`: a default id is zero, `new` is unique.
+            .open_as(match id { Some(id) => id, None => TermId::new() }, Path::new(cwd), size, Some(shell))
             .map_err(|e| format!("Couldn’t open a terminal in {cwd}: {e}"))?;
         let thread = self.thread_for_folder(cwd);
         self.status.terminals.insert(term, TermWatch::new(term, token, thread));
-        Ok(Reply::Terminal(term))
+        self.host_terminal_opened(term, cwd);
+        Ok(term)
     }
 
     /// The hook endpoint, started on first use.

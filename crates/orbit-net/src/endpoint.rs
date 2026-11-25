@@ -46,6 +46,18 @@ pub struct EndpointInfo {
     /// The wire protocol version, so a client can refuse early.
     #[serde(default)]
     pub protocol: u16,
+    /// The local transport's address (`pipe:…` or `unix:…`), when the
+    /// engine serves one (the background host does). Faster than `url`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub local: String,
+}
+
+impl EndpointInfo {
+    /// Where a client on this computer connects: the local transport when
+    /// there is one, else the WebSocket URL.
+    pub fn client_url(&self) -> &str {
+        if self.local.is_empty() { &self.url } else { &self.local }
+    }
 }
 
 /// The data folder a client should look in: `ORBIT_DATA` when set, else the
@@ -156,7 +168,7 @@ fn write_private(path: &Path, contents: &str) -> io::Result<()> {
 }
 
 #[cfg(feature = "engine")]
-pub use serve::{LocalEndpoint, start};
+pub use serve::{EndpointOptions, LocalEndpoint, start, start_with};
 
 #[cfg(feature = "engine")]
 mod serve {
@@ -166,6 +178,17 @@ mod serve {
     use std::sync::{Arc, Mutex};
 
     use orbit_core::EngineHandle;
+
+    use crate::host::HostControl;
+
+    /// What an endpoint serves besides the WebSocket.
+    #[derive(Default)]
+    pub struct EndpointOptions {
+        /// Answer host commands (attach, hold, restart) from this.
+        pub control: Option<Arc<HostControl>>,
+        /// Also serve the local transport (a named pipe or Unix socket).
+        pub local: bool,
+    }
 
     use super::{EndpointInfo, FILE, write_private};
 
@@ -216,6 +239,12 @@ mod serve {
     /// and publishes it in `<data_dir>/endpoint.json`. `kind` names the host
     /// (`desktop`, `orbitd`).
     pub fn start(engine: EngineHandle, data_dir: &Path, kind: &str) -> io::Result<LocalEndpoint> {
+        start_with(engine, data_dir, kind, EndpointOptions::default())
+    }
+
+    /// [`start`], serving the local transport and host commands as
+    /// `options` say (the background host).
+    pub fn start_with(engine: EngineHandle, data_dir: &Path, kind: &str, options: EndpointOptions) -> io::Result<LocalEndpoint> {
         let listener = std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
@@ -227,28 +256,66 @@ mod serve {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             kind: kind.to_owned(),
             protocol: orbit_proto::PROTOCOL_VERSION,
+            local: if options.local { crate::transport::new_address(data_dir)? } else { String::new() },
         };
+        let local = info.local.clone();
+        let control = options.control;
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        // The local listener is bound inside the runtime; its result comes
+        // back before the endpoint is published, so a client never finds an
+        // address nobody listens on.
+        let (bound_tx, bound_rx) = std::sync::mpsc::channel::<io::Result<()>>();
         std::thread::Builder::new().name("orbit-endpoint".into()).stack_size(512 * 1024).spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_io().enable_time().build() {
                 Ok(runtime) => runtime,
-                Err(err) => return log::warn!("control endpoint: {err}"),
+                Err(err) => {
+                    let _ = bound_tx.send(Err(err));
+                    return;
+                }
             };
             runtime.block_on(async move {
                 let listener = match tokio::net::TcpListener::from_std(listener) {
                     Ok(listener) => listener,
-                    Err(err) => return log::warn!("control endpoint: {err}"),
+                    Err(err) => {
+                        let _ = bound_tx.send(Err(err));
+                        return;
+                    }
+                };
+                let local_listener = if local.is_empty() {
+                    None
+                } else {
+                    match crate::transport::LocalListener::bind(&local) {
+                        Ok(l) => Some(l),
+                        Err(err) => {
+                            let _ = bound_tx.send(Err(err));
+                            return;
+                        }
+                    }
+                };
+                let _ = bound_tx.send(Ok(()));
+                let ws = crate::server::serve_ws(engine.clone(), listener, token.clone(), control.clone());
+                let local = async move {
+                    match local_listener {
+                        Some(l) => crate::server::serve_local(engine, l, token, control).await,
+                        None => std::future::pending().await,
+                    }
                 };
                 tokio::select! {
-                    result = crate::server::serve_on(engine, listener, token) => {
+                    result = ws => {
                         if let Err(err) = result {
                             log::warn!("control endpoint stopped: {err}");
+                        }
+                    }
+                    result = local => {
+                        if let Err(err) = result {
+                            log::warn!("local endpoint stopped: {err}");
                         }
                     }
                     _ = stop_rx => {}
                 }
             });
         })?;
+        bound_rx.recv().map_err(|_| io::Error::other("the endpoint thread stopped"))??;
         std::fs::create_dir_all(data_dir)?;
         let path = data_dir.join(FILE);
         let json = serde_json::to_string(&info).map_err(io::Error::other)?;
@@ -300,6 +367,7 @@ mod tests {
             version: "0".into(),
             kind: "desktop".into(),
             protocol: 1,
+            local: String::new(),
         };
         write_private(&dir.path().join(FILE), &serde_json::to_string(&info).unwrap()).unwrap();
         assert_eq!(read(dir.path()).unwrap(), None);

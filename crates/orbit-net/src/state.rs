@@ -126,6 +126,8 @@ pub struct Changes {
     pub workspace: HashSet<ThreadId>,
     pub terminals: Vec<(TermId, Vec<u8>)>,
     pub exited_terminals: Vec<(TermId, Option<i32>)>,
+    /// Terminals that went to sleep (`true`) or woke.
+    pub sleeping_terminals: Vec<(TermId, bool)>,
     /// Timelines that finished loading in this batch.
     pub loaded: Vec<ThreadId>,
     /// Composers whose saved draft changed.
@@ -165,6 +167,7 @@ impl Changes {
             && self.workspace.is_empty()
             && self.terminals.is_empty()
             && self.exited_terminals.is_empty()
+            && self.sleeping_terminals.is_empty()
             && self.loaded.is_empty()
             && self.drafts.is_empty()
             && self.terminal_agents.is_empty()
@@ -531,6 +534,7 @@ impl ClientState {
             Event::TerminalOutput { term, data } => changes.terminals.push((term, data)),
             Event::TimelineMark { .. } => {}
             Event::TerminalExited { term, code } => changes.exited_terminals.push((term, code)),
+            Event::TerminalSleep { term, sleeping } => changes.sleeping_terminals.push((term, sleeping)),
             Event::ThreadLive { thread, live } => {
                 if live.is_default() {
                     self.live.remove(&thread);
