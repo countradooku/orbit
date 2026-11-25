@@ -28,7 +28,6 @@ pub struct Settings {
     pub review: ReviewSettings,
     pub notifications: NotificationSettings,
     pub advanced: AdvancedSettings,
-    pub integrations: IntegrationSettings,
 }
 
 impl Settings {
@@ -64,17 +63,23 @@ impl Settings {
             }
         }
         agents.providers = providers;
+        let mut seen: Vec<String> = Vec::new();
+        agents.instances.retain_mut(|i| {
+            trim(&mut i.id);
+            trim(&mut i.name);
+            trim(&mut i.binary);
+            trim(&mut i.config_dir);
+            i.args.retain(|a| !a.trim().is_empty());
+            i.env.retain(|v| is_env_name(&v.name));
+            let builtin = ProviderKind::ALL.iter().any(|k| k.id() == i.id);
+            let keep = is_instance_id(&i.id) && !builtin && !seen.contains(&i.id);
+            seen.push(i.id.clone());
+            keep
+        });
 
         trim(&mut self.workspace.worktree_root);
         trim(&mut self.advanced.git_binary);
         trim(&mut self.advanced.gh_binary);
-        let i = &mut self.integrations;
-        for field in [&mut i.glab_binary, &mut i.linear_api_key, &mut i.jira_url, &mut i.jira_email, &mut i.jira_api_token] {
-            trim(field);
-        }
-        while i.jira_url.ends_with('/') {
-            i.jira_url.pop();
-        }
         self
     }
 
@@ -240,12 +245,19 @@ pub struct AgentSettings {
     /// Access level new threads start with. Never [`Access::Full`].
     pub default_access: Access,
     /// Per-provider overrides; a provider at its defaults is not stored.
+    /// They apply to every instance of that runtime.
     pub providers: Vec<ProviderSettings>,
+    /// Extra provider instances: more accounts of one runtime, ACP agents,
+    /// and overrides of the built-in presets (matched by id).
+    pub instances: Vec<ProviderInstance>,
+    /// Name threads with a short generated title after their first turn
+    /// (one cheap model call), instead of keeping the first line.
+    pub generate_titles: bool,
 }
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        Self { default_access: Access::Ask, providers: Vec::new() }
+        Self { default_access: Access::Ask, providers: Vec::new(), instances: Vec::new(), generate_titles: true }
     }
 }
 
@@ -319,6 +331,83 @@ pub fn format_env(env: &[EnvVar]) -> String {
     env.iter().map(|v| format!("{}={}", v.name, v.value)).collect::<Vec<_>>().join("\n")
 }
 
+/// A configured agent runtime besides the built-in one of each kind: a
+/// second account of the same runtime ("Claude (work)" with its own
+/// `CLAUDE_CONFIG_DIR`), or an ACP agent with its launch command.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+pub struct ProviderInstance {
+    /// Unique slug (`claude-work`, `gemini`): letters, digits, `-` and `_`,
+    /// starting with a letter. A built-in runtime's id
+    /// ([`ProviderKind::id`]) names its built-in instance and is not used.
+    pub id: String,
+    pub kind: ProviderKind,
+    /// Shown in the model picker; empty means the kind's label.
+    pub name: String,
+    pub enabled: bool,
+    /// The executable: a path, or a name looked up on PATH. Empty uses the
+    /// runtime's binary setting.
+    pub binary: String,
+    /// Arguments before Orbit's own (for an ACP agent, its whole command
+    /// line after the binary, such as `--experimental-acp`).
+    pub args: Vec<String>,
+    /// Another configuration directory, exported as the runtime's
+    /// [`ProviderKind::config_dir_env`]: this is how a second account works.
+    pub config_dir: String,
+    /// Extra environment, applied after the runtime's own settings.
+    pub env: Vec<EnvVar>,
+}
+
+impl ProviderInstance {
+    /// The built-in instance of `kind`.
+    pub fn builtin(kind: ProviderKind) -> Self {
+        Self { id: kind.id().to_owned(), kind, enabled: true, ..Default::default() }
+    }
+
+    pub fn display_name(&self) -> &str {
+        if self.name.is_empty() { self.kind.label() } else { &self.name }
+    }
+
+    /// The binary and environment a process of this instance gets, given
+    /// its runtime's settings: the runtime's binary unless the instance has
+    /// its own; the runtime's environment, then the configuration
+    /// directory, then the instance's own variables.
+    pub fn launch(&self, runtime: &ProviderSettings) -> (Option<String>, Vec<(String, String)>) {
+        let binary = [&self.binary, &runtime.binary].into_iter().find(|b| !b.is_empty()).cloned();
+        let mut env = runtime.env_pairs();
+        if let (false, Some(var)) = (self.config_dir.is_empty(), self.kind.config_dir_env()) {
+            env.push((var.to_owned(), expand_home(&self.config_dir)));
+        }
+        env.extend(self.env.iter().map(|v| (v.name.clone(), v.value.clone())));
+        (binary, env)
+    }
+
+    /// Whether a session started on `other` can resume this instance's
+    /// sessions: same runtime, same configuration and (for ACP) the same
+    /// agent.
+    pub fn shares_sessions_with(&self, other: &ProviderInstance) -> bool {
+        self.kind == other.kind
+            && self.config_dir == other.config_dir
+            && (self.kind != ProviderKind::Acp || (self.binary == other.binary && self.args == other.args))
+    }
+}
+
+/// Whether `id` is a usable instance slug.
+pub fn is_instance_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    id.len() <= 64
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn expand_home(path: &str) -> String {
+    match path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
+        Some(rest) => std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            .map(|home| std::path::Path::new(&home).join(rest).display().to_string())
+            .unwrap_or_else(|| path.to_owned()),
+        None => path.to_owned(),
+    }
+}
+
 // ── Workspace and git ────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
@@ -373,48 +462,6 @@ pub struct AdvancedSettings {
 impl Default for AdvancedSettings {
     fn default() -> Self {
         Self { git_binary: String::new(), gh_binary: String::new(), checkpoint_file_limit_mb: 50 }
-    }
-}
-
-// ── Integrations ─────────────────────────────────────────────────────────
-
-/// Hosts and issue trackers. Tokens are stored with the other settings in
-/// Orbit's data folder and never written to logs: `Debug` redacts them.
-#[derive(Clone, Default, PartialEq, Eq, Encode, Decode)]
-pub struct IntegrationSettings {
-    /// Explicit GitLab CLI binary; empty uses `glab` from PATH.
-    pub glab_binary: String,
-    /// A Linear personal API key (Linear › Settings › Security & access).
-    pub linear_api_key: String,
-    /// Jira site, e.g. `https://acme.atlassian.net`, or a Server / Data
-    /// Center base URL.
-    pub jira_url: String,
-    /// The Atlassian account email for a Jira Cloud API token; empty sends
-    /// the token as a bearer token (Server / Data Center personal tokens).
-    pub jira_email: String,
-    pub jira_api_token: String,
-}
-
-impl IntegrationSettings {
-    pub fn linear_configured(&self) -> bool {
-        !self.linear_api_key.is_empty()
-    }
-
-    pub fn jira_configured(&self) -> bool {
-        !self.jira_url.is_empty() && !self.jira_api_token.is_empty()
-    }
-}
-
-impl std::fmt::Debug for IntegrationSettings {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let secret = |s: &str| if s.is_empty() { "" } else { "<redacted>" };
-        f.debug_struct("IntegrationSettings")
-            .field("glab_binary", &self.glab_binary)
-            .field("linear_api_key", &secret(&self.linear_api_key))
-            .field("jira_url", &self.jira_url)
-            .field("jira_email", &self.jira_email)
-            .field("jira_api_token", &secret(&self.jira_api_token))
-            .finish()
     }
 }
 
@@ -478,19 +525,38 @@ mod tests {
     }
 
     #[test]
-    fn tokens_never_show_in_debug_output() {
+    fn instances_are_sanitized_and_launch_with_their_account() {
         let mut s = Settings::default();
-        s.integrations.linear_api_key = "lin_api_SECRET".into();
-        s.integrations.jira_api_token = " ATATT-SECRET ".into();
-        s.integrations.jira_url = "https://acme.atlassian.net/".into();
+        s.provider_mut(ProviderKind::Claude).env.push(EnvVar::new("HTTPS_PROXY", "http://p"));
+        let work = ProviderInstance {
+            id: " claude-work ".into(),
+            kind: ProviderKind::Claude,
+            enabled: true,
+            config_dir: "/u/.claude-work".into(),
+            env: vec![EnvVar::new("bad name", "x"), EnvVar::new("CLAUDE_CODE_USE_BEDROCK", "1")],
+            ..Default::default()
+        };
+        s.agents.instances = vec![
+            work.clone(),
+            ProviderInstance { id: "claude".into(), kind: ProviderKind::Claude, ..Default::default() },
+            ProviderInstance { id: "9lives".into(), ..Default::default() },
+            ProviderInstance { id: "claude-work".into(), ..Default::default() },
+        ];
         let s = s.sanitized();
-        assert_eq!(s.integrations.jira_api_token, "ATATT-SECRET");
-        assert_eq!(s.integrations.jira_url, "https://acme.atlassian.net");
-        let shown = format!("{s:?}");
-        assert!(!shown.contains("SECRET"), "{shown}");
-        assert!(shown.contains("<redacted>"));
-        let back: Settings = decode(&encode(&s)).unwrap();
-        assert_eq!(back, s);
+        assert_eq!(s.agents.instances.len(), 1, "built-in ids, bad slugs and duplicates are dropped");
+        let work = &s.agents.instances[0];
+        assert_eq!(work.id, "claude-work");
+        let (binary, env) = work.launch(&s.provider(ProviderKind::Claude));
+        assert_eq!(binary, None);
+        assert_eq!(
+            env,
+            vec![
+                ("HTTPS_PROXY".to_owned(), "http://p".to_owned()),
+                ("CLAUDE_CONFIG_DIR".to_owned(), "/u/.claude-work".to_owned()),
+                ("CLAUDE_CODE_USE_BEDROCK".to_owned(), "1".to_owned()),
+            ]
+        );
+        assert!(!work.shares_sessions_with(&ProviderInstance::builtin(ProviderKind::Claude)));
     }
 
     #[test]

@@ -193,15 +193,30 @@ pub enum Command {
     /// worktree locations) and broadcasts [`Event::SettingsChanged`].
     UpdateSettings { settings: Settings },
 
-    /// Pull requests, checks, merges and issues; see [`ForgeCommand`].
-    /// Replies [`Reply::Forge`] (or `Thread` / `Done`, per command).
+    /// Pull requests, checks, merges, issues and tracker settings; see
+    /// [`ForgeCommand`]. Replies [`Reply::Forge`] (or `Thread` / `Done`,
+    /// per command).
     Forge(ForgeCommand),
-    /// Drafts a commit message for the thread's uncommitted changes with the
-    /// thread's own agent, in a one-shot run. Replies [`Reply::CommitMessage`].
-    GenerateCommitMessage { thread: ThreadId },
-    /// Drafts a pull request title and body for the thread's branch.
-    /// Replies [`Reply::PrText`].
-    GeneratePrText { thread: ThreadId },
+    /// One-shot text generation (titles, commit messages, pull request
+    /// text) on the thread's instance in a cheap mode, or on any available
+    /// one when `thread` is `None`. Replies [`Reply::Text`].
+    GenerateText { thread: Option<ThreadId>, task: TextTask, input: String },
+    /// End the thread's agent session; the next message starts a fresh one
+    /// in the same thread (what `/clear` does).
+    NewSession { thread: ThreadId },
+}
+
+/// What [`Command::GenerateText`] writes.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub enum TextTask {
+    /// A short thread title from the conversation in `input`.
+    ThreadTitle,
+    /// A commit message for the changes (diff and context) in `input`.
+    CommitMessage,
+    /// A pull request title on the first line, then its body.
+    PullRequest,
+    /// Free-form: `instructions` applied to `input`.
+    Custom { instructions: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -217,9 +232,8 @@ pub enum Reply {
     Blob(Attachment),
     Terminal(TermId),
     PullRequest { url: String },
+    Text(String),
     Forge(ForgeReply),
-    CommitMessage(String),
-    PrText { title: String, body: String },
 }
 
 /// A path that more than one thread's worktree changed.

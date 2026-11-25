@@ -178,9 +178,8 @@ impl fmt::Debug for ForgeConfig {
 }
 
 impl ForgeConfig {
-    pub fn from_settings(settings: &Settings) -> Self {
+    pub fn new(settings: &Settings, i: &IntegrationSettings) -> Self {
         let path = |s: &str| (!s.is_empty()).then(|| PathBuf::from(s));
-        let i = &settings.integrations;
         Self {
             gh: path(&settings.advanced.gh_binary),
             glab: path(&i.glab_binary),

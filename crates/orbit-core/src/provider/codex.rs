@@ -104,6 +104,8 @@ fn provider_info(binary: Option<&Path>) -> ProviderInfo {
         slash_commands: Vec::new(),
         message: None,
         quota: Vec::new(),
+        instance: String::new(),
+        name: String::new(),
     }
 }
 

@@ -358,7 +358,6 @@ pub struct PullRequestDetail {
     /// Conversation comments, oldest first.
     pub comments: Vec<Comment>,
     pub changed_files: u32,
-    pub commits: u32,
 }
 
 /// A list as the engine last fetched it.
@@ -525,6 +524,15 @@ pub enum ForgeCommand {
     StartFromIssue { project: ProjectId, tracker: TrackerKind, key: String, config: ThreadConfig, worktree: bool },
     /// Where a thread's work stands; see [`ShipStage`].
     Ship { thread: ThreadId, refresh: bool },
+    /// The context `Command::GenerateText` needs to draft a commit message
+    /// (`pull_request: false`: status, diff, recent subjects) or pull
+    /// request text (commits, files, diff against the base, the
+    /// repository's template). Replies `Reply::Text`.
+    DraftInput { thread: ThreadId, pull_request: bool },
+    /// The host and tracker settings. Replies [`ForgeReply::Integrations`].
+    Integrations,
+    /// Replaces them (sanitized). Replies `Reply::Done`.
+    SetIntegrations { settings: IntegrationSettings },
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -535,6 +543,75 @@ pub enum ForgeReply {
     Issues(IssueList),
     Issue(Box<IssueDetail>),
     Ship(ShipState),
+    Integrations(IntegrationSettings),
+}
+
+// ── Integration settings ─────────────────────────────────────────────────
+
+/// Host programs and tracker credentials.
+///
+/// Kept by the engine in their own file in the data folder, outside the
+/// settings record: settings travel in logged, replayed events to every
+/// client, and tokens should not. `Debug` redacts the tokens, so they never
+/// reach a log either.
+#[derive(Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct IntegrationSettings {
+    /// Explicit GitLab CLI binary; empty uses `glab` from PATH.
+    pub glab_binary: String,
+    /// A Linear personal API key (Linear › Settings › Security & access).
+    pub linear_api_key: String,
+    /// Jira site, e.g. `https://acme.atlassian.net`, or a Server / Data
+    /// Center base URL.
+    pub jira_url: String,
+    /// The Atlassian account email for a Jira Cloud API token; empty sends
+    /// the token as a bearer token (Server / Data Center personal tokens).
+    pub jira_email: String,
+    pub jira_api_token: String,
+}
+
+impl IntegrationSettings {
+    /// Trimmed, with no trailing slash on the Jira URL. Idempotent.
+    pub fn sanitized(mut self) -> Self {
+        for field in [&mut self.glab_binary, &mut self.linear_api_key, &mut self.jira_url, &mut self.jira_email, &mut self.jira_api_token] {
+            let trimmed = field.trim();
+            if trimmed.len() != field.len() {
+                *field = trimmed.to_owned();
+            }
+        }
+        while self.jira_url.ends_with('/') {
+            self.jira_url.pop();
+        }
+        self
+    }
+
+    pub fn linear_configured(&self) -> bool {
+        !self.linear_api_key.is_empty()
+    }
+
+    pub fn jira_configured(&self) -> bool {
+        !self.jira_url.is_empty() && !self.jira_api_token.is_empty()
+    }
+
+    pub fn configured(&self, tracker: TrackerKind) -> bool {
+        match tracker {
+            TrackerKind::Linear => self.linear_configured(),
+            TrackerKind::Jira => self.jira_configured(),
+            TrackerKind::GitHub | TrackerKind::GitLab => true,
+        }
+    }
+}
+
+impl std::fmt::Debug for IntegrationSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let secret = |s: &str| if s.is_empty() { "" } else { "<redacted>" };
+        f.debug_struct("IntegrationSettings")
+            .field("glab_binary", &self.glab_binary)
+            .field("linear_api_key", &secret(&self.linear_api_key))
+            .field("jira_url", &self.jira_url)
+            .field("jira_email", &self.jira_email)
+            .field("jira_api_token", &secret(&self.jira_api_token))
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -553,6 +630,25 @@ mod tests {
         s.add(CheckState::Failed);
         assert_eq!(s.overall(), Some(CheckState::Failed));
         assert_eq!(s.total(), 3);
+    }
+
+    #[test]
+    fn tokens_never_show_in_debug_output() {
+        let s = IntegrationSettings {
+            linear_api_key: "lin_api_SECRET".into(),
+            jira_api_token: " ATATT-SECRET ".into(),
+            jira_url: "https://acme.atlassian.net/ ".into(),
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(s.jira_api_token, "ATATT-SECRET");
+        assert_eq!(s.jira_url, "https://acme.atlassian.net");
+        assert!(s.jira_configured() && s.linear_configured());
+        let shown = format!("{s:?}");
+        assert!(!shown.contains("SECRET"), "{shown}");
+        assert!(shown.contains("<redacted>"));
+        let back: IntegrationSettings = decode(&encode(&s)).unwrap();
+        assert_eq!(back, s);
     }
 
     #[test]

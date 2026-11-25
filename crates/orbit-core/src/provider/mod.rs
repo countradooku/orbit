@@ -14,9 +14,14 @@ use std::path::PathBuf;
 
 use orbit_proto::*;
 
+pub mod acp;
 pub mod claude;
 pub mod codex;
-pub mod one_shot;
+pub mod jsonrpc;
+pub mod oneshot;
+pub mod opencode;
+pub mod pi;
+pub mod presets;
 pub mod process;
 
 /// Everything an adapter needs to start or resume a session.
@@ -31,8 +36,11 @@ pub struct SessionSpec {
     /// Resume at this provider message id (rollback / edit-and-resend).
     pub resume_at: Option<String>,
     /// Explicit binary path from settings; `None` resolves from PATH and the
-    /// known install locations.
+    /// known install locations. A bare name is looked up on PATH.
     pub binary: Option<PathBuf>,
+    /// The instance's launch arguments (an ACP agent's command line after
+    /// the binary; extra flags for the other runtimes).
+    pub args: Vec<String>,
     /// Extra environment variables (worktree ports, user overrides).
     pub env: Vec<(String, String)>,
     /// Extra directories the agent may read (attachments directory).
@@ -149,16 +157,61 @@ pub fn start(kind: ProviderKind, spec: SessionSpec, events: EventSender) -> Sess
     match kind {
         ProviderKind::Claude => claude::start(spec, events),
         ProviderKind::Codex => codex::start(spec, events),
+        ProviderKind::Acp => acp::start(spec, events),
+        ProviderKind::OpenCode => opencode::start(spec, events),
+        ProviderKind::Pi => pi::start(spec, events),
     }
 }
 
-/// Detects whether the runtime is installed and signed in, and reads its
-/// models, options, modes and slash commands. Cheap enough to run at startup
-/// and on demand; never blocks longer than its own timeout. `binary` and
-/// `env` are the user's overrides, as a session would get them.
-pub async fn probe(kind: ProviderKind, binary: Option<PathBuf>, env: Vec<(String, String)>) -> ProviderInfo {
-    match kind {
+/// How to start one provider instance: what [`probe`] and a session need,
+/// resolved from the settings (see `engine::sessions`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Launch {
+    pub kind: ProviderKind,
+    /// Instance id and display name, copied into the probe's result.
+    pub instance: String,
+    pub name: String,
+    pub binary: Option<PathBuf>,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+}
+
+impl Launch {
+    /// The built-in instance of `kind` with an explicit binary and
+    /// environment (tests, tools).
+    pub fn builtin(kind: ProviderKind, binary: Option<PathBuf>, env: Vec<(String, String)>) -> Self {
+        Self { kind, instance: kind.id().to_owned(), name: kind.label().to_owned(), binary, args: Vec::new(), env }
+    }
+
+    /// The launch of `instance` under its runtime's settings.
+    pub fn of(instance: &ProviderInstance, runtime: &ProviderSettings) -> Self {
+        let (binary, env) = instance.launch(runtime);
+        Self {
+            kind: instance.kind,
+            instance: instance.id.clone(),
+            name: instance.display_name().to_owned(),
+            binary: binary.map(PathBuf::from),
+            args: instance.args.clone(),
+            env,
+        }
+    }
+}
+
+/// Detects whether an instance's runtime is installed and signed in, and
+/// reads its models, options, modes and slash commands. Cheap enough to run
+/// at startup and on demand; never blocks longer than its own timeout, and
+/// returns at once when the binary is missing.
+pub async fn probe(launch: Launch) -> ProviderInfo {
+    let Launch { kind, instance, name, binary, args, env } = launch;
+    let mut info = match kind {
         ProviderKind::Claude => claude::probe(binary, env).await,
         ProviderKind::Codex => codex::probe(binary, env).await,
-    }
+        ProviderKind::Acp => acp::probe(binary, &args, &env).await,
+        ProviderKind::OpenCode => opencode::probe(binary, &env).await,
+        ProviderKind::Pi => pi::probe(binary, &args, &env).await,
+    };
+    info.kind = kind;
+    info.instance = instance;
+    info.name = name;
+    info
 }

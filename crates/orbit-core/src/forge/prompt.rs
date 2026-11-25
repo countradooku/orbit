@@ -77,35 +77,27 @@ fn check_name(check: &Check) -> String {
     }
 }
 
-pub fn commit_prompt(status: &str, diff: &str, recent: &str) -> String {
-    let mut out = String::from(
-        "Write a git commit message for the changes below.\n\
-         Rules: a subject line under 72 characters in the imperative mood; if the change needs it, a blank line then a \
-         short body saying why, wrapped at 72 characters. Follow the style of the recent commits (for example a \
-         Conventional Commits prefix if they use one). Reply with the message only: no code fences, no quotes, no \
-         commentary.\n",
-    );
+/// The input for `TextTask::CommitMessage`: what changed, and the recent
+/// subjects so the message follows the repository's style.
+pub fn commit_input(status: &str, diff: &str, recent: &str) -> String {
+    let mut out = String::new();
     if !recent.trim().is_empty() {
-        out.push_str("\nRecent commits:\n");
+        out.push_str("Recent commit subjects (follow their style):\n");
         out.push_str(recent.trim());
-        out.push('\n');
+        out.push_str("\n\n");
     }
-    out.push_str("\nChanged files:\n");
+    out.push_str("Changed files:\n");
     out.push_str(status.trim());
     out.push_str("\n\nDiff:\n");
     out.push_str(&head(diff, DIFF_CHARS));
     out
 }
 
-pub fn pr_prompt(branch: &str, base: &str, commits: &str, stat: &str, diff: &str, template: Option<&str>) -> String {
-    let mut out = format!(
-        "Write a pull request title and description for branch `{branch}` into `{base}`.\n\
-         Reply in exactly this shape and nothing else: the title on the first line (under 72 characters, no trailing \
-         period), one blank line, then the description in Markdown. The description says what changed and why, \
-         briefly, and how it was tested if the commits show it. No code fences around the reply.\n"
-    );
+/// The input for `TextTask::PullRequest`.
+pub fn pr_input(branch: &str, base: &str, commits: &str, stat: &str, diff: &str, template: Option<&str>) -> String {
+    let mut out = format!("Branch `{branch}` into `{base}`.\n");
     if let Some(template) = template.filter(|t| !t.trim().is_empty()) {
-        out.push_str("\nThe repository's pull request template; fill it in:\n<template>\n");
+        out.push_str("\nThe repository's pull request template:\n<template>\n");
         out.push_str(template.trim());
         out.push_str("\n</template>\n");
     }

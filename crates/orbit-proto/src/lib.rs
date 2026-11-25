@@ -18,11 +18,12 @@ pub mod codec;
 pub mod diff;
 pub mod forge;
 pub mod ids;
+pub mod legacy;
 pub mod model;
 pub mod settings;
 pub mod wire;
 
-pub use codec::{Codec, FRAME_HEADER, FrameError, FrameReader, decode, encode, write_frame};
+pub use codec::{Codec, FRAME_HEADER, FrameError, FrameReader, decode, encode, write_frame, write_raw_frame};
 pub use diff::{
     DiffLine, FileDiff, FileDiffKind, Hunk, LineKind, LineRanges, Span, file_patch, hunk_patch, hunks_patch, word_diff,
 };
@@ -34,7 +35,7 @@ pub use wire::*;
 
 /// Bumped on any incompatible wire change. Clients and servers refuse to talk
 /// across versions instead of misreading frames.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";
