@@ -95,6 +95,12 @@ impl Rig {
             name: "Claude (work)".into(),
             enabled: true,
             config_dir: dir.path().join("claude-work").display().to_string(),
+            // No such program anywhere, as on CI, where Claude Code isn't
+            // installed: what the tests see of this account comes from its
+            // fake sessions, never from probing the machine (which answered
+            // "not installed" right after the first session's catalog, and
+            // left no account to fail over to).
+            binary: dir.path().join("no-claude-here").display().to_string(),
             ..Default::default()
         });
         o.handle_command(Command::UpdateSettings { settings: Box::new(settings) }).unwrap();

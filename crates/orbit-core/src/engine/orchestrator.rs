@@ -152,6 +152,13 @@ pub struct Orchestrator {
     pub(crate) host: super::host::HostState,
     /// Installed plugins and their hooks (`engine/plugins.rs`).
     pub(crate) plugins: super::plugins::PluginRuntime,
+    /// Whether provider instances are probed when settings or plugins change
+    /// them or a client asks. Always, except in this crate's unit tests
+    /// unless they ask: a probe runs the machine's real agent CLI, and its
+    /// answer replaces what the tests' fake sessions report, so the tests
+    /// would depend on whether (and how fast) Claude Code answers where they
+    /// run.
+    pub(crate) probes: bool,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -172,6 +179,8 @@ impl From<CommandResult> for Outcome {
 }
 
 impl Orchestrator {
+    /// An engine that probes provider instances, except in this crate's
+    /// unit tests (see `probes`).
     pub fn new(
         store: Store,
         agent_tx: EventSender,
@@ -179,6 +188,18 @@ impl Orchestrator {
         launcher: Launcher,
         terminal_output: OutputSender,
         terminal_exits: ExitSender,
+    ) -> Self {
+        Self::with_probes(store, agent_tx, internal_tx, launcher, terminal_output, terminal_exits, !cfg!(test))
+    }
+
+    pub(crate) fn with_probes(
+        store: Store,
+        agent_tx: EventSender,
+        internal_tx: MTx<mpsc::List<Internal>>,
+        launcher: Launcher,
+        terminal_output: OutputSender,
+        terminal_exits: ExitSender,
+        probes: bool,
     ) -> Self {
         let git = Git::new(super::settings::git_config(store.dir(), store.settings()));
         let teams = crate::teams::TeamsState::load(store.dir());
@@ -213,6 +234,7 @@ impl Orchestrator {
             usage: Default::default(),
             host: Default::default(),
             plugins,
+            probes,
         };
         orchestrator.plugins_start();
         orchestrator
