@@ -87,6 +87,7 @@ impl Timeline {
                 text.push_str(d)
             }
             (ItemBody::Tool(call), Delta::ToolOutput(d)) => call.output.push_str(d),
+            (ItemBody::Tool(call), Delta::ToolInput(d)) => call.input.push_str(d),
             _ => return None,
         }
         self.revision += 1;

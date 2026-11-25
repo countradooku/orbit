@@ -206,6 +206,11 @@ impl Orchestrator {
                     call.output.push_str(d);
                 }
             }
+            (ItemBody::Tool(call), Delta::ToolInput(d)) => {
+                if call.input.len() < INLINE_OUTPUT {
+                    call.input.push_str(d);
+                }
+            }
             _ => return,
         }
         self.dirty.insert((thread, id));
@@ -871,12 +876,21 @@ impl Orchestrator {
                 }
             }
             AgentEvent::PromptAccepted { .. } => {}
+            AgentEvent::Delta { block, kind: BlockKind::ToolInput, text } => {
+                // `block` is the tool call id; the call's card already exists.
+                if let Some(id) = self.tool_item(thread_id, &block) {
+                    self.stream_into(thread_id, id, Delta::ToolInput(text));
+                }
+            }
+            AgentEvent::BlockDone { kind: BlockKind::ToolInput, .. } => {
+                // The adapter re-sends ToolStarted with the complete input.
+            }
             AgentEvent::Delta { block, kind, text } => {
                 let id = self.ensure_block(thread_id, &block, kind);
                 if let Some(id) = id {
                     let delta = match kind {
-                        BlockKind::Text => Delta::Text(text),
                         BlockKind::Reasoning => Delta::Reasoning(text),
+                        _ => Delta::Text(text),
                     };
                     self.stream_into(thread_id, id, delta);
                 }
@@ -886,8 +900,8 @@ impl Orchestrator {
                     && let Some(mut item) = self.item(thread_id, id)
                 {
                     item.body = match kind {
-                        BlockKind::Text => ItemBody::Assistant { text },
                         BlockKind::Reasoning => ItemBody::Reasoning { text },
+                        _ => ItemBody::Assistant { text },
                     };
                     item.status = ItemStatus::Done;
                     self.put_item(thread_id, item);
@@ -1046,8 +1060,8 @@ impl Orchestrator {
         turn.blocks.insert(block.to_owned(), id);
         let number = turn.number;
         let body = match kind {
-            BlockKind::Text => ItemBody::Assistant { text: String::new() },
             BlockKind::Reasoning => ItemBody::Reasoning { text: String::new() },
+            BlockKind::Text | BlockKind::ToolInput => ItemBody::Assistant { text: String::new() },
         };
         self.put_item(thread, Item { id, turn: number, status: ItemStatus::Streaming, body });
         Some(id)

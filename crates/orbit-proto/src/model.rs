@@ -418,8 +418,10 @@ pub enum RequestKind {
     FileChange { path: String, diff: String },
     /// Any other tool, with its raw JSON input.
     Tool { name: String, input: String },
-    /// A question with optional suggested answers.
-    Question { question: String, options: Vec<String> },
+    /// A question with optional suggested answers. Answer with
+    /// [`Decision::Answer`]: a suggested option's label, or free text. When
+    /// `multi_select` is set, put each chosen label on its own line.
+    Question { question: String, options: Vec<String>, multi_select: bool },
     /// Leave plan mode and carry out this plan.
     Plan { plan: String },
 }

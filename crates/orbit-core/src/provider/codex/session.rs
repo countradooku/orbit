@@ -673,7 +673,7 @@ impl Session {
                         format!("{}: {}", q.header, q.question)
                     };
                     let options = q.options.unwrap_or_default().into_iter().map(|o| o.label).collect();
-                    self.ask(raw_id, PendingKind::Question { group, question_id: q.id }, RequestKind::Question { question, options });
+                    self.ask(raw_id, PendingKind::Question { group, question_id: q.id }, RequestKind::Question { question, options, multi_select: false });
                 }
             }
             "mcpServer/elicitation/request" => {

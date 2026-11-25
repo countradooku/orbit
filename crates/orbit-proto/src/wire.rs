@@ -93,6 +93,8 @@ pub enum Delta {
     Text(String),
     Reasoning(String),
     ToolOutput(String),
+    /// A tool call's input JSON as the model writes it.
+    ToolInput(String),
 }
 
 /// What part of a thread's changes a diff covers.
