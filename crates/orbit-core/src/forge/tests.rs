@@ -114,3 +114,96 @@ async fn join_all_keeps_input_order() {
     let fast2 = async { 3 };
     assert_eq!(join_all([Box::pin(slow) as Pin<Box<dyn Future<Output = i32> + Send>>, Box::pin(fast), Box::pin(fast2)]).await, vec![1, 2, 3]);
 }
+
+/// Serves one HTTP response on loopback and returns the request it got.
+async fn serve_once(status: u16, body: String) -> (String, tokio::task::JoinHandle<String>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0u8; 4096];
+        // Headers, then the body by Content-Length.
+        loop {
+            let n = socket.read(&mut buf).await.unwrap();
+            request.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&request).to_string();
+            if let Some(end) = text.find("\r\n\r\n") {
+                let length = text
+                    .lines()
+                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                    .unwrap_or(0);
+                if request.len() >= end + 4 + length {
+                    break;
+                }
+            }
+            if n == 0 {
+                break;
+            }
+        }
+        let response = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+        socket.write_all(response.as_bytes()).await.unwrap();
+        String::from_utf8_lossy(&request).into_owned()
+    });
+    (format!("http://{addr}"), task)
+}
+
+fn fixture(name: &str) -> String {
+    std::fs::read_to_string(format!("{}/tests/fixtures/forge/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+}
+
+#[tokio::test]
+async fn linear_is_asked_with_the_key_over_http() {
+    let (url, server) = serve_once(200, fixture("linear_assigned.json")).await;
+    let linear = linear::Linear { api_key: "lin_api_KEY".into(), endpoint: format!("{url}/graphql") };
+    let issues = linear.issues("").await.unwrap();
+    assert_eq!(issues.len(), 2);
+    let request = server.await.unwrap().to_ascii_lowercase();
+    assert!(request.starts_with("post /graphql"), "{request}");
+    assert!(request.contains("authorization: lin_api_key"), "personal keys go without Bearer");
+    assert!(request.contains("assignedissues"));
+
+    let (url, server) = serve_once(400, fixture("linear_auth_error.json")).await;
+    let linear = linear::Linear { api_key: "bad".into(), endpoint: format!("{url}/graphql") };
+    let err = linear.issues("").await.err().unwrap();
+    assert!(matches!(err, ForgeError::TrackerAuth { .. }), "{err:?}");
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn jira_cloud_uses_basic_auth_and_the_jql_search() {
+    let (url, server) = serve_once(200, fixture("jira_search.json")).await;
+    let jira = jira::Jira { site: url, email: "a@acme.com".into(), token: "TOKEN".into() };
+    let issues = jira.issues("").await.unwrap();
+    assert_eq!(issues[0].key, "PROJ-7");
+    let request = server.await.unwrap();
+    assert!(request.starts_with("GET /rest/api/3/search/jql?jql=assignee%20%3D%20currentUser%28%29"), "{request}");
+    let basic = format!("Basic {}", http::base64("a@acme.com:TOKEN"));
+    assert!(request.to_ascii_lowercase().contains(&format!("authorization: {}", basic.to_ascii_lowercase())));
+
+    let (url, server) = serve_once(401, "{}".into()).await;
+    let server_dc = jira::Jira { site: url, email: String::new(), token: "PAT".into() };
+    let err = server_dc.issue("OPS-1").await.err().unwrap();
+    assert!(err.to_string().contains("personal access token"), "{err}");
+    let request = server.await.unwrap();
+    assert!(request.starts_with("GET /rest/api/2/issue/OPS-1"), "{request}");
+    assert!(request.contains("Bearer PAT"));
+}
+
+#[tokio::test]
+async fn plain_http_is_refused_off_loopback() {
+    let err = http::send("GET", "http://example.com/x", &[], None).await.err().unwrap();
+    assert!(err.to_string().contains("https://"), "{err}");
+}
+
+/// Live: TLS with the system's roots against the real Linear endpoint,
+/// with no key (Linear answers "authentication required"). Run with
+/// `--ignored` on a machine with network access.
+#[tokio::test]
+#[ignore]
+async fn live_tls_reaches_linear() {
+    let linear = linear::Linear::new("not-a-key".into());
+    let err = linear.issues("").await.err().unwrap();
+    assert!(matches!(err, ForgeError::TrackerAuth { .. }), "{err:?}");
+}
