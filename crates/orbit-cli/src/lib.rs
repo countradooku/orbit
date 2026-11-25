@@ -6,6 +6,7 @@
 //! its local control endpoint (see `orbit_net::endpoint`).
 
 pub mod args;
+pub mod bot;
 pub mod conn;
 pub mod error;
 pub mod exec;

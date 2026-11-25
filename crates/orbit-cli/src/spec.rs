@@ -149,6 +149,7 @@ pub const TASKS: &[&str] = &["title", "commit", "pr", "custom"];
 pub const PR_FILTERS: &[&str] = &["open", "mine", "merged", "closed"];
 pub const MERGE_METHODS: &[&str] = &["squash", "merge", "rebase"];
 pub const TRACKERS: &[&str] = &["github", "gitlab", "linear", "jira"];
+pub const PLATFORMS: &[&str] = &["telegram", "slack", "discord"];
 
 const PROJECT: Arg = arg("project", Kind::Project, "The project; default: the one containing the current folder.").short('p');
 const PR: Arg = pos("number", Kind::Str, "The pull request number (`42`, `#42`).");
@@ -586,6 +587,48 @@ pub static SPECS: &[Spec] = &[
         examples: &["orbit open latest"],
         ..spec(&["open"], "Show a thread in the desktop app", &[opt_pos("thread", Kind::Thread, "The thread to show.")])
     },
+    // ── Chat bots (orbit-bots) ────────────────────────────────────────────
+    // Not MCP tools: letting people in is for the owner, never an agent.
+    Spec {
+        details: "Each platform's connection (and its last error), the people paired with the bots, and pairing codes \
+                  waiting for approval.",
+        examples: &["orbit bot status", "orbit bot status --json"],
+        ..spec(&["bot", "status"], "Show the chat bots and who may use them", &[])
+    },
+    Spec {
+        details: "Someone who writes to a bot gets a six-digit code; this lets them in (or turns them away with \
+                  --reject). Codes expire after 15 minutes. Refused inside an agent's thread.",
+        examples: &["orbit bot pair 482913"],
+        ..spec(
+            &["bot", "pair"],
+            "Approve a pairing code",
+            &[pos("code", Kind::Str, "The code the bot sent them."), arg("reject", Kind::Flag, "Turn them away instead.")],
+        )
+    },
+    Spec {
+        details: "Their chats stop driving Orbit at once. Their user id is in `orbit bot status`.",
+        examples: &["orbit bot unpair telegram 123456789"],
+        ..spec(
+            &["bot", "unpair"],
+            "Remove a paired person",
+            &[pos("platform", Kind::Choice(PLATFORMS), "Where they are."), pos("user", Kind::Str, "Their user id there.")],
+        )
+    },
+    Spec {
+        details: "Lets a person in by their platform user id, without a code (Telegram: a number; Slack: U…; Discord: a \
+                  snowflake). Refused inside an agent's thread.",
+        examples: &["orbit bot allow slack U024BE7LH --name Ana"],
+        ..spec(
+            &["bot", "allow"],
+            "Allow a person by user id",
+            &[
+                pos("platform", Kind::Choice(PLATFORMS), "Where they are."),
+                pos("user", Kind::Str, "Their user id there."),
+                arg("name", Kind::Str, "How to show them; default: the id."),
+            ],
+        )
+    },
+    // ── End of chat bots ─────────────────────────────────────────────────
     Spec {
         connects: false,
         ..spec(&["agent-context"], "Print a guide for agents driving Orbit", &[])
