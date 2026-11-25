@@ -104,6 +104,7 @@ pub struct Workspace {
     /// Debug builds: a screen to open once data arrives
     /// (`ORBIT_DEBUG_ROUTE` = `latest`, `inbox`, `fleet`, `terminal`,
     /// `plugin-panel:<plugin>:<panel>`, `plugin-review:<plugin>`,
+    /// `plugin-log:<plugin>`, `plugin-settings:<plugin>`,
     /// `tiles`, `shortcuts`, `palette`), for screenshots and visual checks.
     debug_route: Option<String>,
     tracker: notify::Tracker,
@@ -243,18 +244,22 @@ impl Workspace {
             // Plugins, once the host has said which are installed:
             // `plugin-panel:<plugin>:<panel>` opens a panel in the dock,
             // `plugin-review:<plugin>` the consent dialog.
-            plugin if plugin.starts_with("plugin-panel:") || plugin.starts_with("plugin-review:") => {
+            plugin if ["plugin-panel:", "plugin-review:", "plugin-log:", "plugin-settings:"].iter().any(|p| plugin.starts_with(p)) => {
                 let mut parts = plugin.splitn(3, ':').skip(1);
                 let id = parts.next().unwrap_or_default().to_owned();
                 let Some(info) = crate::plugins::state(cx).plugin(&id).cloned() else {
                     self.debug_route = Some(route);
                     return;
                 };
+                let app = self.app.clone();
                 if plugin.starts_with("plugin-panel:") {
                     let panel = parts.next().unwrap_or_default().to_owned();
                     self.plugin_dock.update(cx, |dock, cx| dock.open(&id, &panel, cx));
+                } else if plugin.starts_with("plugin-log:") {
+                    window.defer(cx, move |window, cx| crate::plugins::consent::show_logs(&app, &info, window, cx));
+                } else if plugin.starts_with("plugin-settings:") {
+                    window.defer(cx, move |window, cx| crate::plugins::settings::open(&app, &info, window, cx));
                 } else {
-                    let app = self.app.clone();
                     window.defer(cx, move |window, cx| crate::plugins::consent::review(&app, &info, window, cx));
                 }
                 return;

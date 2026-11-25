@@ -329,7 +329,7 @@ pub fn show_logs(app: &Entity<AppState>, plugin: &PluginInfo, window: &mut Windo
                     .collect();
                 let empty = rows.is_empty();
                 dialog
-                    .title(format!("{name} log"))
+                    .title(format!("“{name}” log"))
                     .w(window.rem_size() * 44.)
                     .child(
                         v_flex()

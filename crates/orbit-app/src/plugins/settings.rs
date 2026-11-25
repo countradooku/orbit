@@ -114,7 +114,7 @@ pub fn open(app: &Entity<AppState>, plugin: &PluginInfo, window: &mut Window, cx
     window.open_dialog(cx, move |dialog, _, _| {
         let (app, id, form) = (app.clone(), id.clone(), form.clone());
         dialog
-            .title(format!("{name} settings"))
+            .title(format!("“{name}” settings"))
             .w(px(480.))
             .child(form.clone())
             .footer(
