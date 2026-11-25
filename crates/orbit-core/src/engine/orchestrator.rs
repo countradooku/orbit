@@ -253,21 +253,39 @@ impl Orchestrator {
     pub(crate) fn diff(&mut self, thread: ThreadId, scope: DiffScope) -> Outcome {
         let repo = match self.repo_for(thread) {
             Ok(repo) => repo,
-            Err(e) => return Outcome::Ready(Err(e)),
+            // Outside a project (a chat in its scratch folder) nothing is
+            // checkpointed; the agent's own edits still say what changed.
+            Err(e) => {
+                let scratch = self.store.dir().join("scratch").join(thread.to_string());
+                return match scope {
+                    DiffScope::Turn(n) => self.edits_diff(thread, &scratch, move |turn| turn == n),
+                    DiffScope::Thread => self.edits_diff(thread, &scratch, |_| true),
+                    DiffScope::SinceTurn(n) => self.edits_diff(thread, &scratch, move |turn| turn >= n),
+                    _ => Outcome::Ready(Err(e)),
+                };
+            }
         };
         let git = self.git.clone();
+        // Without checkpoints (turns from before Orbit could snapshot this
+        // folder), the diff is what the agent's own edits describe.
         let range = match &scope {
             DiffScope::Turn(n) => match self.turn_range(thread, *n) {
                 Some(range) => Some(range),
-                None => return Outcome::Ready(Err("This turn has no snapshot to compare.".into())),
+                None => {
+                    let n = *n;
+                    return self.edits_diff(thread, &repo, move |turn| turn == n);
+                }
             },
             DiffScope::Thread => match self.thread_base(thread) {
                 Some(base) => Some((base, None)),
-                None => return Outcome::Ready(Err("Nothing has run in this thread yet.".into())),
+                None => return self.edits_diff(thread, &repo, |_| true),
             },
             DiffScope::SinceTurn(n) => match self.since_turn_range(thread, *n) {
                 Some(range) => Some(range),
-                None => return Outcome::Ready(Err("This turn has no snapshot to compare.".into())),
+                None => {
+                    let n = *n;
+                    return self.edits_diff(thread, &repo, move |turn| turn >= n);
+                }
             },
             _ => None,
         };
@@ -282,6 +300,24 @@ impl Orchestrator {
             result
                 .map(|diff| Reply::Diff(diff.files.iter().map(|f| f.raw.as_str()).collect::<String>()))
                 .map_err(|e| e.to_string())
+        }))
+    }
+
+    /// The changes of the turns `turns` accepts, from the agent's recorded
+    /// edits rather than checkpoints.
+    fn edits_diff(&mut self, thread: ThreadId, repo: &Path, turns: impl Fn(u32) -> bool + Send + 'static) -> Outcome {
+        let items = match self.store.load_timeline(thread) {
+            Ok(timeline) => timeline.items().to_vec(),
+            Err(e) => return Outcome::Ready(Err(e.to_string())),
+        };
+        let repo = repo.to_owned();
+        Outcome::Deferred(Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let read = |rel: &str| std::fs::read_to_string(repo.join(rel)).ok();
+                Reply::Diff(crate::edits::scope_patch(&items, turns, Some(&repo), read).unwrap_or_default())
+            })
+            .await
+            .map_err(|e| e.to_string())
         }))
     }
 

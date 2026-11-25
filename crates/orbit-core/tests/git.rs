@@ -643,3 +643,60 @@ async fn failed_worktree_creation_leaves_nothing_behind() {
     assert!(!sh(&dir, &["branch", "--list", "main"]).is_empty());
     assert!(git.worktrees().unwrap().is_empty());
 }
+
+/// A folder that is not a git repository still gets checkpoints, turn diffs
+/// and restore, through a shadow repository in Orbit's data folder. The
+/// folder never gains a `.git`, and operations that need a real repository
+/// keep refusing it.
+#[tokio::test]
+async fn a_folder_without_git_gets_shadow_checkpoints() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("plain");
+    write(&dir, "README.md", "old intro\nsecond line\n");
+    write(&dir, ".gitignore", "secret.env\n");
+    write(&dir, "secret.env", "TOKEN=1\n");
+    write(&dir, "node_modules/x/index.js", "x\n");
+    let git = layer(&tmp);
+    let thread = ThreadId::new();
+
+    let base = git.checkpoint(&dir, thread).await.unwrap();
+    assert_eq!(base.n, 0);
+    write(&dir, "README.md", "new intro\nsecond line\n");
+    write(&dir, "src/added.rs", "fn main() {}\n");
+    let after = git.checkpoint(&dir, thread).await.unwrap();
+
+    let diff = git.diff_scope(&dir, thread, &DiffScope::Turn(1)).await.unwrap();
+    let mut changes: Vec<(String, ChangeKind, u32, u32)> =
+        diff.changes().into_iter().map(|c| (c.path, c.kind, c.additions, c.deletions)).collect();
+    changes.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        changes,
+        vec![("README.md".into(), ChangeKind::Modified, 1, 1), ("src/added.rs".into(), ChangeKind::Added, 1, 0)],
+        "ignored files and node_modules stay out"
+    );
+
+    // Restore to before the turn, then undo it.
+    git.restore(&dir, thread, &base.tree).await.unwrap();
+    assert_eq!(read(&dir, "README.md"), "old intro\nsecond line\n");
+    assert!(!dir.join("src/added.rs").exists());
+    assert_eq!(read(&dir, "secret.env"), "TOKEN=1\n", "ignored files are left alone");
+    git.undo_restore(&dir, thread).await.unwrap();
+    assert_eq!(read(&dir, "README.md"), "new intro\nsecond line\n");
+    assert_eq!(git.checkpoints(&dir, thread).await.unwrap().last().unwrap().tree, after.tree);
+
+    assert!(!dir.join(".git").exists(), "the folder is never made a repository");
+    assert!(matches!(git.status(&dir).await, Err(GitError::NotARepo(_))), "status still needs a real repository");
+    assert!(git.current_branch(&dir).await.is_err());
+
+    // A second Git (a restart) finds the same shadow store and its checkpoints.
+    let again = layer(&tmp);
+    assert_eq!(again.checkpoints(&dir, thread).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn home_and_drive_roots_are_never_shadowed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let git = layer(&tmp);
+    let root = Path::new(if cfg!(windows) { "C:\\" } else { "/" });
+    assert!(git.checkpoint(root, ThreadId::new()).await.is_err());
+}
