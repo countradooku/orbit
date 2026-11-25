@@ -139,6 +139,8 @@ pub struct Changes {
     pub guard: bool,
     /// A team or race changed (or went away).
     pub teams: bool,
+    /// The quota board changed.
+    pub quota: bool,
 }
 
 impl Changes {
@@ -164,6 +166,7 @@ impl Changes {
             && !self.bots
             && !self.guard
             && !self.teams
+            && !self.quota
     }
 
     /// The shell (sidebar, inbox, fleet) needs a render.
@@ -178,6 +181,7 @@ impl Changes {
             || self.conflicts
             || self.connection
             || self.automations
+            || self.quota
     }
 }
 
@@ -216,6 +220,8 @@ pub struct ClientState {
     /// Agent teams and races (see `orbit_proto::teams`).
     pub teams: HashMap<TeamId, Team>,
     pub races: HashMap<RaceId, Race>,
+    /// Every account's quota and the usage settings.
+    pub quota: QuotaBoard,
     timelines: HashMap<ThreadId, Timeline>,
     /// Timelines being fetched: the reply and the stream are separate
     /// channels, so events are held until both the reply and its mark have
@@ -362,6 +368,7 @@ impl ClientState {
                     }
                     self.teams = snapshot.teams.teams.into_iter().map(|t| (t.id, t)).collect();
                     self.races = snapshot.teams.races.into_iter().map(|r| (r.id, r)).collect();
+                    self.quota = *snapshot.quota;
                     self.live_usage.clear();
                     // Open timelines may be stale; the UI refetches them.
                     self.timelines.clear();
@@ -507,6 +514,10 @@ impl ClientState {
                     }
                 }
                 changes.teams = true;
+            }
+            Event::Quota(board) => {
+                self.quota = *board;
+                changes.quota = true;
             }
             Event::DraftSaved { target, draft } => {
                 if draft.is_empty() {

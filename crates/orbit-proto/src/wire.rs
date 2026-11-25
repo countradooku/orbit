@@ -11,6 +11,7 @@ use crate::model::*;
 use crate::settings::Settings;
 use crate::status::*;
 use crate::teams::*;
+use crate::usage::*;
 
 /// Client → engine.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -61,6 +62,9 @@ pub struct Snapshot {
     pub automation_runs: Vec<AutomationRun>,
     /// Agent teams and races (see [`crate::teams`]).
     pub teams: TeamBoard,
+    /// Every account's quota and the usage settings (see [`crate::usage`]).
+    /// Boxed like `settings`.
+    pub quota: Box<QuotaBoard>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -126,6 +130,9 @@ pub enum Event {
     /// A team or race changed. Ephemeral; the latest state is in the
     /// snapshot.
     Team(TeamEvent),
+    /// The quota board changed: limits read, history advanced, settings
+    /// replaced. Ephemeral; the latest board is in the snapshot.
+    Quota(Box<QuotaBoard>),
 }
 
 impl Event {
@@ -145,6 +152,7 @@ impl Event {
                 | Event::Bots(_)
                 | Event::GuardChanged(_)
                 | Event::Team(_)
+                | Event::Quota(_)
         )
     }
 }
@@ -336,6 +344,9 @@ pub enum Command {
     Via { via: Via, action: ViaAction },
     /// Agent teams and races; see [`TeamCommand`].
     Team(Box<TeamCommand>),
+    /// Quota, usage stats and account failover; see [`UsageCommand`].
+    /// Replies [`Reply::Usage`], `Text` or `Done`, per command.
+    Usage(UsageCommand),
 }
 
 impl From<TeamCommand> for Command {
@@ -414,6 +425,7 @@ pub enum Reply {
     Bots(BotReply),
     Guard(GuardSettings),
     Team(TeamReply),
+    Usage(Box<UsageReply>),
 }
 
 /// A local merge of a thread's branch, previewed or done.

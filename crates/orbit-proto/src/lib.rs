@@ -27,6 +27,7 @@ pub mod model;
 pub mod settings;
 pub mod status;
 pub mod teams;
+pub mod usage;
 pub mod wire;
 
 pub use automation::*;
@@ -45,6 +46,7 @@ pub use model::*;
 pub use settings::*;
 pub use status::*;
 pub use teams::*;
+pub use usage::*;
 pub use wire::*;
 
 /// Bumped on any incompatible wire change. Clients and servers refuse to talk
@@ -60,8 +62,9 @@ pub use wire::*;
 /// `Command::Team`, `Reply::Team`); version 8, server frames start with a
 /// kind byte so streamed tokens and `Done` replies skip the big enums
 /// (see [`link`]); version 9, payloads in wincode instead of bitcode
-/// (see [`codec`]).
-pub const PROTOCOL_VERSION: u16 = 9;
+/// (see [`codec`]); version 10, quota and usage (`Snapshot::quota`,
+/// `Event::Quota`, `Command::Usage`, `Reply::Usage`).
+pub const PROTOCOL_VERSION: u16 = 10;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

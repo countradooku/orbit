@@ -423,6 +423,7 @@ impl Store {
             automations,
             automation_runs,
             teams: Default::default(),
+            quota: Default::default(),
         }
     }
 

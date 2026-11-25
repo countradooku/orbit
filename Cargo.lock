@@ -6150,6 +6150,7 @@ dependencies = [
  "orbit-proto",
  "parking_lot",
  "portable-pty",
+ "ring",
  "rustls",
  "serde",
  "similar",

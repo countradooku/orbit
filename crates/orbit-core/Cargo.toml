@@ -38,6 +38,11 @@ bytes = "1"
 # already linked through env_logger.
 jiff = "1"
 
+# SHA-256 names the macOS keychain item of a second Claude account
+# (`usage::claude`); already linked through rustls.
+[target.'cfg(target_os = "macos")'.dependencies]
+ring = "0.17"
+
 [dev-dependencies]
 tempfile = "3"
 
