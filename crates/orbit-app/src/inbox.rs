@@ -587,7 +587,7 @@ impl InboxView {
 
         let header = h_flex()
             .gap_2()
-            .child(StatusGlyph::new(("deck-glyph", id.0), thread))
+            .child(StatusGlyph::new(("deck-glyph", id.0), thread, state))
             .child(
                 div()
                     .flex_1()

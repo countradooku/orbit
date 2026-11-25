@@ -255,6 +255,10 @@ impl ThreadView {
         self.id
     }
 
+    pub fn app(&self) -> &Entity<AppState> {
+        &self.app
+    }
+
     pub fn focus_composer(view: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let composer = view.read(cx).composer.clone();
         Composer::focus(&composer, window, cx);
@@ -275,7 +279,7 @@ impl ThreadView {
             .clone()
             .or_else(|| thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p)).map(|p| p.path.clone()))
             .unwrap_or_else(|| orbit_core::EngineOptions::default_data_dir().display().to_string());
-        let panel = cx.new(|cx| TerminalPanel::new(self.app.clone(), cwd, window, cx));
+        let panel = cx.new(|cx| TerminalPanel::new(self.app.clone(), self.id, cwd, window, cx));
         let sub = cx.subscribe_in(&panel, window, |this, _, event: &TerminalPanelEvent, window, cx| match event {
             TerminalPanelEvent::Close => this.toggle_terminal(window, cx),
             TerminalPanelEvent::Urls(urls) => this.offer_urls(urls.clone(), cx),
@@ -1162,7 +1166,7 @@ impl ThreadView {
             .gap_3()
             .border_b_1()
             .border_color(theme.border)
-            .child(ui::StatusGlyph::new(("thread-status", id.0), thread))
+            .child(ui::StatusGlyph::new(("thread-status", id.0), thread, state))
             .child(
                 v_flex()
                     .min_w_0()

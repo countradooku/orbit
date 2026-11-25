@@ -21,12 +21,14 @@ draws. `ClientState::live_status` is the same call for clients. The glyphs, from
 to least urgent, are `Permission`, `NeedsYou`, `Failed`, `RateLimited`,
 `Working`, `Quiet`, `Unverified`, `DoneUnread` and `Idle`. A thread's glyph is
 the most urgent of its own glyph and the glyphs of its terminal agents.
-The app's `ui::Glyph` (owned by the shell) draws these: `Quiet` maps to its working glyph with the "No output for…" line, and `Unverified` maps to its dashed ring. `liveness_line` and `agent_line` give the text for a glyph's hover.
+The app draws these with `ui::Look` and `ui::StatusGlyph` (rows, cards, tiles, the thread header): `Quiet` is the working arc standing still and faded, `Unverified` the dashed ring, and a glyph decided by a terminal agent Orbit only read from the screen (heuristic evidence) is drawn faded and named "Probably: …". The hover adds `liveness_line` ("No output for 4m · cargo test") and one `agent_line` per terminal agent. The thread's terminal panel sends `Command::BindTerminal` with its thread when its shell starts.
 
 Live evidence is ephemeral by design. After a restart nothing is running, so
-nothing needs it. The wire protocol is version 3 (`PROTOCOL_VERSION`). The meta
-log keeps schema 3: `Event` gained two variants but stays in its packing class
-(17 to 19 variants, test `durable_events_logged_before_live_status_still_decode`).
+nothing needs it. Live status arrived with wire protocol version 3
+(`PROTOCOL_VERSION`, now 4). It changed no logged layout: `Event` gained two
+variants but stays in its packing class (17 to 19 variants, test
+`durable_events_logged_before_live_status_still_decode`); meta schema 4 came
+later, for question option descriptions and the review settings.
 
 ## Thread sessions (structured protocols)
 

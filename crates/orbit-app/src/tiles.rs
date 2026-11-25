@@ -111,7 +111,7 @@ pub fn tile(
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(number.to_string()),
         )
-        .when_some(thread, |el, thread| el.child(StatusGlyph::new(("tile-glyph", id.0), thread)))
+        .when_some(thread, |el, thread| el.child(StatusGlyph::new(("tile-glyph", id.0), thread, view.read(cx).app().read(cx).state())))
         .child(
             div()
                 .flex_1()

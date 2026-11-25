@@ -29,6 +29,9 @@ pub enum TerminalPanelEvent {
 
 pub struct TerminalPanel {
     app: Entity<AppState>,
+    /// The thread this terminal belongs to: agents started in it count
+    /// toward that thread's status.
+    thread: ThreadId,
     view: Entity<TerminalView>,
     cwd: String,
     term: Option<TermId>,
@@ -45,10 +48,11 @@ pub struct TerminalPanel {
 impl EventEmitter<TerminalPanelEvent> for TerminalPanel {}
 
 impl TerminalPanel {
-    pub fn new(app: Entity<AppState>, cwd: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: Entity<AppState>, thread: ThreadId, cwd: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let view = cx.new(|cx| TerminalView::new(window, cx));
         let mut panel = Self {
             app: app.clone(),
+            thread,
             view: view.clone(),
             cwd,
             term: None,
@@ -133,6 +137,10 @@ impl TerminalPanel {
                 match result {
                     Ok(Reply::Terminal(term)) => {
                         this.term = Some(term);
+                        // Said explicitly: the engine binds by folder only when
+                        // exactly one thread works there.
+                        let thread = Some(this.thread);
+                        this.app.update(cx, |app, _| app.send(Command::BindTerminal { term, thread }));
                         if !this.pending.is_empty() {
                             let data = std::mem::take(&mut this.pending);
                             this.app.update(cx, |app, _| app.send(Command::TerminalInput { term, data }));
