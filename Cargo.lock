@@ -4937,6 +4937,7 @@ dependencies = [
 name = "orbit-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bitcode",
  "blake3",
  "crossfire",
@@ -4947,9 +4948,11 @@ dependencies = [
  "orbit-proto",
  "portable-pty",
  "serde",
+ "similar",
  "sonic-rs",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
