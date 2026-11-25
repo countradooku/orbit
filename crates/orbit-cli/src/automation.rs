@@ -531,7 +531,7 @@ async fn create(ctx: &Ctx, conn: &Conn, args: &Map<String, Value>) -> Result<Out
     if given("open-pr") {
         spec.on_finish.open_pr = true;
     }
-    let Reply::Automation(AutomationReply::Saved(id)) = call(conn, AutomationCommand::Save { id: None, spec }).await? else {
+    let Reply::Automation(AutomationReply::Saved(id)) = call(conn, AutomationCommand::Save { id: None, spec: Box::new(spec) }).await? else {
         return Err(unexpected());
     };
     if flag(args, "paused") {

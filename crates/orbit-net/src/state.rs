@@ -169,6 +169,7 @@ impl Changes {
             || self.settings
             || self.conflicts
             || self.connection
+            || self.automations
     }
 }
 
@@ -323,6 +324,7 @@ impl ClientState {
         for update in updates {
             match update {
                 Update::Reset(snapshot) => {
+                    let snapshot = *snapshot;
                     self.projects = snapshot.projects;
                     self.threads = snapshot.threads.into_iter().map(|t| (t.id, t)).collect();
                     self.providers = snapshot.providers;
@@ -614,7 +616,7 @@ mod tests {
         let mut state = ClientState::default();
         let mut settings = Settings::default();
         settings.appearance.ui_scale = 110;
-        state.apply(vec![Update::Reset(Snapshot { settings: Box::new(settings.clone()), ..Default::default() })]);
+        state.apply(vec![Update::Reset(Box::new(Snapshot { settings: Box::new(settings.clone()), ..Default::default() }))]);
         assert_eq!(state.settings, settings);
         settings.composer.submit = SubmitKey::ModEnter;
         let changes = state.apply(events(vec![Event::SettingsChanged(settings.clone())]));

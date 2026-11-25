@@ -459,7 +459,7 @@ impl Matcher {
             // A gap runs right after it; a fold runs the first time. If
             // that instant is not later (we are inside a fold already),
             // take the second one.
-            for ts in [ambiguous.clone().compatible(), ambiguous.later()].into_iter().flatten() {
+            for ts in [ambiguous.compatible(), ambiguous.later()].into_iter().flatten() {
                 let ms = ts.as_millisecond();
                 if ms > after_ms as i64 {
                     return Some(ms as u64);
@@ -568,10 +568,8 @@ impl Matcher {
             }
         } else if wday_restricted {
             text = self.weekday_text();
-        } else if self.freq == Freq::Cron || matches!(self.freq, Freq::Daily) {
-            if self.hours != ALL_HOURS {
-                text = "daily".into();
-            }
+        } else if matches!(self.freq, Freq::Cron | Freq::Daily) && self.hours != ALL_HOURS {
+            text = "daily".into();
         }
         if self.months != ALL_MONTHS {
             let months: Vec<String> = bits(self.months as u128, 13).iter().map(|m| SHORT_MONTHS[*m as usize - 1].to_owned()).collect();
@@ -607,7 +605,7 @@ fn step_of(values: &[u32], range: u32) -> Option<u32> {
     let step = values[1] - values[0];
     let evenly = values.windows(2).all(|w| w[1] - w[0] == step);
     let covers = values[0] < step && values.last().is_some_and(|l| l + step >= range);
-    (evenly && covers && range % step == 0 && values[0] == 0).then_some(step)
+    (evenly && covers && range.is_multiple_of(step) && values[0] == 0).then_some(step)
 }
 
 fn list(items: &[String]) -> String {

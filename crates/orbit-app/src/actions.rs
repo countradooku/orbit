@@ -16,6 +16,8 @@ gpui_kit::actions!(
         GoInbox,
         GoFleet,
         GoHome,
+        /// The Automations page: scheduled and triggered runs.
+        GoAutomations,
         ToggleSidebar,
         ToggleReview,
         OpenSettings,
@@ -122,6 +124,7 @@ pub fn defaults() -> Vec<DefaultBinding> {
         bind("mod-k", OpenPalette, None),
         bind("mod-i", GoInbox, None),
         bind("mod-shift-f", GoFleet, None),
+        bind("mod-shift-u", GoAutomations, None),
         bind("mod-b", ToggleSidebar, None),
         bind("mod-r", ToggleReview, IN_WORKSPACE),
         bind("mod-,", OpenSettings, None),

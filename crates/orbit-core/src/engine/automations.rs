@@ -118,7 +118,7 @@ impl Orchestrator {
 
     pub(crate) fn automation_command(&mut self, command: AutomationCommand) -> CommandResult {
         match command {
-            AutomationCommand::Save { id, spec } => self.save_automation(id, spec),
+            AutomationCommand::Save { id, spec } => self.save_automation(id, *spec),
             AutomationCommand::Delete { id } => {
                 if self.store.automations().get(id).is_none() {
                     return Err("That automation no longer exists.".into());
@@ -859,18 +859,18 @@ impl Orchestrator {
             for trigger in &a.spec.triggers {
                 let Trigger::Event(event) = trigger else { continue };
                                 match event {
-                    EventTrigger::ChecksFailed { mine: true } => plans.entry(project).or_insert_with(SweepPlan::default).mine = true,
-                    EventTrigger::ChecksFailed { mine: false } => plans.entry(project).or_insert_with(SweepPlan::default).open = true,
+                    EventTrigger::ChecksFailed { mine: true } => plans.entry(project).or_default().mine = true,
+                    EventTrigger::ChecksFailed { mine: false } => plans.entry(project).or_default().open = true,
                     EventTrigger::ReviewRequested => {
-                        let p = plans.entry(project).or_insert_with(SweepPlan::default);
+                        let p = plans.entry(project).or_default();
                         p.mine = true;
                         p.account = true;
                     }
-                    EventTrigger::IssueLabeled { label } => plans.entry(project).or_insert_with(SweepPlan::default).labels.push(label.clone()),
+                    EventTrigger::IssueLabeled { label } => plans.entry(project).or_default().labels.push(label.clone()),
                     EventTrigger::BranchPushed { branch } => {
-                        plans.entry(project).or_insert_with(SweepPlan::default).branches.push(branch.clone())
+                        plans.entry(project).or_default().branches.push(branch.clone())
                     }
-                    EventTrigger::WatchPr { number } => plans.entry(project).or_insert_with(SweepPlan::default).watch.push(*number),
+                    EventTrigger::WatchPr { number } => plans.entry(project).or_default().watch.push(*number),
                     EventTrigger::Finished { .. } => {}
                 }
             }

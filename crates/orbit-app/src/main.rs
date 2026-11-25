@@ -9,6 +9,7 @@
 mod actions;
 mod app_state;
 mod assets;
+mod automations;
 mod composer;
 #[cfg(debug_assertions)]
 mod demo;

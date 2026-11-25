@@ -303,7 +303,7 @@ impl AutomationRun {
 pub enum AutomationCommand {
     /// Create (`id: None`) or replace an automation's spec. Replies
     /// [`AutomationReply::Saved`].
-    Save { id: Option<AutomationId>, spec: AutomationSpec },
+    Save { id: Option<AutomationId>, spec: Box<AutomationSpec> },
     /// Deletes it and its history; runs already going keep their threads.
     Delete { id: AutomationId },
     SetPaused { id: AutomationId, paused: bool },

@@ -84,6 +84,7 @@ pub fn describe(trigger: &Trigger) -> String {
                     ChainWhen::Either => format!("after {what} finishes"),
                 }
             }
+            EventTrigger::WatchPr { number: 0 } => "watching a pull request until it merges".into(),
             EventTrigger::WatchPr { number } => format!("watching #{number} until it merges"),
         },
         other => match schedule::Schedule::of(other) {

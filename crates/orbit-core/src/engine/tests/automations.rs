@@ -87,7 +87,7 @@ impl Rig {
     }
 
     fn save(&mut self, spec: AutomationSpec) -> AutomationId {
-        match self.o.handle_command(Command::Automation(AutomationCommand::Save { id: None, spec })) {
+        match self.o.handle_command(Command::Automation(AutomationCommand::Save { id: None, spec: Box::new(spec) })) {
             Ok(Reply::Automation(AutomationReply::Saved(id))) => id,
             other => panic!("{other:?}"),
         }
@@ -410,7 +410,7 @@ fn pausing_drops_pending_runs_and_resuming_skips_what_passed() {
 #[test]
 fn bad_specs_are_refused_with_a_reason() {
     let mut r = Rig::new();
-    let refuse = |r: &mut Rig, spec: AutomationSpec| match r.o.handle_command(Command::Automation(AutomationCommand::Save { id: None, spec })) {
+    let refuse = |r: &mut Rig, spec: AutomationSpec| match r.o.handle_command(Command::Automation(AutomationCommand::Save { id: None, spec: Box::new(spec) })) {
         Err(message) => message,
         other => panic!("{other:?}"),
     };
