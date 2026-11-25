@@ -150,6 +150,9 @@ pub const PR_FILTERS: &[&str] = &["open", "mine", "merged", "closed"];
 pub const MERGE_METHODS: &[&str] = &["squash", "merge", "rebase"];
 pub const TRACKERS: &[&str] = &["github", "gitlab", "linear", "jira"];
 pub const PLATFORMS: &[&str] = &["telegram", "slack", "discord"];
+pub const FAILOVER_POLICIES: &[&str] = &["ask", "auto", "never"];
+pub const USAGE_GROUPS: &[&str] = &["model", "account", "project", "thread", "day"];
+pub const ON_OFF: &[&str] = &["on", "off"];
 
 const PROJECT: Arg = arg("project", Kind::Project, "The project; default: the one containing the current folder.").short('p');
 const PR: Arg = pos("number", Kind::Str, "The pull request number (`42`, `#42`).");
@@ -852,6 +855,94 @@ pub static SPECS: &[Spec] = &[
             ],
         )
     },
+    // ── Usage, limits and accounts ───────────────────────────────────────
+    Spec {
+        details: "Every account's plan limits (Claude Code and Codex): each window's share used, when it resets, the \
+                  recent pace and when the window runs out at that pace, and the threads using it most. Readings come \
+                  from running sessions and from the agents' own usage endpoints.",
+        tool: read("usage_limits", "Plan limits per account"),
+        examples: &["orbit usage", "orbit usage --json"],
+        ..spec(&["usage"], "Show plan limits per account", &[])
+    },
+    Spec {
+        details: "Asks each account's provider for its limits now (Claude's usage endpoint, `codex app-server`), \
+                  then shows them.",
+        tool: read("refresh_usage_limits", "Refresh plan limits"),
+        ..spec(&["usage", "refresh"], "Read plan limits now", &[opt_pos("account", Kind::Str, "Only this account (id or name).")])
+    },
+    Spec {
+        details: "Tokens and cost of finished turns, in total and by model, account, project, thread or day. Cost is \
+                  what the agents report (Codex reports none).",
+        tool: read("usage_stats", "Token and cost stats"),
+        examples: &["orbit usage stats", "orbit usage stats --since 30d --by account", "orbit usage stats --all --by day"],
+        ..spec(
+            &["usage", "stats"],
+            "Show tokens and cost by model, account, project or day",
+            &[
+                arg("since", Kind::Duration, "How far back (`24h`, `7d`, `90d`).").default("7d"),
+                arg("all", Kind::Flag, "Every turn ever recorded."),
+                arg("by", Kind::Choice(USAGE_GROUPS), "How to break the totals down.").default("model"),
+                PROJECT,
+                arg("account", Kind::Str, "Only this account (id or name)."),
+            ],
+        )
+    },
+    Spec {
+        details: "One CSV row per finished turn: date, time, thread, project, agent, account, model, tokens and cost.",
+        examples: &["orbit usage export --since 30d --out usage.csv"],
+        ..spec(
+            &["usage", "export"],
+            "Export turns as CSV",
+            &[
+                arg("since", Kind::Duration, "How far back.").default("30d"),
+                arg("all", Kind::Flag, "Every turn ever recorded."),
+                PROJECT,
+                arg("account", Kind::Str, "Only this account (id or name)."),
+                arg("out", Kind::Path, "Write to this file instead of standard output.").short('o'),
+            ],
+        )
+    },
+    Spec {
+        details: "Moves a thread that reached its account's limit to another account (or agent) and sends the limited \
+                  turn again there; the conversation is handed off and a notice marks the move in the timeline.",
+        tool: write("usage_failover", "Move a limited thread to another account"),
+        examples: &["orbit usage failover latest claude-work"],
+        ..spec(
+            &["usage", "failover"],
+            "Continue a rate-limited thread on another account",
+            &[THREAD, pos("account", Kind::Str, "The account to continue on (id or name).")],
+        )
+    },
+    Spec {
+        details: "What Orbit does when an account reaches its limit: `ask` offers another account in the thread's \
+                  banner, `auto` moves the thread to the same agent's account with the most room (never a pinned \
+                  one), `never` waits for the reset. --alerts turns the 80 % and 95 % notifications on or off.",
+        tool: write("usage_policy", "Set the failover policy"),
+        examples: &["orbit usage policy auto", "orbit usage policy --alerts off"],
+        ..spec(
+            &["usage", "policy"],
+            "Set what happens when an account reaches its limit",
+            &[
+                opt_pos("policy", Kind::Choice(FAILOVER_POLICIES), "ask, auto or never."),
+                arg("alerts", Kind::Choice(ON_OFF), "Notify at 80 % and 95 % of a window."),
+            ],
+        )
+    },
+    Spec {
+        details: "Pins a project's or an automation's threads to an account: new threads start there and are never \
+                  moved automatically. `none` unpins.",
+        examples: &["orbit usage pin claude-work --project api", "orbit usage pin none --automation \"Nightly deps\""],
+        ..spec(
+            &["usage", "pin"],
+            "Pin a project or automation to an account",
+            &[
+                pos("account", Kind::Str, "The account (id or name), or `none`."),
+                arg("project", Kind::Project, "The project to pin.").short('p'),
+                arg("automation", Kind::Str, "The automation to pin (id or name)."),
+            ],
+        )
+    },
+    // ── End of usage ─────────────────────────────────────────────────────
     Spec {
         connects: false,
         ..spec(&["agent-context"], "Print a guide for agents driving Orbit", &[])

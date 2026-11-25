@@ -1384,12 +1384,13 @@ impl ThreadView {
     }
 
     fn render_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let status = self.thread(cx)?.status.clone();
-        let banner = banners::banner(&status, self.stop_requested.map(|at| at.elapsed()))?;
+        let thread = self.thread(cx)?.clone();
+        let banner = banners::banner(&thread.status, self.stop_requested.map(|at| at.elapsed()))?;
         if self.dismissed.as_deref() == Some(banner.key().as_str()) {
             return None;
         }
-        Some(banners::render(&banner, cx))
+        let offer = matches!(banner, banners::Banner::Limit(_)).then(|| crate::usage::failover::offer(&thread, &self.app, cx)).flatten();
+        Some(banners::render(&banner, offer, cx))
     }
 }
 

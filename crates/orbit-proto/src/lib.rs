@@ -27,6 +27,7 @@ pub mod model;
 pub mod settings;
 pub mod status;
 pub mod teams;
+pub mod usage;
 pub mod wire;
 pub mod workspace;
 
@@ -46,6 +47,7 @@ pub use model::*;
 pub use settings::*;
 pub use status::*;
 pub use teams::*;
+pub use usage::*;
 pub use wire::*;
 pub use workspace::*;
 
@@ -64,8 +66,10 @@ pub use workspace::*;
 /// (see [`link`]); version 9, payloads in wincode instead of bitcode
 /// (see [`codec`]); version 10, workspaces (`Snapshot::project_configs`,
 /// `git` and `runs`, `Event::ProjectConfigChanged`, `GitStatus` and
-/// `RunChanged`, `Command::Workspace`, `Reply::Workspace`).
-pub const PROTOCOL_VERSION: u16 = 10;
+/// `RunChanged`, `Command::Workspace`, `Reply::Workspace`); version 11,
+/// quota and usage (`Snapshot::quota`, `Event::Quota`, `Command::Usage`,
+/// `Reply::Usage`).
+pub const PROTOCOL_VERSION: u16 = 11;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

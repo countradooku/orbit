@@ -13,6 +13,7 @@ mod review;
 mod status;
 mod teams;
 mod workspaces;
+mod usage;
 
 /// A fake agent whose behavior is chosen by the prompt text:
 /// `ask` raises an approval, `crash` exits mid-turn, `slow` streams until

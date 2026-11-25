@@ -145,6 +145,8 @@ pub struct Changes {
     pub git: HashSet<WorkspaceRoot>,
     /// Threads whose run targets changed.
     pub runs: HashSet<ThreadId>,
+    /// The quota board changed.
+    pub quota: bool,
 }
 
 impl Changes {
@@ -173,6 +175,7 @@ impl Changes {
             && !self.project_configs
             && self.git.is_empty()
             && self.runs.is_empty()
+            && !self.quota
     }
 
     /// The shell (sidebar, inbox, fleet) needs a render.
@@ -189,6 +192,7 @@ impl Changes {
             || self.automations
             || self.project_configs
             || !self.git.is_empty()
+            || self.quota
     }
 }
 
@@ -233,6 +237,8 @@ pub struct ClientState {
     pub git: HashMap<WorkspaceRoot, GitSummary>,
     /// Run targets by thread and name, running or ended.
     pub runs: HashMap<(ThreadId, String), TargetRun>,
+    /// Every account's quota and the usage settings.
+    pub quota: QuotaBoard,
     timelines: HashMap<ThreadId, Timeline>,
     /// Timelines being fetched: the reply and the stream are separate
     /// channels, so events are held until both the reply and its mark have
@@ -403,6 +409,7 @@ impl ClientState {
                     self.project_configs = snapshot.project_configs.into_iter().collect();
                     self.git = snapshot.git.into_iter().collect();
                     self.runs = snapshot.runs.into_iter().map(|r| ((r.thread, r.target.clone()), r)).collect();
+                    self.quota = *snapshot.quota;
                     self.live_usage.clear();
                     // Open timelines may be stale; the UI refetches them.
                     self.timelines.clear();
@@ -564,6 +571,10 @@ impl ClientState {
                     }
                 }
                 changes.teams = true;
+            }
+            Event::Quota(board) => {
+                self.quota = *board;
+                changes.quota = true;
             }
             Event::DraftSaved { target, draft } => {
                 if draft.is_empty() {

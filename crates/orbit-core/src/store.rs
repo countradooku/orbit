@@ -434,6 +434,7 @@ impl Store {
             project_configs: self.project_configs.iter().map(|(id, c)| (*id, c.clone())).collect(),
             git: Vec::new(),
             runs: Vec::new(),
+            quota: Default::default(),
         }
     }
 

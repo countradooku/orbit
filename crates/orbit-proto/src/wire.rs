@@ -12,6 +12,7 @@ use crate::settings::Settings;
 use crate::status::*;
 use crate::teams::*;
 use crate::workspace::*;
+use crate::usage::*;
 
 /// Client → engine.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -69,6 +70,9 @@ pub struct Snapshot {
     pub git: Vec<(WorkspaceRoot, GitSummary)>,
     /// Run targets started since the engine started, running or ended.
     pub runs: Vec<TargetRun>,
+    /// Every account's quota and the usage settings (see [`crate::usage`]).
+    /// Boxed like `settings`.
+    pub quota: Box<QuotaBoard>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -142,6 +146,9 @@ pub enum Event {
     /// A run target started, ended or was stopped. Ephemeral; the latest
     /// state is in the snapshot.
     RunChanged(Box<TargetRun>),
+    /// The quota board changed: limits read, history advanced, settings
+    /// replaced. Ephemeral; the latest board is in the snapshot.
+    Quota(Box<QuotaBoard>),
 }
 
 impl Event {
@@ -163,6 +170,7 @@ impl Event {
                 | Event::Team(_)
                 | Event::GitStatus { .. }
                 | Event::RunChanged(_)
+                | Event::Quota(_)
         )
     }
 }
@@ -357,6 +365,9 @@ pub enum Command {
     /// Project configuration, run targets, git status and reading files;
     /// see [`WorkspaceCommand`]. Replies [`Reply::Workspace`] or `Done`.
     Workspace(WorkspaceCommand),
+    /// Quota, usage stats and account failover; see [`UsageCommand`].
+    /// Replies [`Reply::Usage`], `Text` or `Done`, per command.
+    Usage(UsageCommand),
 }
 
 impl From<TeamCommand> for Command {
@@ -436,6 +447,7 @@ pub enum Reply {
     Guard(GuardSettings),
     Team(TeamReply),
     Workspace(WorkspaceReply),
+    Usage(Box<UsageReply>),
 }
 
 /// A local merge of a thread's branch, previewed or done.

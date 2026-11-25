@@ -146,6 +146,8 @@ pub struct Orchestrator {
     pub(crate) teams: crate::teams::TeamsState,
     /// Run targets and git status (`engine/workspaces.rs`).
     pub(crate) workspaces: super::workspaces::WorkspacesState,
+    /// Quota, usage ledger and failover (`engine/usage.rs`).
+    pub(crate) usage: super::usage::UsageState,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -203,6 +205,7 @@ impl Orchestrator {
             bots: Default::default(),
             teams,
             workspaces: Default::default(),
+            usage: Default::default(),
         }
     }
 
@@ -486,6 +489,7 @@ impl Orchestrator {
             teams: self.teams.board(),
             git: self.workspaces.git_snapshot(),
             runs: self.workspaces.runs_snapshot(),
+            quota: Box::new(self.usage_board()),
             ..self.store.snapshot(self.providers.clone())
         }
     }
@@ -561,6 +565,7 @@ impl Orchestrator {
         self.status_tick();
         self.automations_tick();
         self.teams_tick();
+        self.usage_tick();
         let now = Instant::now();
         for runtime in self.runtimes.values_mut() {
             let idle = runtime.turn.is_none() && !runtime.checkpointing && runtime.held_prompt.is_none();
@@ -585,6 +590,7 @@ impl Orchestrator {
     }
 
     pub fn shutdown(&mut self) {
+        self.usage_shutdown();
         for (thread, id) in std::mem::take(&mut self.dirty) {
             if let Some(item) = self.item(thread, id) {
                 self.emit(Event::ItemUpserted { thread, item: Box::new(item) });
@@ -633,6 +639,7 @@ impl Orchestrator {
                     }
                     self.put_item(thread, end);
                 }
+                self.usage_after_checkpoint(thread);
                 self.start_next_queued(thread);
                 if !self.open.contains(&thread) && self.runtimes.get(&thread).is_none_or(|r| r.turn.is_none()) {
                     self.store.unload_timeline(thread);
@@ -828,6 +835,10 @@ impl Orchestrator {
             | Command::ReadTerminal { .. }
             | Command::ListTerminals) => self.cli_command(command),
             Command::Automation(command) => self.automation_command(command),
+            Command::Usage(command) => match self.usage_command(command) {
+                Outcome::Ready(result) => result,
+                Outcome::Deferred(future) => futures_block_on(future),
+            },
         }
     }
 
@@ -878,7 +889,7 @@ impl Orchestrator {
             id: ThreadId::new(),
             project,
             title: String::new(),
-            config: config.clone(),
+            config: self.usage_pin_config(project, &config),
             created_ms: now,
             updated_ms: now,
             // Messages queue until the worktree is ready.
@@ -1289,6 +1300,12 @@ impl Orchestrator {
         if self.runtimes.get(&thread_id).is_some_and(|r| r.checkpointing) {
             return; // resumed when the snapshot lands
         }
+        // A turn already runs (a failover resent the limited one), or the
+        // thread waits for its usage limit: the queue keeps until then.
+        let limited = matches!(self.store.thread(thread_id).map(|t| &t.status), Some(ThreadStatus::RateLimited { .. }));
+        if limited || self.runtimes.get(&thread_id).is_some_and(|r| r.turn.is_some()) {
+            return;
+        }
         let Some(next) = self.runtimes.get_mut(&thread_id).and_then(|r| r.queue.pop_front()) else { return };
         self.update_thread(thread_id, |t| t.queued = t.queued.saturating_sub(1));
         if let Err(err) = self.start_turn(thread_id, next) {
@@ -1509,8 +1526,12 @@ impl Orchestrator {
             t.unread = !open;
             t.pending.clear();
         });
+        self.usage_record_turn(thread_id, &total);
         match outcome {
-            TurnOutcome::RateLimited { resets_ms } => self.schedule_quota_reset(thread_id, resets_ms),
+            TurnOutcome::RateLimited { resets_ms } => {
+                self.schedule_quota_reset(thread_id, resets_ms);
+                self.usage_on_limit(thread_id);
+            }
             TurnOutcome::Completed | TurnOutcome::Interrupted => self.start_next_queued(thread_id),
             TurnOutcome::Failed { .. } => {}
         }
@@ -1713,6 +1734,7 @@ impl Orchestrator {
                 self.emit(Event::UsageChanged { thread: thread_id, usage: live });
             }
             AgentEvent::Quota { window, utilization, resets_ms, rejected } => {
+                self.usage_on_quota(thread_id, QuotaWindow { window: window.clone(), utilization, resets_ms, rejected });
                 let config = self.store.thread(thread_id).map(|t| t.config.clone()).unwrap_or_default();
                 if let Some(info) = self.providers.iter().find(|p| p.serves(&config)).cloned() {
                     let mut info = info;

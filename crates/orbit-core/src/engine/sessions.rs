@@ -153,6 +153,13 @@ impl Orchestrator {
             }
             return;
         }
+        self.switch_instance(thread, old, new, None);
+    }
+
+    /// Ends the thread's session on `old`'s instance and hands the
+    /// conversation to `new`'s, leaving turn `leave_out` (one about to be
+    /// sent again there) out of the summary.
+    pub(crate) fn switch_instance(&mut self, thread: ThreadId, old: &ThreadConfig, new: &ThreadConfig, leave_out: Option<u32>) {
         let (from, to) = (self.instance_of(old), self.instance_of(new));
         if let Some(session) = self.runtimes.get_mut(&thread).and_then(|r| r.session.take()) {
             session.send(SessionInput::Shutdown);
@@ -170,10 +177,13 @@ impl Orchestrator {
         if !had_history {
             return;
         }
-        let items = match self.store.load_timeline(thread) {
-            Ok(timeline) => timeline.items().to_vec(),
+        let items: Vec<Item> = match self.store.load_timeline(thread) {
+            Ok(timeline) => timeline.items().iter().filter(|i| Some(i.turn) != leave_out).cloned().collect(),
             Err(_) => return,
         };
+        if !items.iter().any(|i| matches!(i.body, ItemBody::User(_)) && i.status != ItemStatus::Queued) {
+            return; // nothing said yet that the new agent would need
+        }
         let from_name = self.display_name(&from);
         let to_name = self.display_name(&to);
         let handoff = build_handoff(&items, &from_name, &to_name, HANDOFF_TOKENS);
@@ -182,7 +192,7 @@ impl Orchestrator {
         self.put_item(thread, Item { id: ItemId::new(), turn, status: ItemStatus::Done, body: ItemBody::Handoff(handoff) });
     }
 
-    fn display_name(&self, instance: &ProviderInstance) -> String {
+    pub(crate) fn display_name(&self, instance: &ProviderInstance) -> String {
         self.providers
             .iter()
             .find(|p| p.instance_id() == instance.id)

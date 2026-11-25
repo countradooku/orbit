@@ -58,6 +58,7 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         crate::project::settings::page(&app, cx),
         integrations(),
         bots(&app, cx),
+        crate::usage::settings::page(&app, cx),
         notifications(),
         keyboard(),
         remote(&app, cx),

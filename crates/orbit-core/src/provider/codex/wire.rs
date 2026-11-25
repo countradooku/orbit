@@ -198,6 +198,10 @@ pub struct TurnStartResponse {
 #[serde(rename_all = "camelCase")]
 pub struct RateLimitsResponse {
     pub rate_limits: RateLimitSnapshot,
+    /// Every limit by its id (`codex`, a model-specific one…), when the
+    /// server has more than one.
+    #[serde(default)]
+    pub rate_limits_by_limit_id: Option<std::collections::BTreeMap<String, RateLimitSnapshot>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +323,8 @@ pub struct RateLimitSnapshot {
     pub secondary: Option<RateLimitWindow>,
     #[serde(default)]
     pub rate_limit_reached_type: Option<String>,
+    #[serde(default)]
+    pub plan_type: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]

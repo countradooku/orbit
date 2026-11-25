@@ -77,6 +77,10 @@ and `orbit agent-context` for a short guide written for agents.
 | `team status` | Workers, why they wait, the circuit breaker | `team_status` |
 | `team merge <worker> [--dry-run]` | Merge a finished worker into the architect's branch | `team_merge_worker` |
 | `race <prompt> [-n N] [--provider a,b] [--model a,b] [--test cmd] [--judge] [--base B]` | Race one prompt across candidates | |
+| `usage`, `usage refresh [account]` | Plan limits per account: windows, resets, pace and run-out time, top threads | `usage_limits`, `refresh_usage_limits` |
+| `usage stats [--since 7d \| --all] [--by model\|account\|project\|thread\|day] [--project] [--account]` | Tokens and cost of finished turns | `usage_stats` |
+| `usage export [--since \| --all] [--project] [--account] [--out file]` | One CSV row per turn | |
+| `usage failover <thread> <account>`, `usage policy [ask\|auto\|never] [--alerts on\|off]`, `usage pin <account\|none> --project P \| --automation A` | Move a rate-limited thread to another account; set the failover policy; pin a project or automation to an account | `usage_failover`, `usage_policy` |
 | `open [thread]` | Bring the desktop app forward (starting it if needed) and show the thread | |
 | `agent-context`, `help [--json]`, `completions <shell>` | Self-description | |
 | `mcp`, `mcp install [--client claude\|codex\|all] [--apply]` | MCP server and its registration | |
@@ -150,6 +154,21 @@ once a minute. A finished worker's summary reaches its parent as mail. Failed
 workers or spend past `--max-cost` pause spawning until the user resumes it.
 Teams and races are kept in `<data>/teams/` (one file each, schema 1), not in
 the meta log.
+
+## Usage and limits
+
+`orbit usage` shows each account's plan windows (Claude Code's five-hour and
+weekly windows, Codex's), when they reset, the recent pace and when the
+window runs out at that pace. Readings come from running sessions and from
+the agents' own usage endpoints: Claude's OAuth usage endpoint with the token
+Claude Code saved (read-only; Orbit never refreshes it) and Codex's
+`account/rateLimits/read`. Endpoints are only read while an Orbit window was
+in front recently, or on `orbit usage refresh`.
+
+`orbit usage stats` and `export` read the usage ledger (`<data>/usage.log`,
+one record per finished turn, backfilled once from the timelines). Cost is
+what the agents report. The failover policy, alerts and pins live in
+`<data>/usage.bin`, outside the logged settings.
 
 ## Design
 

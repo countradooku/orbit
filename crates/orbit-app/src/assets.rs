@@ -23,6 +23,8 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     CalendarClock, Package, Sunrise, CircleMinus,
     // Workspaces: files, run targets.
     FolderTree, FileCode, FileImage, FileSpreadsheet, Braces, ListCollapse, AtSign, FlaskConical,
+    // Usage: the page, failover, export.
+    ChartColumn, ArrowLeftRight, Download,
 ]);
 
 /// Orbit's icons first, then GPUI Kit's defaults.

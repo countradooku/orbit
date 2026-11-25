@@ -33,7 +33,7 @@ use crate::sidebar::{NewThreadIn, Sidebar};
 use crate::thread::{ThreadView, ThreadViewEvent};
 use crate::tiles::{self, Direction, MAX_TILES};
 use crate::ui::{Attention, Glyph, StatusGlyph};
-use crate::{format, keymap, palette, prefs, settings, shortcuts, thread_menu};
+use crate::{keymap, palette, prefs, settings, shortcuts, thread_menu};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Route {
@@ -51,6 +51,8 @@ pub enum Route {
     /// Agent teams and races: their overview, a team, a race's compare
     /// view, the constellation (`crate::teams::TeamsPage`).
     Teams,
+    /// Limits, tokens and cost (`crate::usage::page`).
+    Usage,
 }
 
 /// Threads whose views stay alive for instant switching (tiles always do).
@@ -77,6 +79,7 @@ pub struct Workspace {
     forge: Entity<ForgeView>,
     automations: Entity<AutomationsView>,
     teams: Entity<crate::teams::TeamsPage>,
+    usage: Entity<crate::usage::page::UsageView>,
     threads: Vec<(ThreadId, Entity<ThreadView>)>,
     /// Threads shown side by side, in grid order; empty or two or more.
     tiles: Vec<ThreadId>,
@@ -113,6 +116,7 @@ impl Workspace {
         let forge = cx.new(|cx| ForgeView::new(app.clone(), weak.clone(), window, cx));
         let automations = cx.new(|cx| AutomationsView::new(app.clone(), weak.clone(), cx));
         let teams = cx.new(|cx| crate::teams::TeamsPage::new(app.clone(), weak.clone(), window, cx));
+        let usage = cx.new(|cx| crate::usage::page::UsageView::new(app.clone(), weak.clone(), cx));
         let split = cx.new(|_| ResizableState::default());
         let subs = vec![
             cx.observe_window_appearance(window, |_, window, cx| {
@@ -124,6 +128,10 @@ impl Workspace {
             cx.observe_global::<settings::SettingsModel>(|_, cx| cx.notify()),
             // Back in front: the user may have edited the key bindings.
             cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    // Limits are read while a window is in front.
+                    crate::usage::front(&this.app, cx);
+                }
                 if window.is_window_active()
                     && let Some(report) = keymap::reload_if_changed(cx)
                 {
@@ -180,6 +188,7 @@ impl Workspace {
             forge,
             automations,
             teams,
+            usage,
             threads: Vec::new(),
             tiles: Vec::new(),
             shown_threads: Vec::new(),
@@ -277,6 +286,14 @@ impl Workspace {
             }
             "shortcuts" => window.defer(cx, shortcuts::open),
             "settings" => self.navigate(Route::Settings, window, cx),
+            "usage" | "usage-spend" => self.navigate(Route::Usage, window, cx),
+            // A thread waiting for its usage limit: the banner and its offer.
+            "limited" => {
+                let limited = state.threads.values().find(|t| matches!(t.status, ThreadStatus::RateLimited { .. })).map(|t| t.id);
+                if let Some(id) = limited {
+                    self.navigate(Route::Thread(id), window, cx);
+                }
+            }
             #[cfg(debug_assertions)]
             "selection" => {
                 if let Some(id) = recent.first() {
@@ -321,6 +338,8 @@ impl Workspace {
     /// Notes what changed since the last look; a burst is shown once it
     /// goes quiet. Also keeps the window title's count current.
     fn observe_attention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Quota alerts (80 % and 95 % of a window) follow the same rules.
+        crate::usage::alerts::check(window, cx);
         let prefs = settings::get(cx).notifications.clone();
         let active = window.is_window_active();
         let visible = self.visible_threads();
@@ -462,6 +481,11 @@ impl Workspace {
         }
         if route == Route::Forge {
             self.forge.update(cx, |forge, cx| forge.shown(window, cx));
+        }
+        if route == Route::Usage && self.route != Route::Usage {
+            self.usage.update(cx, |view, cx| view.shown(cx));
+            let view = self.usage.clone();
+            window.defer(cx, move |window, cx| crate::usage::page::UsageView::focus(&view, window, cx));
         }
         if route == Route::Automations {
             self.automations.update(cx, |view, cx| view.shown(cx));
@@ -964,12 +988,7 @@ impl Workspace {
         let state = self.app.read(cx).state();
         let needs_you = InboxView::waiting(state);
         let working = state.threads.values().filter(|t| !t.archived && Attention::of(t) == Attention::Working).count();
-        let quota = state
-            .providers
-            .iter()
-            .flat_map(|p| p.quota.iter().map(move |q| (p.kind, q)))
-            .filter(|(_, q)| q.utilization.is_some() || q.rejected)
-            .max_by(|a, b| a.1.utilization.unwrap_or(1.0).total_cmp(&b.1.utilization.unwrap_or(1.0)));
+        let rings = crate::usage::rings::title_bar(&self.app, cx);
         TitleBar::new().child(
             h_flex()
                 .w_full()
@@ -1050,15 +1069,7 @@ impl Workspace {
                             .child(format!("{needs_you} need{} you", if needs_you == 1 { "s" } else { "" })),
                     )
                 })
-                .when_some(quota, |el, (kind, q)| {
-                    let pct = q.utilization.map(|u| (u * 100.0).round() as u32);
-                    let label = match (q.rejected, pct) {
-                        (true, _) => format!("{} quota used up · {}", kind.label(), format::resets_at(q.resets_ms, now_ms())),
-                        (false, Some(p)) => format!("{} {}% of {} quota", kind.label(), p, humanize_window(&q.window)),
-                        _ => String::new(),
-                    };
-                    el.child(div().text_xs().text_color(if q.rejected { theme.danger } else { theme.muted_foreground }).child(label))
-                }),
+                .children(rings),
         )
     }
 
@@ -1113,6 +1124,7 @@ impl Workspace {
             Route::Forge => self.forge.clone().into_any_element(),
             Route::Automations => self.automations.clone().into_any_element(),
             Route::Teams => self.teams.clone().into_any_element(),
+            Route::Usage => self.usage.clone().into_any_element(),
             Route::Settings => div().into_any_element(),
             Route::Thread(_) if self.tiled() => self.render_tiles(window, cx),
             Route::Thread(_) => match self.current_thread_view() {
@@ -1127,15 +1139,6 @@ impl Workspace {
                 .into_any_element(),
             },
         }
-    }
-}
-
-fn humanize_window(window: &str) -> String {
-    match window {
-        "five_hour" => "5-hour".into(),
-        "seven_day" => "weekly".into(),
-        "seven_day_opus" => "weekly Opus".into(),
-        other => other.replace('_', " "),
     }
 }
 
@@ -1194,6 +1197,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::go_automations))
             .on_action(cx.listener(Self::new_automation))
             .on_action(cx.listener(Self::go_home))
+            .on_action(cx.listener(|this, _: &crate::usage::GoUsage, window, cx| this.navigate(Route::Usage, window, cx)))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_review))
             .on_action(cx.listener(Self::open_palette))

@@ -471,7 +471,7 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | `/clear`: fresh provider session in the same thread, history stays visible | web/components/chat/useComposerMenuItems.ts | Missing | | Never resume the pre-clear session (#24152); hide the provider's raw `/clear`. | P1 |
 | Provider `/compact` | provider-core/server/snapshotProbe.ts:61 | Partial | core/provider/claude/parser.rs:864 | Typed text passes through to the provider; no menu entry, no availability check. Manual compact: Codex #11325 (158 reactions). | P1 |
 | Codex `/goal` and `/feedback` | srv/provider/CodexProvider.ts:1162-1173 | Missing | | | P2 |
-| `/usage-limits` opens the limits panel | sh/usageLimits.ts:854 | Missing | | | P2 |
+| `/usage-limits` opens the limits panel | sh/usageLimits.ts:854 | Partial | app/usage/mod.rs | Ctrl+U and the palette open the Usage page; no slash command. | P2 |
 | ACP agents' own commands with input hints | packages/provider-acp | Missing | | | P2 |
 | Provider commands only at the start; mid-turn commands wait for the turn | composerSlashCommandSearch.ts:15-30 | Missing | | | P2 |
 | Send-key setting (Enter / Mod+Enter for multiline / Mod+Enter) | ct/settings.ts (`sendShortcut`) | Missing | app/composer.rs:49 | Enter always sends. Claude #89673 (167 reactions). | P1 |
@@ -794,7 +794,7 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | Right panel and thread panel toggles, new tab, close tab | sh/keybindings.ts | Missing | | | P2 |
 | Go to file (`mod+p`) | `filePicker.toggle` | Missing | | | P1 |
 | Search project contents (`mod+shift+f`) | `projectSearch.toggle` | Missing | app/actions.rs:32 | Ctrl+Shift+F is taken by Fleet. | P1 |
-| Usage page (`mod+u`) and its keys (c / t / l, periods) | sh/keybindings.ts | Missing | | | P2 |
+| Usage page (`mod+u`) and its keys (c / t / l, periods) | sh/keybindings.ts | Partial | app/usage/mod.rs | `mod+u` opens it; periods are a segmented control. | P2 |
 | Theme picker, appearance cycle, theme editor keys | sh/keybindings.ts | Missing | | | P2 |
 | Composer keys (stash, steer queued, edit queued, send in background, send and new thread) | sh/keybindings.ts:94-110 | Missing | | | P2 |
 | Model picker, host, effort, access, workspace, branch, previous-worktree keys | sh/keybindings.ts | Missing | | | P2 |
@@ -871,10 +871,10 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 
 | Feature | T3 reference | Orbit status | Orbit location | Better than T3 | Pri |
 |---|---|---|---|---|---|
-| Usage page across providers (tokens, cache savings, model breakdown, cost, periods, environment filter) | web/components/usage/UsagePage.tsx, srv/usage/UsageService.ts | Missing | | #228; Claude #102264 (110 reactions, usage panel). | P1 |
+| Usage page across providers (tokens, cache savings, model breakdown, cost, periods, environment filter) | web/components/usage/UsagePage.tsx, srv/usage/UsageService.ts | Done | app/usage/page.rs, core/usage/ledger.rs | A per-turn ledger (`usage.log`) instead of rescanning; per day, model, account, project and thread; CSV export; `orbit usage stats`. #228; Claude #102264. | P1 |
 | Model price overrides and "Map to" aliases | web/components/usage/UsagePriceOverrides.tsx | Missing | | | P2 |
 | Tokens and cost per turn and per thread | (thread details) | Done | app/thread/rows.rs:356-364, app/thread/mod.rs:256, app/fleet.rs:95 | | P0 |
-| Limits per account (session, weekly, other windows; reset times) | web/components/usage/UsageLimitsPooled.tsx | Partial | app/shell.rs:270-325, core/provider/claude/parser.rs:939, core/provider/codex/session.rs:772, :1080 | Title bar shows the most-used window from provider events, never by re-probing (T3 #19807 blanked accounts on 429s). | P1 |
+| Limits per account (session, weekly, other windows; reset times) | web/components/usage/UsageLimitsPooled.tsx | Done | app/usage/rings.rs, core/engine/usage.rs, core/usage/claude.rs | One ring per account with burn rate and run-out projection; read from sessions and the agents' usage endpoints only while a window is in front, keeping the last reading on errors (T3 #19807). | P1 |
 | Banked "Use reset" credits | srv/usage/UsageLimitSources.ts | Missing | | | P2 |
 | External limit sources (cliproxy, HTTP hubs) | web/components/settings/AddUsageLimitSourceDialog.tsx | Missing | | | P2 |
 
