@@ -250,36 +250,25 @@ pub(crate) fn classify(message: &str, host: &str) -> ForgeError {
 /// Reads `gh auth status`: signed in when it reports an account for the
 /// host, whatever else it says about other accounts.
 pub(crate) fn parse_auth(text: &str, host: &str) -> ForgeAuth {
-    let mut account = None;
-    let mut in_host = false;
-    let mut active_account = None;
-    for line in text.lines() {
-        let line = line.trim();
-        if line == host || line.ends_with(&format!(" {host}")) && !line.contains("account") {
-            in_host = true;
-            continue;
-        }
+    // (account, active) per "Logged in to <host>" line; newer gh lists every
+    // account with an "Active account" line under it.
+    let mut accounts: Vec<(String, bool)> = Vec::new();
+    for line in text.lines().map(str::trim) {
         if let Some(rest) = line.split("Logged in to ").nth(1) {
             let (h, rest) = rest.split_once(' ').unwrap_or((rest, ""));
-            if h == host || in_host {
-                let name = rest
-                    .split("account ")
-                    .nth(1)
-                    .or_else(|| rest.split(" as ").nth(1))
-                    .and_then(|r| r.split_whitespace().next())
-                    .map(|n| n.trim_matches(['(', ')']).to_owned());
-                if account.is_none() {
-                    account = Some(name.clone().unwrap_or_default());
-                }
-                active_account = active_account.or(name);
+            if h == host {
+                let name = rest.strip_prefix("account ").or_else(|| rest.strip_prefix("as ")).and_then(|r| r.split_whitespace().next());
+                accounts.push((name.unwrap_or_default().to_owned(), false));
             }
-        }
-        if line.starts_with("- Active account: true") && let Some(a) = &account {
-            active_account = Some(a.clone());
+        } else if line.contains("Active account: true")
+            && let Some(last) = accounts.last_mut()
+        {
+            last.1 = true;
         }
     }
+    let account = accounts.iter().find(|(_, active)| *active).or(accounts.first()).map(|(name, _)| name.clone());
     match account {
-        Some(_) => ForgeAuth::Ready { account: active_account.unwrap_or_default() },
+        Some(account) => ForgeAuth::Ready { account },
         None => ForgeAuth::SignedOut { program: "gh".into(), fix: format!("gh auth login --hostname {host}") },
     }
 }

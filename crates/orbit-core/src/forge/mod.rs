@@ -578,6 +578,13 @@ impl Forge {
         state.cache.retain(|key, _| matches!(key, Key::Auth(_)) || key.path() != Some(root));
     }
 
+    /// Drops Linear and Jira results (their credentials changed).
+    pub fn forget_trackers(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.cache.retain(|key, _| !matches!(key, Key::Issues(k, ..) | Key::Issue(k, ..) if !k.is_forge()));
+        state.limits.retain(|host, _| host != "api.linear.app" && !host.starts_with("https://"));
+    }
+
     /// Drops everything cached for the repository containing `path`.
     pub fn invalidate_path(&self, path: &Path) {
         let located: Vec<PathBuf> = {

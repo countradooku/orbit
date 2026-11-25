@@ -598,9 +598,9 @@ impl Orchestrator {
     /// Applies a command. Slow commands return [`Outcome::Deferred`]; the
     /// engine loop runs the future in a task and replies when it finishes.
     pub fn handle(&mut self, command: Command) -> Outcome {
-        self.forge_observe(&command);
         match command {
             Command::Forge(command) => self.forge(command),
+            command if super::forge::pushes(&command) => self.forge_after_push(command),
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
             Command::GenerateText { thread, task, input } => Outcome::Deferred(self.generate_text(thread, task, input)),
             command @ (Command::Diff { .. }
