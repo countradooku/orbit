@@ -320,6 +320,14 @@ impl Sidebar {
         true
     }
 
+    /// Debug builds: selects the first `n` rows, for screenshots.
+    #[cfg(debug_assertions)]
+    pub fn debug_select(&mut self, n: usize, cx: &mut Context<Self>) {
+        let order = self.thread_order(cx);
+        self.selection = Selection { ids: order.iter().take(n).copied().collect(), anchor: order.first().copied() };
+        cx.notify();
+    }
+
     fn set_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
         self.hovered = hovered;
         if !hovered && self.stale {
@@ -332,7 +340,7 @@ impl Sidebar {
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let state = self.app.read(cx).state();
         let mut threads: Vec<&Thread> = state.threads.values().filter(|t| !t.archived).collect();
-        threads.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+        threads.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
 
         // Track section changes for arrival animations.
         let now = Instant::now();
@@ -681,12 +689,12 @@ impl Sidebar {
         };
         let request = pending.map(|p| p.request.id);
         // The status line already names the request; this is its substance.
-        let question = pending.and_then(|p| match &p.request.kind {
-            RequestKind::Question { question, .. } => Some(crate::inbox::clip(question, 240)),
-            RequestKind::Command { command, .. } => Some(crate::inbox::clip(command, 200)),
-            RequestKind::Plan { plan } => Some(crate::inbox::clip(plan, 240)),
-            RequestKind::FileChange { path, .. } => Some(path.clone()),
-            RequestKind::Tool { input, .. } => Some(crate::inbox::clip(input, 200)),
+        let question = pending.map(|p| match &p.request.kind {
+            RequestKind::Question { question, .. } => crate::inbox::clip(question, 240),
+            RequestKind::Command { command, .. } => crate::inbox::clip(command, 200),
+            RequestKind::Plan { plan } => crate::inbox::clip(plan, 240),
+            RequestKind::FileChange { path, .. } => path.clone(),
+            RequestKind::Tool { input, .. } => crate::inbox::clip(input, 200),
         });
         v_flex()
             .w(rems(22.))
@@ -856,6 +864,7 @@ impl Sidebar {
                         None => ("No project".to_owned(), 0),
                     };
                     let settled = thread.settled_ms.is_some();
+                    let has_draft = state.drafts.get(&DraftTarget::Thread(id)).is_some_and(|d| !d.text.trim().is_empty() || !d.attachments.is_empty());
                     let app = self.app.clone();
                     let menu_thread = thread.clone();
                     let age = format::relative_time(thread.updated_ms, now);
@@ -907,6 +916,16 @@ impl Sidebar {
                                         )
                                         .when(tiled, |el| {
                                             el.child(Icon::new(Lucide::LayoutGrid).xsmall().text_color(theme.muted_foreground))
+                                        })
+                                        .when(has_draft, |el| {
+                                            el.child(
+                                                div()
+                                                    .id(("draft", id.0))
+                                                    .tooltip(|window, cx| {
+                                                        gpui_kit::component::tooltip::Tooltip::new("Unsent draft").build(window, cx)
+                                                    })
+                                                    .child(Icon::new(Lucide::Pencil).xsmall().text_color(theme.muted_foreground)),
+                                            )
                                         })
                                         .when(thread.pinned, |el| {
                                             el.child(Icon::new(Lucide::Pin).xsmall().text_color(theme.muted_foreground))

@@ -53,7 +53,6 @@ pub struct Report {
 struct KeymapState {
     path: PathBuf,
     modified: Option<SystemTime>,
-    last: Report,
 }
 
 impl Global for KeymapState {}
@@ -71,17 +70,12 @@ pub fn install(data_dir: &Path, cx: &mut App) {
         })
         .collect();
     cx.bind_keys(defaults);
-    cx.set_global(KeymapState { path: data_dir.join(FILE_NAME), modified: None, last: Report::default() });
+    cx.set_global(KeymapState { path: data_dir.join(FILE_NAME), modified: None });
 }
 
 /// The user's keybindings file.
 pub fn path(cx: &App) -> PathBuf {
     cx.try_global::<KeymapState>().map(|s| s.path.clone()).unwrap_or_else(|| PathBuf::from(FILE_NAME))
-}
-
-/// What the last read found.
-pub fn last_report(cx: &App) -> Report {
-    cx.try_global::<KeymapState>().map(|s| s.last.clone()).unwrap_or_default()
 }
 
 /// Reads the file again if it changed since the last read; returns the new
@@ -113,7 +107,6 @@ pub fn reload(cx: &mut App) -> Report {
     cx.refresh_windows();
     let state = cx.global_mut::<KeymapState>();
     state.modified = modified;
-    state.last = report.clone();
     report
 }
 
@@ -289,10 +282,10 @@ fn load(text: &str, cx: &App) -> (Vec<KeyBinding>, Report) {
             }
         }
         if let Target::Bind(name) = &rule.target {
-            if let Some((_, _, other)) = seen.iter().find(|(k, w, _)| *k == keys && *w == rule.when) {
-                if other != name {
-                    problems.push(format!("Rule {n} ({}): also bound to {other} earlier in the file; this rule wins.", rule.keys));
-                }
+            if let Some((_, _, other)) = seen.iter().find(|(k, w, _)| *k == keys && *w == rule.when)
+                && other != name
+            {
+                problems.push(format!("Rule {n} ({}): also bound to {other} earlier in the file; this rule wins.", rule.keys));
             }
             seen.push((keys, rule.when.clone(), name.clone()));
         }

@@ -135,15 +135,20 @@ impl Workspace {
                 cx.notify();
             }),
         ];
-        // Toasts sit bottom right, clear of the title bar and every view's
-        // header controls; at most three at once.
+        // Toasts sit top right below the view headers (a thread's title row
+        // and its buttons), clear of the composer at the bottom; at most
+        // three at once.
         {
+            let below_headers = gpui_kit::component::TITLE_BAR_HEIGHT + window.rem_size() * 3.5;
             let notification = &mut gpui_kit::component::Theme::global_mut(cx).notification;
-            notification.placement = Anchor::BottomRight;
+            notification.placement = Anchor::TopRight;
+            notification.margins.top = below_headers;
             notification.max_items = 3;
         }
-        // Problems in the key bindings file are shown once the window is up.
-        let report = keymap::last_report(cx);
+        // Views bind their own keys as they are built (the composer above), so
+        // the user's rules are put back after them, to win; problems in the
+        // file are shown once the window is up.
+        let report = keymap::reload(cx);
         cx.defer_in(window, move |this, window, cx| this.show_keymap_report(&report, false, window, cx));
         Self {
             app,
@@ -187,7 +192,7 @@ impl Workspace {
             let app = self.app.clone();
             cx.spawn(async move |_, cx| {
                 cx.background_executor().timer(std::time::Duration::from_millis(1500)).await;
-                let _ = app.update(cx, |app, cx| app.debug_edit_threads(crate::demo::apply, cx));
+                app.update(cx, |app, cx| app.debug_edit_threads(crate::demo::apply, cx));
             })
             .detach();
         }
@@ -214,7 +219,15 @@ impl Workspace {
                     self.open_beside(*id, window, cx);
                 }
             }
-            "shortcuts" => window.defer(cx, |window, cx| shortcuts::open(window, cx)),
+            "shortcuts" => window.defer(cx, shortcuts::open),
+            "settings" => self.navigate(Route::Settings, window, cx),
+            #[cfg(debug_assertions)]
+            "selection" => {
+                if let Some(id) = recent.first() {
+                    self.navigate(Route::Thread(*id), window, cx);
+                }
+                self.sidebar.update(cx, |sidebar, cx| sidebar.debug_select(3, cx));
+            }
             "palette" => {
                 let this = cx.entity();
                 window.defer(cx, move |window, cx| palette::open(this, "", window, cx));
