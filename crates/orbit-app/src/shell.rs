@@ -203,6 +203,7 @@ impl Workspace {
         let view = cx.new(|cx| ThreadView::new(id, app, window, cx));
         let sub = cx.subscribe_in(&view, window, |this, _, event: &ThreadViewEvent, window, cx| match event {
             ThreadViewEvent::Review => this.toggle_review(&ToggleReview, window, cx),
+            ThreadViewEvent::Open(id) => this.navigate(Route::Thread(*id), window, cx),
         });
         self._subscriptions.push(sub);
         self.threads.push((id, view));

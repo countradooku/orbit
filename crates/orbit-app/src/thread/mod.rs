@@ -47,12 +47,18 @@ pub struct ThreadView {
     loaded: bool,
     terminal: Option<Entity<TerminalPanel>>,
     split: Entity<ResizableState>,
+    /// When the running turn started (as seen here), for the elapsed time.
+    turn_started: Option<std::time::Instant>,
+    busy: bool,
+    _ticker: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
 pub enum ThreadViewEvent {
     /// The reader asked to review this thread's changes.
     Review,
+    /// Open another thread (a fork just created from this one).
+    Open(ThreadId),
 }
 
 impl EventEmitter<ThreadViewEvent> for ThreadView {}
@@ -87,6 +93,9 @@ impl ThreadView {
             loaded: false,
             terminal: None,
             split: cx.new(|_| ResizableState::default()),
+            turn_started: None,
+            busy: false,
+            _ticker: None,
             _subscriptions: subscriptions,
         };
         view.rebuild(true, cx);
@@ -163,6 +172,31 @@ impl ThreadView {
             (None, None) => "Scratch folder".to_owned(),
         });
         let branch = thread.workspace.branch.clone().or_else(|| project.and_then(|p| p.base_branch.clone()));
+        let busy = thread.status.is_busy();
+        if busy != self.busy {
+            self.busy = busy;
+            self.turn_started = busy.then(std::time::Instant::now);
+            // A once-a-second tick only while a turn runs, for the elapsed
+            // time; idle threads cost nothing.
+            self._ticker = busy.then(|| {
+                cx.spawn(async move |this, cx| {
+                    loop {
+                        cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                        let alive = this.update(cx, |this, cx| {
+                            let last = this.rows.len().saturating_sub(1);
+                            this.scroller.update(cx, |s, cx| {
+                                let _ = s.remeasure_items(last..last + 1, cx);
+                            });
+                            cx.notify();
+                        });
+                        if alive.is_err() {
+                            break;
+                        }
+                    }
+                })
+            });
+            self.rebuild(false, cx);
+        }
         self.composer.update(cx, |composer, cx| {
             composer.set_running(thread.status.is_busy(), cx);
             composer.set_config(thread.config.clone(), cx);
@@ -228,7 +262,8 @@ impl ThreadView {
         let Some(timeline) = self.app.read(cx).state().timeline(self.id) else { return };
         let items = timeline.items().to_vec();
         self.loaded = true;
-        let rows = Row::build(&items);
+        let busy = self.app.read(cx).state().threads.get(&self.id).is_some_and(|t| t.status.is_busy());
+        let rows = Row::build(&items, busy);
         let mut item_row = HashMap::with_capacity(items.len());
         for (ix, row) in rows.iter().enumerate() {
             for id in row.items() {
