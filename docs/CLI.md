@@ -70,6 +70,13 @@ and `orbit agent-context` for a short guide written for agents.
 | `automation list\|show\|create\|run\|pause\|resume\|delete\|history` | Scheduled and event-triggered agent runs (see `orbit help automation create`) | `list_automations`, `get_automation`, `create_automation`, `run_automation`, `pause_automation`, `resume_automation`, `delete_automation`, `automation_history` |
 | `search <query>` | Full-text search across threads | `search` |
 | `bot status`, `bot pair <code> [--reject]`, `bot unpair <platform> <user>`, `bot allow <platform> <user> [--name N]` | Chat bots: connections, and who may drive Orbit from Telegram, Slack or Discord (see [BOTS.md](BOTS.md)). Pairing is refused inside an agent's thread | |
+| `team start <prompt> [--here] [--max-workers N] [--max-failures N] [--max-cost $]` | Start a thread as a team's architect | |
+| `team spawn <brief> [--title] [--depends-on w1,w2] [--scope paths] [--provider] [--model]` | Spawn a worker on your team | `team_spawn_worker` |
+| `team message <to> <text> [--kind] [--urgent]` | Mail a teammate, delivered between its turns | `team_message` |
+| `team note <text>`, `team notes [--limit]` | The team's notes board | `team_post_note`, `team_read_notes` |
+| `team status` | Workers, why they wait, the circuit breaker | `team_status` |
+| `team merge <worker> [--dry-run]` | Merge a finished worker into the architect's branch | `team_merge_worker` |
+| `race <prompt> [-n N] [--provider a,b] [--model a,b] [--test cmd] [--judge] [--base B]` | Race one prompt across candidates | |
 | `open [thread]` | Bring the desktop app forward (starting it if needed) and show the thread | |
 | `agent-context`, `help [--json]`, `completions <shell>` | Self-description | |
 | `mcp`, `mcp install [--client claude\|codex\|all] [--apply]` | MCP server and its registration | |
@@ -122,6 +129,27 @@ override) the server acts for that thread:
 Register it with `orbit mcp install` (prints the `claude mcp add` command and
 the `~/.codex/config.toml` table) or `orbit mcp install --apply` (runs and
 writes them).
+
+## Teams
+
+`orbit team start` starts a thread as a team's architect. Team members'
+sessions get `orbit mcp` as an MCP server for that session only (Claude Code
+through `--mcp-config` with a file in `<data>/teams/mcp/`, Codex through `-c
+mcp_servers.orbit.*` overrides, ACP agents through `mcpServers` when the
+session opens, OpenCode through `OPENCODE_CONFIG_CONTENT`); the user's own
+agent configuration is never written. Pi has no MCP: its members use the
+`orbit team …` commands, which act as the thread they run in. `--as <thread>`
+acts as a member from a plain shell.
+
+Workers start in their own worktrees off the architect's branch, when the
+workers they depend on are done, a slot is free (4 per team by default, 8
+across Orbit) and no working teammate is editing their scope. Mail is stored
+in the team's record and delivered as one structured message at the
+recipient's next turn boundary; `--urgent` steers a working member at most
+once a minute. A finished worker's summary reaches its parent as mail. Failed
+workers or spend past `--max-cost` pause spawning until the user resumes it.
+Teams and races are kept in `<data>/teams/` (one file each, schema 1), not in
+the meta log.
 
 ## Design
 

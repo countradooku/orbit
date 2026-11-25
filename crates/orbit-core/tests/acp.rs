@@ -246,3 +246,32 @@ async fn probe_reads_the_handshake_without_opening_a_session() {
     let info = provider::probe(Launch::of(&missing, &ProviderSettings::new(ProviderKind::Acp))).await;
     assert!(!info.installed);
 }
+
+#[tokio::test]
+async fn a_team_members_orbit_tools_ride_on_its_session_only() {
+    let fake = Fake::new(
+        "gemini",
+        json!({"protocol": "acp", "handlers": {"initialize": initialize(false), "session/new": session("s-9"), "session/set_model": {}},
+          "steps": [
+            {"expect": "session/prompt", "reply": false},
+            {"respond": "session/prompt", "result": {"stopReason": "end_turn"}}
+          ]}),
+    );
+    let mut spec = fake.spec(acp_config());
+    spec.mcp = vec![provider::McpServer {
+        name: "orbit".into(),
+        command: "/opt/orbit/orbit".into(),
+        args: vec!["mcp".into()],
+        env: vec![("ORBIT_THREAD".into(), "thr_42".into())],
+        config_file: None,
+    }];
+    let (session, rx) = fake.start(ProviderKind::Acp, spec);
+    session.send(SessionInput::Prompt { uuid: "u1".into(), text: "plan it".into(), attachments: vec![], steer: false });
+    until(&rx, finished).await;
+    let opened = fake.sent("method", "session/new");
+    let servers = at(&opened[0], &["params", "mcpServers"]).unwrap();
+    assert_eq!(at(servers, &["0", "name"]).and_then(|v| v.as_str()), Some("orbit"));
+    assert_eq!(at(servers, &["0", "command"]).and_then(|v| v.as_str()), Some("/opt/orbit/orbit"));
+    assert_eq!(at(servers, &["0", "args", "0"]).and_then(|v| v.as_str()), Some("mcp"));
+    assert_eq!(at(servers, &["0", "env", "0", "value"]).and_then(|v| v.as_str()), Some("thr_42"));
+}

@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod render;
 pub mod select;
 pub mod spec;
+pub mod teams;
 
 use std::io::Write;
 

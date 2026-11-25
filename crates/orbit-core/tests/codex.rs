@@ -63,6 +63,7 @@ impl Fake {
             env: vec![("ORBIT_PORT_BASE".into(), "41000".into())],
             extra_dirs: Vec::new(),
             guard: Default::default(),
+            mcp: Vec::new(),
         }
     }
 
@@ -766,6 +767,7 @@ async fn a_missing_binary_ends_the_session_with_a_helpful_error() {
         env: Vec::new(),
         extra_dirs: Vec::new(),
         guard: Default::default(),
+        mcp: Vec::new(),
     };
     let (tx, rx) = crossfire::mpsc::unbounded_async();
     let _handle = provider::start(ProviderKind::Codex, spec, tx);

@@ -246,7 +246,12 @@ impl Session {
         let Some(binary) = super::resolve(self.spec.binary.as_deref()) else {
             return Exit::Fatal(super::not_found_message(self.spec.binary.as_deref()));
         };
-        let (mut conn, mut lines) = match Connection::spawn(&binary, &self.spec.cwd, &self.spec.env) {
+        let (mut conn, mut lines) = match Connection::spawn_with(
+            &binary,
+            &super::super::McpServer::codex_overrides(&self.spec.mcp),
+            &self.spec.cwd,
+            &self.spec.env,
+        ) {
             Ok(conn) => conn,
             Err(err) => return Exit::Fatal(format!("Couldn't start Codex ({}): {err}", binary.display())),
         };

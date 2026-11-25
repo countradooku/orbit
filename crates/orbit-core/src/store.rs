@@ -417,6 +417,7 @@ impl Store {
             live: Vec::new(),
             automations,
             automation_runs,
+            teams: Default::default(),
         }
     }
 

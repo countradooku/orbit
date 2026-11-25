@@ -10,6 +10,7 @@ use crate::ids::*;
 use crate::model::*;
 use crate::settings::Settings;
 use crate::status::*;
+use crate::teams::*;
 
 /// Client → engine.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -55,6 +56,8 @@ pub struct Snapshot {
     pub automations: Vec<Automation>,
     /// The newest runs of each automation, newest first.
     pub automation_runs: Vec<AutomationRun>,
+    /// Agent teams and races (see [`crate::teams`]).
+    pub teams: TeamBoard,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -112,6 +115,9 @@ pub enum Event {
     Bots(BotsState),
     /// The guard list changed. Ephemeral; read it with `Command::Guard(None)`.
     GuardChanged(GuardSettings),
+    /// A team or race changed. Ephemeral; the latest state is in the
+    /// snapshot.
+    Team(TeamEvent),
 }
 
 impl Event {
@@ -130,6 +136,7 @@ impl Event {
                 | Event::TerminalAgent { .. }
                 | Event::Bots(_)
                 | Event::GuardChanged(_)
+                | Event::Team(_)
         )
     }
 }
@@ -315,6 +322,14 @@ pub enum Command {
     /// approvals the guard reserves for the app. Replies as the matching
     /// command would.
     Via { via: Via, action: ViaAction },
+    /// Agent teams and races; see [`TeamCommand`].
+    Team(Box<TeamCommand>),
+}
+
+impl From<TeamCommand> for Command {
+    fn from(command: TeamCommand) -> Self {
+        Command::Team(Box::new(command))
+    }
 }
 
 /// Everything needed to start a thread in one step.
@@ -382,6 +397,7 @@ pub enum Reply {
     Automation(AutomationReply),
     Bots(BotReply),
     Guard(GuardSettings),
+    Team(TeamReply),
 }
 
 /// A local merge of a thread's branch, previewed or done.

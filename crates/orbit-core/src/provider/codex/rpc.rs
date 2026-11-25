@@ -42,7 +42,20 @@ impl Connection {
     /// Starts `codex app-server` and returns the connection and its stdout
     /// lines, in wire order.
     pub fn spawn(binary: &Path, cwd: &Path, env: &[(String, String)]) -> std::io::Result<(Self, mpsc::Receiver<Vec<u8>>)> {
-        let mut process = AgentProcess::spawn(binary, &["app-server"], cwd, env, &[])?;
+        Self::spawn_with(binary, &[], cwd, env)
+    }
+
+    /// Like [`Connection::spawn`], with `-c key=value` configuration
+    /// overrides for this process only (a session's MCP servers).
+    pub fn spawn_with(
+        binary: &Path,
+        overrides: &[String],
+        cwd: &Path,
+        env: &[(String, String)],
+    ) -> std::io::Result<(Self, mpsc::Receiver<Vec<u8>>)> {
+        let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
+        args.push("app-server");
+        let mut process = AgentProcess::spawn(binary, &args, cwd, env, &[])?;
         let stdout = process.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?;
         let stdin = process.stdin.take().ok_or_else(|| std::io::Error::other("no stdin"))?;
 

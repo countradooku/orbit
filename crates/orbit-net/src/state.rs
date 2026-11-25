@@ -137,6 +137,8 @@ pub struct Changes {
     /// The chat bots' state or the guard list changed.
     pub bots: bool,
     pub guard: bool,
+    /// A team or race changed (or went away).
+    pub teams: bool,
 }
 
 impl Changes {
@@ -161,6 +163,7 @@ impl Changes {
             && !self.automations
             && !self.bots
             && !self.guard
+            && !self.teams
     }
 
     /// The shell (sidebar, inbox, fleet) needs a render.
@@ -210,6 +213,9 @@ pub struct ClientState {
     pub bots: Option<BotsState>,
     /// The guard list, once read (`Command::Guard(None)`) or broadcast.
     pub guard: Option<GuardSettings>,
+    /// Agent teams and races (see `orbit_proto::teams`).
+    pub teams: HashMap<TeamId, Team>,
+    pub races: HashMap<RaceId, Race>,
     timelines: HashMap<ThreadId, Timeline>,
     /// Timelines being fetched: the reply and the stream are separate
     /// channels, so events are held until both the reply and its mark have
@@ -351,6 +357,8 @@ impl ClientState {
                     for run in snapshot.automation_runs {
                         self.automation_runs.entry(run.automation).or_default().push(run);
                     }
+                    self.teams = snapshot.teams.teams.into_iter().map(|t| (t.id, t)).collect();
+                    self.races = snapshot.teams.races.into_iter().map(|r| (r.id, r)).collect();
                     self.live_usage.clear();
                     // Open timelines may be stale; the UI refetches them.
                     self.timelines.clear();
@@ -477,6 +485,23 @@ impl ClientState {
                 self.guard = Some(guard);
                 changes.guard = true;
             }
+            Event::Team(event) => {
+                match event {
+                    TeamEvent::Team(team) => {
+                        self.teams.insert(team.id, *team);
+                    }
+                    TeamEvent::TeamRemoved(id) => {
+                        self.teams.remove(&id);
+                    }
+                    TeamEvent::Race(race) => {
+                        self.races.insert(race.id, *race);
+                    }
+                    TeamEvent::RaceRemoved(id) => {
+                        self.races.remove(&id);
+                    }
+                }
+                changes.teams = true;
+            }
             Event::DraftSaved { target, draft } => {
                 if draft.is_empty() {
                     self.drafts.remove(&target);
@@ -512,6 +537,18 @@ impl ClientState {
                 changes.automations = true;
             }
         }
+    }
+}
+
+impl ClientState {
+    /// The team a thread leads or works on.
+    pub fn team_of(&self, thread: ThreadId) -> Option<&Team> {
+        self.teams.values().find(|t| t.has_member(thread))
+    }
+
+    /// The race a thread is a candidate in.
+    pub fn race_of(&self, thread: ThreadId) -> Option<&Race> {
+        self.races.values().find(|r| r.candidate(thread).is_some())
     }
 }
 

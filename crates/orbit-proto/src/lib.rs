@@ -25,6 +25,7 @@ pub mod legacy;
 pub mod model;
 pub mod settings;
 pub mod status;
+pub mod teams;
 pub mod wire;
 
 pub use automation::*;
@@ -39,6 +40,7 @@ pub use ids::*;
 pub use model::*;
 pub use settings::*;
 pub use status::*;
+pub use teams::*;
 pub use wire::*;
 
 /// Bumped on any incompatible wire change. Clients and servers refuse to talk
@@ -49,8 +51,10 @@ pub use wire::*;
 /// version 5, automations (`Snapshot::automations`, `Event::Automation*`,
 /// `Command::Automation`);
 /// version 6, chat bots and the guard (`Command::Bots`, `Command::Guard`,
-/// `Command::Via` and their replies and events).
-pub const PROTOCOL_VERSION: u16 = 6;
+/// `Command::Via` and their replies and events);
+/// version 7, agent teams and races (`Snapshot::teams`, `Event::Team`,
+/// `Command::Team`, `Reply::Team`).
+pub const PROTOCOL_VERSION: u16 = 7;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

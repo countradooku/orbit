@@ -369,6 +369,7 @@ async fn run(ctx: &Ctx, conn: &Conn, spec: &Spec, args: &Map<String, Value>, out
         ["pr", _] | ["issue", _] | ["ship"] => crate::forge::run(ctx, conn, spec.path, args).await,
         ["automation", _] => crate::automation::run(ctx, conn, spec.path, args).await,
         ["bot", _] => crate::bot::run(ctx, conn, spec.path, args).await,
+        ["team", _] | ["race"] => crate::teams::run(ctx, conn, spec.path, args).await,
         ["terminal", "read"] => {
             let raw = s(args, "terminal").unwrap_or_default();
             let term: TermId = raw.parse().map_err(|_| CliError::usage(format!("“{raw}” is not a terminal id.")))?;

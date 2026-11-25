@@ -29,6 +29,7 @@ mod settings;
 mod shortcuts;
 mod shell;
 mod sidebar;
+mod teams;
 mod theme;
 mod thread;
 mod thread_menu;

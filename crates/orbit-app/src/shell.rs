@@ -48,6 +48,9 @@ pub enum Route {
     /// Full-window settings, with their own navigation in place of the
     /// sidebar.
     Settings,
+    /// Agent teams and races: their overview, a team, a race's compare
+    /// view, the constellation (`crate::teams::TeamsPage`).
+    Teams,
 }
 
 /// Threads whose views stay alive for instant switching (tiles always do).
@@ -73,6 +76,7 @@ pub struct Workspace {
     fleet: Entity<FleetView>,
     forge: Entity<ForgeView>,
     automations: Entity<AutomationsView>,
+    teams: Entity<crate::teams::TeamsPage>,
     threads: Vec<(ThreadId, Entity<ThreadView>)>,
     /// Threads shown side by side, in grid order; empty or two or more.
     tiles: Vec<ThreadId>,
@@ -108,6 +112,7 @@ impl Workspace {
         let fleet = cx.new(|cx| FleetView::new(app.clone(), weak.clone(), cx));
         let forge = cx.new(|cx| ForgeView::new(app.clone(), weak.clone(), window, cx));
         let automations = cx.new(|cx| AutomationsView::new(app.clone(), weak.clone(), cx));
+        let teams = cx.new(|cx| crate::teams::TeamsPage::new(app.clone(), weak.clone(), window, cx));
         let split = cx.new(|_| ResizableState::default());
         let subs = vec![
             cx.observe_window_appearance(window, |_, window, cx| {
@@ -174,6 +179,7 @@ impl Workspace {
             fleet,
             forge,
             automations,
+            teams,
             threads: Vec::new(),
             tiles: Vec::new(),
             shown_threads: Vec::new(),
@@ -203,6 +209,15 @@ impl Workspace {
         // After a moment, so the requests arrive the way live ones do (and
         // notify).
         #[cfg(debug_assertions)]
+        if std::env::var("ORBIT_DEBUG_DEMO").is_ok_and(|v| v == "teams") {
+            let app = self.app.clone();
+            cx.spawn(async move |_, cx| {
+                cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
+                cx.update(|cx| crate::teams::demo::apply(&app, cx));
+            })
+            .detach();
+        }
+        #[cfg(debug_assertions)]
         if std::env::var("ORBIT_DEBUG_DEMO").is_ok_and(|v| v == "attention") {
             let app = self.app.clone();
             cx.spawn(async move |_, cx| {
@@ -224,6 +239,10 @@ impl Workspace {
                 self.navigate(Route::Automations, window, cx);
                 let (view, editing) = (self.automations.clone(), route == "automation-editor");
                 window.defer(cx, move |window, cx| view.update(cx, |view, cx| view.debug_open_editor(editing, window, cx)));
+            }
+            "teams" | "team" | "compare" | "galaxy" | "race" => {
+                self.teams.update(cx, |page, cx| page.debug_show(&route, cx));
+                self.navigate(Route::Teams, window, cx);
             }
             "latest" | "terminal" => {
                 if let Some(id) = recent.first() {
@@ -267,6 +286,12 @@ impl Workspace {
             Route::Thread(id) => vec![id],
             _ => Vec::new(),
         }
+    }
+
+    /// The teams page, to show a team, a race or the constellation before
+    /// navigating to [`Route::Teams`].
+    pub fn teams_page(&self) -> &Entity<crate::teams::TeamsPage> {
+        &self.teams
     }
 
     pub fn tiles(&self) -> &[ThreadId] {
@@ -1072,6 +1097,7 @@ impl Workspace {
             Route::Fleet => self.fleet.clone().into_any_element(),
             Route::Forge => self.forge.clone().into_any_element(),
             Route::Automations => self.automations.clone().into_any_element(),
+            Route::Teams => self.teams.clone().into_any_element(),
             Route::Settings => div().into_any_element(),
             Route::Thread(_) if self.tiled() => self.render_tiles(window, cx),
             Route::Thread(_) => match self.current_thread_view() {

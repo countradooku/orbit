@@ -318,6 +318,12 @@ impl Session {
         } else {
             args.extend(["--session-id".into(), self.parser.session_id.clone()]);
         }
+        // The session's own MCP servers, next to the user's (a team
+        // member's Orbit tools); written to a file because a JSON argument
+        // does not survive every launcher.
+        if let Some(file) = self.spec.mcp.iter().find_map(|s| s.config_file.as_ref()) {
+            args.extend(["--mcp-config".into(), file.display().to_string()]);
+        }
         // The instance's own flags last, so they can refine Orbit's.
         args.extend(self.spec.args.iter().cloned());
         args
