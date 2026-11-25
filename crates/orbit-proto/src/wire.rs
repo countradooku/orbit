@@ -190,6 +190,9 @@ pub enum Command {
     /// Undo the thread's last restore (itself undoable: it swaps back).
     UndoRestore { thread: ThreadId },
     Commit { thread: ThreadId, message: String, push: bool },
+    /// Push the thread's branch, setting its upstream on the first push.
+    /// Replies with [`Reply::Text`] naming where it went (`origin/topic`).
+    Push { thread: ThreadId },
     CreatePullRequest { thread: ThreadId, title: String, body: String },
     Branches { project: ProjectId },
     /// Merge the thread's branch into `into` locally, without a pull

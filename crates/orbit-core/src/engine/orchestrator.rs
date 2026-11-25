@@ -293,6 +293,15 @@ impl Orchestrator {
                     git.commit(&repo, &message, push).await.map(|_| Reply::Done).map_err(|e| e.to_string())
                 })),
             },
+            Command::Push { thread } => match self.repo_for(thread) {
+                Err(e) => Outcome::Ready(Err(e)),
+                Ok(repo) => Outcome::Deferred(Box::pin(async move {
+                    git.push(&repo)
+                        .await
+                        .map(|pushed| Reply::Text(format!("{}/{}", pushed.remote, pushed.branch)))
+                        .map_err(|e| e.to_string())
+                })),
+            },
             Command::CreatePullRequest { thread, title, body } => match self.repo_for(thread) {
                 Err(e) => Outcome::Ready(Err(e)),
                 Ok(repo) => Outcome::Deferred(Box::pin(async move {
@@ -619,6 +628,7 @@ impl Orchestrator {
             | Command::RevertPatch { .. }
             | Command::RestoreCheckpoint { .. }
             | Command::Commit { .. }
+            | Command::Push { .. }
             | Command::CreatePullRequest { .. }
             | Command::Branches { .. }
             | Command::UndoRestore { .. }
@@ -706,6 +716,7 @@ impl Orchestrator {
             | Command::RevertPatch { .. }
             | Command::RestoreCheckpoint { .. }
             | Command::Commit { .. }
+            | Command::Push { .. }
             | Command::CreatePullRequest { .. }
             | Command::Branches { .. }
             | Command::UndoRestore { .. }
