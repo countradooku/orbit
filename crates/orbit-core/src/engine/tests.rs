@@ -359,6 +359,13 @@ fn a_turns_diff_shows_exactly_what_the_turn_changed() {
     assert!(patch.contains("written-by-agent.txt") && patch.contains("+hello"), "{patch}");
     assert!(!patch.contains("before.txt"), "{patch}");
 
+    // Undo the turn: back to how the files were before it.
+    h.call(Command::RestoreCheckpoint { thread: id, turn: 1 });
+    assert!(!repo.path().join("written-by-agent.txt").exists(), "undo removes the turn's file");
+    assert!(repo.path().join("before.txt").exists(), "files from before the turn stay");
+    std::fs::write(repo.path().join("written-by-agent.txt"), "hello
+").unwrap();
+
     // Revert the turn's file through its patch.
     let file = orbit_proto::diff::parse(&patch).remove(0);
     h.call(Command::RevertPatch { thread: id, patch: orbit_proto::file_patch(&file) });

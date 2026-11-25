@@ -47,6 +47,8 @@ pub struct Workspace {
     /// Debug builds: a screen to open once data arrives (`ORBIT_DEBUG_ROUTE`
     /// = `latest`, `inbox`, `fleet`), for screenshots and visual checks.
     debug_route: Option<String>,
+    /// Last seen attention per thread, to notify on transitions only.
+    attention: std::collections::HashMap<ThreadId, Attention>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -95,6 +97,7 @@ impl Workspace {
                     this.threads.retain(|(t, _)| *t != id);
                     this.route = Route::Home;
                 }
+                this.notify_transitions(window, cx);
                 cx.notify();
             }),
         ];
@@ -110,8 +113,57 @@ impl Workspace {
             fleet,
             threads: Vec::new(),
             focus: cx.focus_handle(),
+            attention: std::collections::HashMap::new(),
             debug_route: if cfg!(debug_assertions) { std::env::var("ORBIT_DEBUG_ROUTE").ok() } else { None },
             _subscriptions: subs,
+        }
+    }
+
+    /// Tells the user when a thread starts needing them, fails, or finishes
+    /// with a result: in the window and as a system notification. Nothing
+    /// fires for the thread they are already looking at in a focused window,
+    /// and nothing fires on the first load.
+    fn notify_transitions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::notification::Notification;
+        let first_load = self.attention.is_empty();
+        let state = self.app.read(cx).state();
+        let mut fresh = Vec::new();
+        for thread in state.threads.values() {
+            let now = Attention::of(thread);
+            let before = self.attention.insert(thread.id, now);
+            if first_load || before == Some(now) || thread.archived || thread.snoozed_until.is_some() {
+                continue;
+            }
+            let looking = self.route == Route::Thread(thread.id) && window.is_window_active();
+            if looking {
+                continue;
+            }
+            let title = crate::thread::display_title(thread).to_owned();
+            let note = match now {
+                Attention::Waiting => Some(Notification::warning("Needs your answer").title(title)),
+                Attention::Failed => Some(Notification::error(match &thread.status {
+                    ThreadStatus::Failed { message } => message.clone(),
+                    _ => "The turn failed.".into(),
+                })
+                .title(title)),
+                Attention::Unread if before == Some(Attention::Working) => {
+                    Some(Notification::success("Finished").title(title))
+                }
+                _ => None,
+            };
+            if let Some(note) = note {
+                fresh.push((thread.id, note));
+            }
+        }
+        let live: std::collections::HashSet<ThreadId> = state.threads.keys().copied().collect();
+        self.attention.retain(|id, _| live.contains(id));
+        for (id, note) in fresh {
+            let weak = cx.weak_entity();
+            let note = note.in_app_and_system().on_click(move |_, window, cx| {
+                window.activate_window();
+                let _ = weak.update(cx, |ws, cx| ws.navigate(Route::Thread(id), window, cx));
+            });
+            window.push_notification(note, cx);
         }
     }
 

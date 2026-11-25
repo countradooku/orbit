@@ -370,23 +370,65 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
             }
             let files = summary.files.len();
             let (adds, dels) = summary.files.iter().fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions));
-            h_flex()
+            let restorable = summary.base_checkpoint.is_some() && files > 0 && !busy;
+            let (app, thread_id, turn) = (this.app.clone(), this.id, item.turn);
+            let review = weak.clone();
+            v_flex()
                 .mt_1()
-                .gap_2()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(div().h_px().flex_1().bg(theme.border))
-                .child(parts.join(" · "))
+                .gap_1()
+                .group("turn-end")
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(div().h_px().flex_1().bg(theme.border))
+                        .child(parts.join(" · "))
+                        .when(files > 0, |el| {
+                            el.child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(format!("{files} file{}", if files == 1 { "" } else { "s" }))
+                                    .child(div().text_color(theme.success).child(format!("+{adds}")))
+                                    .child(div().text_color(theme.danger).child(format!("−{dels}"))),
+                            )
+                        })
+                        .child(div().h_px().flex_1().bg(theme.border)),
+                )
                 .when(files > 0, |el| {
                     el.child(
                         h_flex()
+                            .justify_center()
                             .gap_1()
-                            .child(format!("{files} file{}", if files == 1 { "" } else { "s" }))
-                            .child(div().text_color(theme.success).child(format!("+{adds}")))
-                            .child(div().text_color(theme.danger).child(format!("−{dels}"))),
+                            .opacity(0.)
+                            .group_hover("turn-end", |s| s.opacity(1.))
+                            .child(
+                                Button::new(("turn-review", id.0))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Lucide::FileDiff)
+                                    .label("Review changes")
+                                    .on_click(move |_, _, cx| {
+                                        let _ = review.update(cx, |_, cx| cx.emit(super::ThreadViewEvent::Review));
+                                    }),
+                            )
+                            .when(restorable, |el| {
+                                el.child(
+                                    Button::new(("turn-undo", id.0))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(Lucide::RotateCcw)
+                                        .label("Undo turn")
+                                        .tooltip("Put the files back the way they were before this turn. You can undo this too.")
+                                        .on_click(move |_, window, cx| {
+                                            app.update(cx, |app, cx| {
+                                                app.run(Command::RestoreCheckpoint { thread: thread_id, turn }, window, cx)
+                                            })
+                                        }),
+                                )
+                            }),
                     )
                 })
-                .child(div().h_px().flex_1().bg(theme.border))
                 .into_any_element()
         }
     };

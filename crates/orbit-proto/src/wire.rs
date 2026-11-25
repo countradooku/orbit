@@ -158,8 +158,9 @@ pub enum Command {
     Diff { thread: ThreadId, scope: DiffScope },
     /// Reverse-apply a patch (one hunk or file of a diff) to the workspace.
     RevertPatch { thread: ThreadId, patch: String },
-    /// Restore the workspace to the checkpoint after `turn`; the current
-    /// state is checkpointed first so the revert itself can be undone.
+    /// Restore the workspace to how it was before `turn` started (undo the
+    /// turn and everything after it); the current state is snapshotted
+    /// first so the restore itself can be undone.
     RestoreCheckpoint { thread: ThreadId, turn: u32 },
     Commit { thread: ThreadId, message: String, push: bool },
     CreatePullRequest { thread: ThreadId, title: String, body: String },

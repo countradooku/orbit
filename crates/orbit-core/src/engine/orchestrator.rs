@@ -257,7 +257,7 @@ impl Orchestrator {
                     Ok(repo) => repo,
                     Err(e) => return Outcome::Ready(Err(e)),
                 };
-                let Some((_, Some(tree))) = self.turn_range(thread, turn) else {
+                let Some((tree, _)) = self.turn_range(thread, turn) else {
                     return Outcome::Ready(Err("That turn has no snapshot to restore.".into()));
                 };
                 Outcome::Deferred(Box::pin(async move {
