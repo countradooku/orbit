@@ -57,6 +57,170 @@ const THREAD_STACK: usize = 256 * 1024;
 /// Only reached on Unix when a background process keeps the PTY open.
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
 
+/// Output kept per terminal to replay when a screen attaches again (the app
+/// reopened, or a sleeping terminal woke).
+pub const SCROLLBACK_BYTES: usize = 256 * 1024;
+
+/// The newest output of one terminal, bounded to a capacity: what a fresh
+/// screen replays to show what the terminal showed.
+///
+/// A ring of raw bytes (one `memcpy` per chunk) rather than a parsed
+/// screen: the engine never parses VT. What a byte cut loses is restored on
+/// replay: the replay starts at a line or escape-sequence boundary, after
+/// the private modes that were on where the cut fell (the alternate screen
+/// of a full-screen program, mouse reporting, a hidden cursor).
+#[derive(Clone, Debug)]
+pub struct Scrollback {
+    buf: std::collections::VecDeque<u8>,
+    cap: usize,
+    dropped: u64,
+    /// DEC private modes in effect at the start of `buf`.
+    modes_at_cut: Modes,
+}
+
+/// The DEC private modes a replay restores, as on/off bits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Modes(u16);
+
+/// Mode numbers in bit order. 1049/1047/47 are the alternate screen; 25 is
+/// cursor visibility (on by default, so its bit means "hidden").
+const TRACKED_MODES: [u16; 9] = [1049, 1047, 47, 1, 1000, 1002, 1003, 1006, 2004];
+const CURSOR_HIDDEN: u16 = 1 << 15;
+
+impl Modes {
+    /// Applies the mode changes in `bytes` (`ESC [ ? n ; m h|l`).
+    fn scan(&mut self, bytes: &[u8]) {
+        let mut at = 0;
+        while let Some(found) = memchr::memchr(0x1b, &bytes[at..]) {
+            let start = at + found;
+            at = start + 1;
+            let rest = &bytes[start + 1..];
+            if rest.len() < 3 || rest[0] != b'[' || rest[1] != b'?' {
+                continue;
+            }
+            let params_end = rest[2..].iter().position(|b| !(b.is_ascii_digit() || *b == b';')).map(|p| p + 2);
+            let Some(end) = params_end else { continue };
+            let on = match rest[end] {
+                b'h' => true,
+                b'l' => false,
+                _ => continue,
+            };
+            for param in rest[2..end].split(|b| *b == b';') {
+                let Some(n) = std::str::from_utf8(param).ok().and_then(|p| p.parse::<u16>().ok()) else { continue };
+                let bit = if n == 25 {
+                    // `?25h` shows the cursor: the bit means hidden.
+                    self.set(CURSOR_HIDDEN, !on);
+                    continue;
+                } else if let Some(i) = TRACKED_MODES.iter().position(|m| *m == n) {
+                    1 << i
+                } else {
+                    continue;
+                };
+                self.set(bit, on);
+            }
+            at = start + 1 + end;
+        }
+    }
+
+    fn set(&mut self, bit: u16, on: bool) {
+        if on { self.0 |= bit } else { self.0 &= !bit }
+    }
+
+    /// The sequences that turn these modes on from a terminal's defaults.
+    fn prefix(self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (i, mode) in TRACKED_MODES.iter().enumerate() {
+            if self.0 & (1 << i) != 0 {
+                out.extend_from_slice(format!("\x1b[?{mode}h").as_bytes());
+            }
+        }
+        if self.0 & CURSOR_HIDDEN != 0 {
+            out.extend_from_slice(b"\x1b[?25l");
+        }
+        out
+    }
+}
+
+impl Default for Scrollback {
+    fn default() -> Self {
+        Self::new(SCROLLBACK_BYTES)
+    }
+}
+
+impl Scrollback {
+    pub fn new(cap: usize) -> Self {
+        Self { buf: std::collections::VecDeque::new(), cap: cap.max(1), dropped: 0, modes_at_cut: Modes::default() }
+    }
+
+    /// Appends output, dropping the oldest bytes beyond the capacity.
+    pub fn push(&mut self, data: &[u8]) {
+        if data.len() >= self.cap {
+            let (old_a, old_b) = self.buf.as_slices();
+            self.modes_at_cut.scan(old_a);
+            self.modes_at_cut.scan(old_b);
+            let cut = data.len() - self.cap;
+            self.modes_at_cut.scan(&data[..cut]);
+            self.dropped += (self.buf.len() + cut) as u64;
+            self.buf.clear();
+            self.buf.extend(&data[cut..]);
+            return;
+        }
+        let overflow = (self.buf.len() + data.len()).saturating_sub(self.cap);
+        if overflow > 0 {
+            let (a, b) = self.buf.as_slices();
+            let from_a = overflow.min(a.len());
+            self.modes_at_cut.scan(&a[..from_a]);
+            self.modes_at_cut.scan(&b[..overflow - from_a]);
+            self.buf.drain(..overflow);
+            self.dropped += overflow as u64;
+        }
+        self.buf.extend(data);
+    }
+
+    /// Bytes kept.
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    /// Bytes dropped from the front so far.
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    /// The newest `max` bytes as they were written (0 = all kept).
+    pub fn tail(&self, max: usize) -> Vec<u8> {
+        let keep = if max == 0 { self.buf.len() } else { max.min(self.buf.len()) };
+        self.buf.iter().skip(self.buf.len() - keep).copied().collect()
+    }
+
+    /// What a fresh screen replays: when older output was dropped, the
+    /// modes in effect at the cut, then the kept output from its first line
+    /// or escape-sequence boundary (never half a sequence or character).
+    pub fn replay(&self) -> Vec<u8> {
+        if self.dropped == 0 {
+            return self.tail(0);
+        }
+        let (a, b) = self.buf.as_slices();
+        let head_len = a.len().min(4096);
+        let head = &a[..head_len];
+        let start = match (memchr::memchr(0x1b, head), memchr::memchr(b'\n', head)) {
+            (Some(esc), Some(nl)) => esc.min(nl + 1),
+            (Some(esc), None) => esc,
+            (None, Some(nl)) => nl + 1,
+            (None, None) => 0,
+        };
+        let mut out = self.modes_at_cut.prefix();
+        out.reserve(self.buf.len() - start);
+        out.extend_from_slice(&a[start..]);
+        out.extend_from_slice(b);
+        out
+    }
+}
+
 /// The grid size of a terminal in character cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TermSize {
@@ -177,6 +341,16 @@ impl Terminals {
 
     /// Starts `shell` (the user's default when `None`) in `cwd`.
     pub fn open(&self, cwd: &Path, size: TermSize, shell: Option<Shell>) -> std::io::Result<TermId> {
+        self.open_as(TermId::new(), cwd, size, shell)
+    }
+
+    /// Starts a shell under a given id: a sleeping terminal waking up keeps
+    /// its id. The id must not be open; the previous shell under it must
+    /// have reported its exit.
+    pub fn open_as(&self, id: TermId, cwd: &Path, size: TermSize, shell: Option<Shell>) -> std::io::Result<TermId> {
+        if self.open.lock().contains_key(&id) {
+            return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("terminal {id} is open")));
+        }
         let shell = shell.unwrap_or_else(Shell::user_default);
         if !cwd.is_dir() {
             return Err(std::io::Error::new(
@@ -210,7 +384,6 @@ impl Terminals {
         let writer = pair.master.take_writer().map_err(std::io::Error::other)?;
         let master = Arc::new(Mutex::new(Some(pair.master)));
         let closed = Arc::new(AtomicBool::new(false));
-        let id = TermId::new();
 
         // reader -> pump: raw reads, bounded so a stalled pump stalls the PTY.
         let (raw_tx, raw_rx) = crossfire::spsc::bounded_blocking::<Vec<u8>>(64);
@@ -312,6 +485,30 @@ impl Terminals {
         let mut open = self.open.lock();
         if open.get(&id).is_some_and(|t| t.master.lock().is_none()) {
             open.remove(&id);
+        }
+    }
+
+    /// Whether the shell runs a command (a dev server, a build, an agent
+    /// CLI) rather than waiting at its prompt: on Unix the terminal's
+    /// foreground process group is not the shell's; on Windows the shell's
+    /// job holds more than the shell. `false` when unknown or not open.
+    pub fn busy(&self, id: TermId) -> bool {
+        let open = self.open.lock();
+        let Some(term) = open.get(&id) else { return false };
+        #[cfg(unix)]
+        {
+            let master = term.master.lock();
+            let (Some(master), Some(pid)) = (master.as_ref(), term.pid) else { return false };
+            master.process_group_leader().is_some_and(|leader| i64::from(leader) != i64::from(pid))
+        }
+        #[cfg(windows)]
+        {
+            term._job.as_ref().is_some_and(|job| job.active_processes() > 1)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = term;
+            false
         }
     }
 
@@ -499,6 +696,20 @@ mod job {
         peak_job_memory_used: usize,
     }
 
+    #[repr(C)]
+    #[derive(Default)]
+    struct Accounting {
+        total_user_time: i64,
+        total_kernel_time: i64,
+        this_period_user_time: i64,
+        this_period_kernel_time: i64,
+        page_faults: u32,
+        total_processes: u32,
+        active_processes: u32,
+        terminated_processes: u32,
+    }
+
+    const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION: i32 = 1;
     const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
     const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
 
@@ -507,6 +718,7 @@ mod job {
         fn CreateJobObjectW(attrs: *mut c_void, name: *const u16) -> Handle;
         fn SetInformationJobObject(job: Handle, class: i32, info: *mut c_void, len: u32) -> i32;
         fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+        fn QueryInformationJobObject(job: Handle, class: i32, info: *mut c_void, len: u32, returned: *mut u32) -> i32;
         fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
         fn CloseHandle(handle: Handle) -> i32;
     }
@@ -543,6 +755,23 @@ mod job {
                 }
                 Ok(job)
             }
+        }
+
+        /// Processes in the job that are still running.
+        pub fn active_processes(&self) -> u32 {
+            let mut info = Accounting::default();
+            // SAFETY: the handle is valid until Drop; `info` is the
+            // documented layout of `JobObjectBasicAccountingInformation`.
+            let ok = unsafe {
+                QueryInformationJobObject(
+                    self.0,
+                    JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+                    &mut info as *mut _ as *mut c_void,
+                    std::mem::size_of::<Accounting>() as u32,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 { 0 } else { info.active_processes }
         }
 
         /// Kills every process in the job now.
@@ -699,6 +928,61 @@ mod tests {
         let (exited, _) = exits.recv_timeout(Duration::from_secs(10)).expect("no exit after close");
         assert_eq!(exited, id);
         assert!(!terms.close(id));
+    }
+
+    #[test]
+    fn scrollback_keeps_the_newest_output_and_replays_from_a_boundary() {
+        let mut ring = Scrollback::new(32);
+        ring.push(b"one\r\ntwo\r\n");
+        assert_eq!(ring.replay(), b"one\r\ntwo\r\n", "nothing dropped: replayed as written");
+        ring.push(b"three\r\nfour five six seven\r\n");
+        assert_eq!(ring.len(), 32);
+        assert_eq!(ring.dropped(), 38 - 32);
+        // The cut fell inside "two"; the replay starts at the next line.
+        let replay = ring.replay();
+        assert!(replay.starts_with(b"three\r\n"), "{:?}", String::from_utf8_lossy(&replay));
+        assert_eq!(ring.tail(6), b"even\r\n");
+        // A chunk larger than the ring keeps its end.
+        ring.push(&[b'x'; 100]);
+        assert_eq!(ring.len(), 32);
+        assert_eq!(ring.dropped(), 38 + 100 - 32);
+    }
+
+    #[test]
+    fn scrollback_restores_the_modes_in_effect_at_the_cut() {
+        let mut ring = Scrollback::new(64);
+        // A full-screen program: alternate screen, hidden cursor, mouse.
+        ring.push(b"$ top\r\n\x1b[?1049h\x1b[?25l\x1b[?1000;1006h");
+        ring.push(&[b'.'; 80]);
+        ring.push(b"\x1b[Hframe 2");
+        let replay = ring.replay();
+        let text = String::from_utf8_lossy(&replay);
+        assert!(text.starts_with("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?25l"), "{text:?}");
+        assert!(text.ends_with("\x1b[Hframe 2"));
+        // A program that left the alternate screen before the cut: the
+        // replay does not enter it.
+        let mut ring = Scrollback::new(16);
+        ring.push(b"\x1b[?1049hx\x1b[?1049l\x1b[?25h");
+        ring.push(&[b'y'; 40]);
+        assert!(!ring.replay().starts_with(b"\x1b[?"));
+    }
+
+    #[test]
+    fn busy_tells_a_running_command_from_a_prompt() {
+        let (terms, out, _exits) = manager();
+        let id = terms.open(&std::env::temp_dir(), TermSize::default(), Some(test_shell())).unwrap();
+        // Give the shell a moment to start; at its prompt it is not busy.
+        let _ = read_until(&terms, &out, id, Duration::from_millis(1500), |_| false);
+        assert!(!terms.busy(id), "an idle shell is not busy");
+        let sleep: &[u8] = if cfg!(windows) { b"ping -n 30 127.0.0.1 >NUL\r" } else { b"sleep 30\r" };
+        terms.input(id, sleep);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !terms.busy(id) {
+            assert!(Instant::now() < deadline, "a running command is busy");
+            let _ = read_until(&terms, &out, id, Duration::from_millis(50), |_| true);
+        }
+        terms.close(id);
+        assert!(!terms.busy(id));
     }
 
     #[test]

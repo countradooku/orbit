@@ -20,6 +20,7 @@ pub mod codec;
 pub mod diff;
 pub mod forge;
 pub mod guard;
+pub mod host;
 pub mod ids;
 pub mod legacy;
 pub mod link;
@@ -40,6 +41,7 @@ pub use diff::{
 pub use bots::*;
 pub use forge::*;
 pub use guard::*;
+pub use host::*;
 pub use ids::*;
 pub use model::*;
 pub use settings::*;
@@ -60,8 +62,9 @@ pub use wire::*;
 /// `Command::Team`, `Reply::Team`); version 8, server frames start with a
 /// kind byte so streamed tokens and `Done` replies skip the big enums
 /// (see [`link`]); version 9, payloads in wincode instead of bitcode
-/// (see [`codec`]).
-pub const PROTOCOL_VERSION: u16 = 9;
+/// (see [`codec`]); version 10, the background host (`Command::Host`,
+/// `Reply::Host`, `Event::TerminalSleep`; see [`host`]).
+pub const PROTOCOL_VERSION: u16 = 10;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

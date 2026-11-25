@@ -9,6 +9,7 @@ use super::*;
 use crate::provider::{AgentEvent, BlockKind, SessionHandle, SessionInput, SessionSpec, TurnOutcome};
 
 mod automations;
+mod host;
 mod review;
 mod status;
 mod teams;
