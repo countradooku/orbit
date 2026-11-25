@@ -150,3 +150,36 @@ async fn since_turn_diffs_reach_the_working_tree_and_restores_undo_both_ways() {
     git.undo_restore(&dir, t).await.unwrap();
     assert!(!dir.join("later.txt").exists(), "undoing the undo restores again");
 }
+
+#[tokio::test]
+async fn a_reverted_hunk_or_file_comes_back_with_its_inverted_patch() {
+    let lines: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+    let (tmp, dir) = repo(&[("f.txt", &lines), ("gone.txt", "bye\n")]);
+    let git = layer(&tmp);
+    let edited = lines.replace("line 2\n", "line two\n").replace("line 25\n", "line twenty-five\n");
+    write(&dir, "f.txt", &edited);
+    write(&dir, "new.txt", "fresh\n");
+    std::fs::remove_file(dir.join("gone.txt")).unwrap();
+    let head = git.head_tree(&dir).await.unwrap();
+    let diff = git.diff(&dir, &head, None).await.unwrap();
+    let f = diff.file("f.txt").unwrap();
+    assert_eq!(f.hunks.len(), 2);
+
+    // Reject the second hunk, then undo the rejection.
+    let patch = orbit_proto::hunk_patch(f, 1);
+    git.revert_patch(&dir, &patch).await.unwrap();
+    let now = std::fs::read_to_string(dir.join("f.txt")).unwrap();
+    assert!(now.contains("line two") && now.contains("line 25\n"));
+    git.revert_patch(&dir, &orbit_proto::diff::invert_patch(&patch).unwrap()).await.unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), edited);
+
+    // Whole files: a new file and a deletion.
+    for path in ["new.txt", "gone.txt"] {
+        let file = diff.file(path).unwrap();
+        let patch = orbit_proto::file_patch(file);
+        git.revert_patch(&dir, &patch).await.unwrap();
+        assert_eq!(dir.join(path).exists(), path == "gone.txt", "{path} reverted");
+        git.revert_patch(&dir, &orbit_proto::diff::invert_patch(&patch).unwrap()).await.unwrap();
+        assert_eq!(dir.join(path).exists(), path == "new.txt", "{path} back");
+    }
+}
