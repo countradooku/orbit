@@ -284,10 +284,28 @@ struct OpenTimeline {
     timeline: Timeline,
 }
 
+/// The data folder's lock, held for the store's lifetime: one engine per
+/// data folder.
+///
+/// It is released explicitly when dropped, not just by closing the file:
+/// the lock belongs to the open file, and closing one handle on it does not
+/// release it while another lives. On Linux and macOS a child process forked
+/// by any other thread (an agent, git, a terminal) holds a copy of every
+/// descriptor until it calls `exec`, so closing ours could leave the folder
+/// locked for that long, and an engine reopened on the folder at that moment
+/// (a restart, the app handing the folder to the background host) was
+/// refused as "another Orbit". An unlock releases it at once.
+struct FolderLock(File);
+
+impl Drop for FolderLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 /// All durable state of one engine.
 pub struct Store {
-    /// Held for the store's lifetime: one engine per data folder.
-    _lock: File,
+    _lock: FolderLock,
     dir: PathBuf,
     meta: Log,
     /// Identifies this process lifetime. Sequence numbers are only comparable
@@ -328,7 +346,7 @@ impl Store {
             ));
         }
         let mut store = Self {
-            _lock: lock,
+            _lock: FolderLock(lock),
             dir,
             meta,
             epoch: next_raw_id(),
@@ -1148,5 +1166,51 @@ mod tests {
         assert!(second.is_err(), "a second engine must not share the folder");
         drop(first);
         assert!(Store::open(dir.path()).is_ok(), "the lock is released with the store");
+    }
+
+    /// Another handle on the lock file's open file (here a duplicate; on
+    /// Linux, the copy a child forked by another thread holds until it
+    /// execs) must not keep the folder locked once the store is gone.
+    #[test]
+    fn the_lock_is_released_while_another_handle_on_it_lives() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let duplicate = store._lock.0.try_clone().unwrap();
+        drop(store);
+        let reopened = Store::open(dir.path());
+        assert!(reopened.is_ok(), "{:?}", reopened.err());
+        drop(duplicate);
+    }
+
+    /// The same with a real fork: a child that is slow to reach `exec`
+    /// holds a copy of every descriptor meanwhile, as other tests' git and
+    /// agent processes do on CI.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_forked_before_a_restart_does_not_hold_the_folder() {
+        use std::os::unix::process::CommandExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let (forked, is_forked) = std::sync::mpsc::channel();
+        let child = std::thread::spawn(move || {
+            let mut cmd = std::process::Command::new("true");
+            // SAFETY: only async-signal-safe calls (nanosleep) between
+            // fork and exec.
+            unsafe {
+                cmd.pre_exec(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    Ok(())
+                });
+            }
+            let _ = forked.send(());
+            cmd.status()
+        });
+        is_forked.recv().unwrap();
+        // `status` forks right after the send; give it time to.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(store);
+        let reopened = Store::open(dir.path());
+        assert!(reopened.is_ok(), "{:?}", reopened.err());
+        child.join().unwrap().unwrap();
     }
 }
