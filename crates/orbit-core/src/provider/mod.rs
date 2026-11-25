@@ -16,6 +16,7 @@ use orbit_proto::*;
 
 pub mod claude;
 pub mod codex;
+pub mod one_shot;
 pub mod process;
 
 /// Everything an adapter needs to start or resume a session.

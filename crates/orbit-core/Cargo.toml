@@ -23,6 +23,15 @@ similar = { workspace = true }
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 parking_lot = { workspace = true }
+# HTTPS for the Linear and Jira APIs: the hyper and rustls (ring) stack GPUI
+# Kit already links for its own HTTP client, so the app gains no new crates;
+# async on the engine's runtime, no thread per request.
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "http1", "tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "native-tokio", "ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+http-body-util = "0.1"
+bytes = "1"
 
 [dev-dependencies]
 tempfile = "3"
@@ -32,6 +41,15 @@ tempfile = "3"
 [[bin]]
 name = "orbit-fake-codex"
 path = "tests/support/fake_codex.rs"
+test = false
+doc = false
+bench = false
+
+# A stand-in for `gh` and `glab` that answers from fixtures, used only by the
+# forge tests (`CARGO_BIN_EXE_orbit-fake-forge`).
+[[bin]]
+name = "orbit-fake-forge"
+path = "tests/support/fake_forge.rs"
 test = false
 doc = false
 bench = false
