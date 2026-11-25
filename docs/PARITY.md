@@ -341,9 +341,9 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 
 | Feature | T3 reference | Orbit status | Orbit location | Better than T3 | Pri |
 |---|---|---|---|---|---|
-| MCP server for other agents, with approval levels and revocable sign-ins | doc/outside-agents.md, srv/mcp/ | Missing | | Local socket plus host token; no 30-day hard expiry (#33183). | P2 |
-| Thread tools (launch, wait, read, list, search, send) | srv/mcp/ | Missing | | | P2 |
-| CLI `thread start / send / show / list` with `--wait`, `--json`, exit codes | srv/cli/ | Missing | | `orbit` CLI over the same protocol as orbitd. | P2 |
+| MCP server for other agents, with approval levels and revocable sign-ins | doc/outside-agents.md, srv/mcp/ | Partial | cli/src/mcp.rs:1, net/endpoint.rs:1 | `orbit mcp` over stdio; loopback endpoint with a per-run token in endpoint.json, never exported to agents. Agents act only on their own helpers; approvals need full access. No revocable sign-ins yet. | P2 |
+| Thread tools (launch, wait, read, list, search, send) | srv/mcp/ | Done | cli/src/spec.rs:1 | Generated from the CLI's command specs; children link to the calling thread (ORBIT_THREAD) and are capped at its access. | P2 |
+| CLI `thread start / send / show / list` with `--wait`, `--json`, exit codes | srv/cli/ | Done | cli/src/exec.rs:1, docs/CLI.md | `orbit new / send / wait / log / threads`, completions, `help --json`; exit codes documented. | P2 |
 | Milestone event feed (last 1,000) and webhook subscriptions | doc/outside-agents.md | Missing | | | P2 |
 
 ## B. Chat timeline, composer, models and providers, modes, approvals

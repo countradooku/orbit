@@ -10,7 +10,7 @@
   one core.
 
 .EXAMPLE
-  ./scripts/measure-desktop.ps1 -Label "Orbit (GPUI Fast)" -Exe target/release/orbit.exe
+  ./scripts/measure-desktop.ps1 -Label "Orbit (GPUI Fast)" -Exe target/release/orbit-desktop.exe
 #>
 param(
     [Parameter(Mandatory)] [string] $Label,

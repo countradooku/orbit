@@ -117,6 +117,10 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // The local control endpoint for the `orbit` CLI (see orbit_net::endpoint).
+    let endpoint = orbit_net::endpoint::start(engine.clone(), &args.data, "orbitd")
+        .inspect_err(|err| log::warn!("no local control endpoint: {err}"))
+        .ok();
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
     let shutdown_engine = engine.clone();
     runtime.block_on(async move {
@@ -129,5 +133,8 @@ fn main() {
             _ = tokio::signal::ctrl_c() => log::info!("shutting down"),
         }
     });
+    if let Some(endpoint) = endpoint {
+        endpoint.close();
+    }
     shutdown_engine.shutdown();
 }

@@ -60,6 +60,12 @@ impl Drop for Instance {
     }
 }
 
+/// Removes this process's hand-off endpoint file on quit: the instance
+/// itself lives in a window task that is not dropped when the app exits.
+pub fn remove_endpoint_file(data_dir: &Path) {
+    let _ = std::fs::remove_file(data_dir.join(ENDPOINT_FILE));
+}
+
 pub enum Claim {
     /// Run the app; hand-offs arrive on `launches`.
     Primary(Instance),

@@ -77,6 +77,19 @@ ORBIT_HOST=ws://host:7840/ ORBIT_TOKEN=<token> cargo run -p orbit-app --release
 It listens on loopback by default; reach it from other machines through an
 SSH tunnel or a private network such as Tailscale.
 
+### Command line and MCP (`orbit`)
+
+While the app or `orbitd` runs, the `orbit` CLI drives it, and `orbit mcp`
+lets agents start and supervise threads of their own:
+
+```sh
+cargo run -p orbit-cli --release -- threads --needs-you
+orbit new "Fix the flaky login test" --worktree --wait
+orbit mcp install            # print the Claude Code and Codex registration
+```
+
+See [docs/CLI.md](docs/CLI.md).
+
 ## Benchmarks
 
 ```sh
@@ -88,7 +101,7 @@ Desktop numbers (window-up time, memory and idle CPU of the whole process
 tree) come from a Windows PowerShell script:
 
 ```powershell
-./scripts/measure-desktop.ps1 -Label "Orbit (GPUI Fast)" -Exe target/release/orbit.exe
+./scripts/measure-desktop.ps1 -Label "Orbit (GPUI Fast)" -Exe target/release/orbit-desktop.exe
 ```
 
 Results are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
@@ -96,6 +109,6 @@ Results are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 ## Release bundles
 
 `scripts/bundle.sh` (Linux `.tar.gz`, macOS `Orbit.app` in a `.zip`) and
-`scripts/bundle.ps1` (Windows `.zip` with `orbit.exe` and `orbitd.exe`) build
+`scripts/bundle.ps1` (Windows `.zip` with `orbit-desktop.exe`, the `orbit` CLI and `orbitd.exe`) build
 and package a release into `dist/`. The Release workflow runs them on every
 OS for `v*` tags.

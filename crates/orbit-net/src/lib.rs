@@ -7,21 +7,28 @@
 //! UI applied instead of being reloaded.
 
 pub mod client;
+pub mod endpoint;
+#[cfg(feature = "engine")]
 pub mod server;
 pub mod state;
+mod ws_lite;
 
 use crossfire::oneshot::{RxOneshot, oneshot};
+#[cfg(feature = "engine")]
 use crossfire::{AsyncRx, mpsc};
+#[cfg(feature = "engine")]
 use orbit_core::{EngineHandle, engine::EventRx};
 use orbit_proto::*;
 
 pub use client::RemoteClient;
+#[cfg(feature = "engine")]
 pub use server::{ServerOptions, serve};
 
 /// The port `orbitd` listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7840;
 
 /// Events are sent in frames of at most this many envelopes.
+#[cfg(feature = "engine")]
 pub(crate) const MAX_BATCH: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,12 +49,14 @@ pub enum Update {
 }
 
 /// The engine, local or remote.
+#[cfg(feature = "engine")]
 #[derive(Clone)]
 pub enum Backend {
     Local(EngineHandle),
     Remote(RemoteClient),
 }
 
+#[cfg(feature = "engine")]
 impl Backend {
     pub fn call(&self, command: Command) -> RxOneshot<Result<Reply, String>> {
         match self {
@@ -83,6 +92,7 @@ impl Backend {
     }
 }
 
+#[cfg(feature = "engine")]
 pub enum Feed {
     Local(LocalFeed),
     Remote(AsyncRx<mpsc::List<Update>>),
@@ -90,6 +100,7 @@ pub enum Feed {
     Closed,
 }
 
+#[cfg(feature = "engine")]
 pub struct LocalFeed {
     engine: EngineHandle,
     events: Option<EventRx>,
@@ -97,6 +108,7 @@ pub struct LocalFeed {
     seq: u64,
 }
 
+#[cfg(feature = "engine")]
 impl Feed {
     /// Waits for the next updates and returns everything available at once,
     /// so a burst of deltas is applied in one pass and costs one render.
@@ -117,6 +129,7 @@ impl Feed {
     }
 }
 
+#[cfg(feature = "engine")]
 impl LocalFeed {
     async fn next_batch(&mut self) -> Option<Vec<Update>> {
         loop {
@@ -172,5 +185,5 @@ pub(crate) fn ready<T>(result: T) -> RxOneshot<T> {
     rx
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "engine"))]
 mod tests;

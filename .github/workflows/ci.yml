@@ -83,11 +83,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            exe: orbit.exe
+            exe: orbit-desktop.exe
           - os: ubuntu-latest
-            exe: orbit
+            exe: orbit-desktop
           - os: macos-latest
-            exe: orbit
+            exe: orbit-desktop
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -110,8 +110,8 @@ jobs:
           key: release
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Build orbit
-        run: cargo build --release --locked -p orbit-app --bin orbit
+      - name: Build orbit-desktop and orbit
+        run: cargo build --release --locked -p orbit-app --bin orbit-desktop -p orbit-cli --bin orbit
 
       - uses: actions/upload-artifact@v4
         with:

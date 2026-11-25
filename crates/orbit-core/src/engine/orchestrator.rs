@@ -136,6 +136,7 @@ pub struct Orchestrator {
     /// Liveness and terminal-agent evidence (`engine/status.rs`).
     pub(crate) status: crate::status::StatusState,
     pub(crate) forge: super::forge::ForgeState,
+    pub(crate) cli: super::cli::CliState,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -185,6 +186,7 @@ impl Orchestrator {
             seeded_titles: Default::default(),
             status: Default::default(),
             forge: Default::default(),
+            cli: Default::default(),
         }
     }
 
@@ -346,12 +348,14 @@ impl Orchestrator {
 
     pub fn terminal_output(&mut self, term: TermId, data: Vec<u8>) {
         self.status_terminal_output(term, &data);
+        self.cli_terminal_output(term, &data);
         self.emit(Event::TerminalOutput { term, data });
     }
 
     pub fn terminal_exited(&mut self, term: TermId, code: Option<i32>) {
         self.terminals.remove_exited(term);
         self.status_terminal_closed(term);
+        self.cli.exited(term, code);
         self.emit(Event::TerminalExited { term, code });
     }
 
@@ -719,6 +723,11 @@ impl Orchestrator {
             | Command::ResizeTerminal { .. }
             | Command::CloseTerminal { .. }
             | Command::BindTerminal { .. }) => self.terminal_command(command),
+            command @ (Command::StartThread(_)
+            | Command::ReadTimeline { .. }
+            | Command::RunInTerminal { .. }
+            | Command::ReadTerminal { .. }
+            | Command::ListTerminals) => self.cli_command(command),
         }
     }
 
@@ -1073,6 +1082,10 @@ impl Orchestrator {
             env.push(("PORT".to_owned(), port.to_string()));
             env.push(("ORBIT_PORT_BASE".to_owned(), port.to_string()));
         }
+        // Lets `orbit` and `orbit mcp` inside the agent find this engine and
+        // know which thread they act for (never the access token).
+        env.push(("ORBIT_THREAD".to_owned(), thread_id.to_string()));
+        env.push(("ORBIT_DATA".to_owned(), self.store.dir().display().to_string()));
         let runtime = self.runtimes.entry(thread_id).or_default();
         let spec = SessionSpec {
             thread: thread_id,
