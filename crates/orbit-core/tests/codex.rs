@@ -699,7 +699,7 @@ async fn questions_are_answered_together_and_resolved_requests_are_withdrawn() {
         turn_start("turn_1"),
         server_request(9, "item/tool/requestUserInput", json!({"threadId": "thr_1", "turnId": "turn_1", "itemId": "q", "isBlocking": true,
             "questions": [
-                {"id": "db", "header": "Database", "question": "Which database?", "options": [{"label": "Postgres", "description": ""}, {"label": "SQLite", "description": ""}]},
+                {"id": "db", "header": "Database", "question": "Which database?", "options": [{"label": "Postgres", "description": "Shared, survives restarts"}, {"label": "SQLite", "description": ""}]},
                 {"id": "name", "header": "", "question": "Project name?"}
             ]})),
         json!({"awaitResponse": 9}),
@@ -715,7 +715,7 @@ async fn questions_are_answered_together_and_resolved_requests_are_withdrawn() {
         let Some(AgentEvent::Request { provider_ref, kind }) = events.last().cloned() else { unreachable!() };
         questions.push((provider_ref, kind));
     }
-    assert_eq!(questions[0].1, RequestKind::Question { question: "Database: Which database?".into(), options: vec!["Postgres".into(), "SQLite".into()], multi_select: false });
+    assert_eq!(questions[0].1, RequestKind::Question { question: "Database: Which database?".into(), options: vec![QuestionOption::new("Postgres", "Shared, survives restarts"), "SQLite".into()], multi_select: false });
     assert_eq!(questions[1].1, RequestKind::Question { question: "Project name?".into(), options: vec![], multi_select: false });
     handle.send(SessionInput::Resolve { provider_ref: questions[1].0.clone(), decision: Decision::Answer { text: "orbit".into() } });
     handle.send(SessionInput::Resolve { provider_ref: questions[0].0.clone(), decision: Decision::Answer { text: "SQLite".into() } });

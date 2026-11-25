@@ -80,14 +80,7 @@ fn field_header(label: &'static str, id: &'static str, busy: bool, muted: Hsla, 
 /// Commit everything in the thread's workspace, optionally pushing. The
 /// message is written from `context` (the change) while the dialog opens,
 /// unless the user starts typing first.
-pub fn commit(
-    app: Entity<AppState>,
-    thread: ThreadId,
-    context: String,
-    view: WeakEntity<super::ReviewView>,
-    window: &mut Window,
-    cx: &mut App,
-) {
+pub fn commit(app: Entity<AppState>, thread: ThreadId, context: String, after: super::AfterGit, window: &mut Window, cx: &mut App) {
     let initial = thread_title(&app, thread, cx);
     let message = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 10).default_value(initial.clone()));
     let push = Rc::new(Cell::new(true));
@@ -105,7 +98,7 @@ pub fn commit(
     };
     write(false, window, cx);
     window.open_dialog(cx, move |dialog, _, cx| {
-        let (message, app, push, view) = (message.clone(), app.clone(), push.clone(), view.clone());
+        let (message, app, push, after) = (message.clone(), app.clone(), push.clone(), after.clone());
         let push_box = push.clone();
         let write = write.clone();
         let header = field_header("Message", "generate-commit", busy.get(), cx.theme().muted_foreground, move |window, cx| {
@@ -138,7 +131,7 @@ pub fn commit(
                     return false;
                 }
                 let task = app.update(cx, |app, cx| app.call(Command::Commit { thread, message: text, push: push.get() }, cx));
-                let view = view.clone();
+                let after = after.clone();
                 window
                     .spawn(cx, async move |cx| {
                         let result = task.await;
@@ -147,7 +140,7 @@ pub fn commit(
                                 Ok(_) => window.push_notification("Committed", cx),
                                 Err(message) => notify_error(window, "Couldn’t commit", message, cx),
                             }
-                            let _ = view.update(cx, |view, cx| view.load(cx));
+                            after(window, cx);
                         });
                     })
                     .detach();
@@ -156,10 +149,36 @@ pub fn commit(
     });
 }
 
-/// Push the branch and open a pull request.
+/// Pushes the thread's branch (setting its upstream the first time) and
+/// says where it went.
+pub fn push(app: Entity<AppState>, thread: ThreadId, after: super::AfterGit, window: &mut Window, cx: &mut App) {
+    let task = app.update(cx, |app, cx| app.call(Command::Push { thread }, cx));
+    window
+        .spawn(cx, async move |cx| {
+            let result = task.await;
+            let _ = cx.update(|window, cx| {
+                match result {
+                    Ok(Reply::Text(target)) => window.push_notification(Notification::success(format!("Pushed to {target}")), cx),
+                    Ok(_) => window.push_notification(Notification::success("Pushed"), cx),
+                    Err(message) => notify_error(window, "Couldn’t push", message, cx),
+                }
+                after(window, cx);
+            });
+        })
+        .detach();
+}
+
 /// Push the branch and open a pull request; title and body are written
 /// from `context` while the dialog opens, unless the user edits them first.
-pub fn create_pr(app: Entity<AppState>, thread: ThreadId, files: Vec<String>, context: String, window: &mut Window, cx: &mut App) {
+pub fn create_pr(
+    app: Entity<AppState>,
+    thread: ThreadId,
+    files: Vec<String>,
+    context: String,
+    after: super::AfterGit,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let initial_title = thread_title(&app, thread, cx);
     let title = cx.new(|cx| InputState::new(window, cx).default_value(initial_title.clone()));
     let body_text = format!("## Changes\n\n{}", files.iter().map(|f| format!("- `{f}`")).collect::<Vec<_>>().join("\n"));
@@ -183,7 +202,7 @@ pub fn create_pr(app: Entity<AppState>, thread: ThreadId, files: Vec<String>, co
     };
     write(false, window, cx);
     window.open_dialog(cx, move |dialog, _, cx| {
-        let (title, body, app) = (title.clone(), body.clone(), app.clone());
+        let (title, body, app, after) = (title.clone(), body.clone(), app.clone(), after.clone());
         let write = write.clone();
         let header = field_header("Title and description", "generate-pr", busy.get(), cx.theme().muted_foreground, move |window, cx| {
             write(true, window, cx)
@@ -205,19 +224,25 @@ pub fn create_pr(app: Entity<AppState>, thread: ThreadId, files: Vec<String>, co
                     return false;
                 }
                 let task = app.update(cx, |app, cx| app.call(Command::CreatePullRequest { thread, title, body }, cx));
+                let after = after.clone();
                 window
                     .spawn(cx, async move |cx| {
                         let result = task.await;
-                        let _ = cx.update(|window, cx| match result {
-                            Ok(Reply::PullRequest { url }) => {
-                                let open = url.clone();
-                                window.push_notification(
-                                    Notification::success(url).title("Pull request created").on_click(move |_, _, cx| cx.open_url(&open)),
-                                    cx,
-                                )
+                        let _ = cx.update(|window, cx| {
+                            match result {
+                                Ok(Reply::PullRequest { url }) => {
+                                    let open = url.clone();
+                                    window.push_notification(
+                                        Notification::success(url)
+                                            .title("Pull request created")
+                                            .on_click(move |_, _, cx| cx.open_url(&open)),
+                                        cx,
+                                    )
+                                }
+                                Ok(_) => {}
+                                Err(message) => notify_error(window, "Couldn’t create the pull request", message, cx),
                             }
-                            Ok(_) => {}
-                            Err(message) => notify_error(window, "Couldn’t create the pull request", message, cx),
+                            after(window, cx);
                         });
                     })
                     .detach();
@@ -352,7 +377,6 @@ pub fn undo_restore(app: Entity<AppState>, thread: ThreadId, window: &mut Window
 /// workspace first goes back to how it was before that message's turn, so
 /// the new reply starts from the same files the original did. For the
 /// thread view's "Edit" on a message.
-#[allow(dead_code)]
 pub fn edit_message(
     app: Entity<AppState>,
     thread: ThreadId,

@@ -367,7 +367,7 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | Edit from here (rewind and resend) | web/components/chat/useTimelineRewind.ts | Partial | app/thread/rows.rs:167, :616, core/engine/orchestrator.rs:996 | Rewinds the provider's own history at the cursor. Edits in a dialog, drops attachments, and offers no "revert files too". | P0 |
 | Steer badges ("waiting to be read", "Steered the active turn", "promoted from queue") | web/components/chat/TimelineUserMessageRow.tsx | Partial | app/thread/rows.rs:134, :158 | Single "Steered" label and ring. | P2 |
 | "Sent by T3 Code" marker on system-sent messages | web/components/chat/TimelineUserMessageRow.tsx | Missing | | | P2 |
-| Inline context chips in sent messages (terminal excerpt, review comment, preview crop, PR, thread, file) | web/components/chat/UserMessageContextChips.tsx | Missing | | | P1 |
+| Inline context chips in sent messages (terminal excerpt, review comment, preview crop, PR, thread, file) | web/components/chat/UserMessageContextChips.tsx | Partial | app/composer/attach.rs (`ContextChip`) | Review comments ("Add to composer") and terminal selections (context menu, Ctrl+Shift+L) become chips in the composer; no preview crops. | P1 |
 | Assistant Markdown body | web/components/ChatMarkdown.tsx | Done | app/thread/rows.rs:189, app/thread/mod.rs:166 | Streaming re-parses only the last block on a background task. | P0 |
 | Assistant hover bar (status badge, copy, fork, reply, timestamp) | web/components/chat/TimelineAssistantRows.tsx | Partial | app/thread/rows.rs:195 | Copy only. | P1 |
 | Day-aware timestamps (locale, 12 h / 24 h, full-time tooltip) | ct/settings.ts:67 | Missing | | | P2 |
@@ -558,7 +558,7 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | File-edit approval shows the change | (T3 #42390 does not) | Done | app/thread/rows.rs:502 | Diff preview in the card. | P0 |
 | Subagent and child approvals surface in the parent | web/components/ChildThreadApprovals.tsx | Partial | core/provider/claude/parser.rs:18 | Claude subagent and background approvals appear in the thread (never auto-denied); no "from {child}" label. #15082 (21 comments). | P1 |
 | Thread banner "Open approval / Open question" | web/components/ThreadActivityBanners.tsx | Done | app/inbox.rs:117-153, app/shell.rs:300 | Inbox answers commands, edits and tools inline from any screen; title-bar "n need you". | P0 |
-| User-input questions: header, options with descriptions and previews, multi-select, custom answer, required | ct/orchestrationV2.ts:1569 | Partial | proto/model.rs:432, app/thread/rows.rs:539 | Options are buttons; no free-text answer, no multi-select UI, no descriptions. | P0 |
+| User-input questions: header, options with descriptions and previews, multi-select, custom answer, required | ct/orchestrationV2.ts:1569 | Partial | proto/model.rs (`QuestionOption`), app/thread/questions.rs | Question panel: numbered choices with the agent's descriptions (Claude, Codex, OpenCode), multi-select, own words, Skip. Option previews are not shown. | P0 |
 | Several questions with previous / next | web/components/ComposerPendingUserInputPanel.tsx | Partial | core/provider/claude/parser.rs:15 | Parser handles several questions; UI shows one card. | P1 |
 | Dismiss a question without answering | web/pendingUserInput.ts | Missing | | | P2 |
 | Per-question attachments | web/questionAttachments.ts | Missing | | | P2 |
@@ -600,7 +600,7 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | File actions (open in preview or editor, reveal, open with, copy path) | web/diffFileActions.ts | Partial | app/review/mod.rs (`file_menu`) | Open with the system, show in folder, copy path, revert file, comment; no editor picker yet (WP2). | P1 |
 | Commit links open in the diff pane | web/components/DiffPanel.tsx | Missing | | | P2 |
 | Settings → Diffs (default layout, ignore whitespace, collapsed files, proactive panels, open PRs in app) | web/components/settings/SettingsPanels.tsx:1709-1850 | Missing | | | P2 |
-| Diff colour scheme (red-green or colour-blind safe) | ct/settings.ts (`diffColorScheme`) | Done | app/review/mod.rs (`palette`) | Blue/orange from theme tokens for lines, word changes, tree and counts; signs keep +/− shapes. Session preference, not yet in Settings. | P1 |
+| Diff colour scheme (red-green or colour-blind safe) | ct/settings.ts (`diffColorScheme`) | Done | app/review/mod.rs (`palette`) | Blue/orange from theme tokens for lines, word changes, tree and counts; signs keep +/− shapes. Saved in Settings › Workspace › Review with wrap and hide tests. | P1 |
 
 ### Checkpoints, revert, restore
 
@@ -611,7 +611,7 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | Nested repositories snapshotted as their own scopes | CheckpointService.ts:292 | Missing | | | P2 |
 | Diff size limit with `[truncated]` marker | vcs/VcsDriver.ts:43 | Missing | | Stream and virtualise instead of truncating at 10 MB. | P2 |
 | Revert and keep changes (rewind the chat only) | web/components/chat/ChatOverlayHosts.tsx:220-300 | Done | core/engine/orchestrator.rs:996 | Same as Edit from here. | P0 |
-| Revert files too (restore files from a turn's checkpoint) | web/components/chat/useTimelineRewind.ts | Partial | app/review/dialogs.rs (`confirm_restore`, `edit_message`) | Review sheet: "Restore to before turn N…" names every file that changes. `edit_message` adds "Restore files too" to edit-and-resend; the thread view (WP5) still has to call it. Works outside worktrees. | P0 |
+| Revert files too (restore files from a turn's checkpoint) | web/components/chat/useTimelineRewind.ts | Partial | app/review/dialogs.rs (`confirm_restore`, `edit_message`) | Review sheet: "Restore to before turn N…" names every file that changes. The thread view's Edit uses `edit_message` ("Restore files to before turn N too"); turn-end "Undo turn…" uses `confirm_restore`. Works outside worktrees. | P0 |
 | Revert repositories too (multi-repo, all-or-nothing) | CheckpointService.ts:821-900 | Missing | | | P2 |
 | Undo a restore | (not in T3) | Done | core/engine/review.rs (`UndoRestore`), app/review/dialogs.rs | Undo in the notification and the sheet's menu; undoing again swaps back. | P1 |
 | Branch-changed banner with "Restore branch" | web/components/chat/ThreadActivityBanners.tsx:300-350 | Missing | | | P1 |
@@ -717,14 +717,14 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 
 | Feature | T3 reference | Orbit status | Orbit location | Better than T3 | Pri |
 |---|---|---|---|---|---|
-| Preview panel with tabs, back / forward / refresh, URL bar, search engine | web/components/preview/PreviewView.tsx | Missing | | Off unless opened; T3's idle preview used 228% GPU (#14730) and 11 GB (#37987). | P2 |
+| Preview panel with tabs, back / forward / refresh, URL bar, search engine | web/components/preview/PreviewView.tsx | Partial | crates/orbit-browser, app/thread/browser.rs | One page per thread beside the conversation (Ctrl+Shift+B), back / forward / reload, address bar, dev tools, open in system browser. No tabs or search engine. Off unless opened; hidden pages are released after five minutes. T3's idle preview used 228% GPU (#14730) and 11 GB (#37987). | P2 |
 | Find on page, zoom, device presets, colour-scheme emulation | web/components/preview/PreviewFindBar.tsx | Missing | | | P2 |
-| Empty state with discovered local servers and recent URLs; stop a dev server | web/components/preview/PreviewEmptyState.tsx | Missing | | | P2 |
+| Empty state with discovered local servers and recent URLs; stop a dev server | web/components/preview/PreviewEmptyState.tsx | Partial | app/thread/browser.rs | Addresses the agent's replies, commands and the thread's terminal print are offered on the empty page and as "Open preview localhost:3000" in the header. No stop. | P2 |
 | Floating mini-player, picture-in-picture, pop-out window | web/components/ThreadPreviewMiniPlayer.tsx | Missing | | | P2 |
 | Element picking and annotation sent to chat | desk/preview/PickPreload.ts | Missing | | | P2 |
 | Screenshot and screen recording with cursor overlay | desk/preview/RecordingInput.ts | Missing | | | P2 |
 | Agent browser automation (MCP tools, tab ownership, cursor overlay) | ct/previewAutomation.ts:20-50 | Missing | | | P2 |
-| Port discovery attributed to threads | srv/preview/PortScanner.ts | Missing | | Each worktree already reserves a port block (core/git/worktree.rs:8-10), so attribution is exact. | P2 |
+| Port discovery attributed to threads | srv/preview/PortScanner.ts | Partial | app/thread/browser.rs | The worktree's reserved port (core/git/worktree.rs) is offered with the addresses seen in the thread; no port scanning. | P2 |
 | Remote localhost tunnel and port forwarding | desk/preview/LoopbackTunnel.ts, srv/preview/PreviewTunnel.ts | Missing | | | P2 |
 | Browser profiles, cookie import, passkeys | desk/preview/BrowserImport/ | Missing | | | P2 |
 | Default browser on macOS | doc/default-browser.md | Missing | | | P2 |

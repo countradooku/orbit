@@ -86,8 +86,23 @@ fn main() {
     });
     // The waiting thread asks two questions (one multi-select) and an approval.
     let questions = [
-        ("Which browsers should the checkout tests cover?", vec!["Chromium", "Firefox", "WebKit"], true),
-        ("Run them against the staging API or a local mock?", vec!["Staging API", "Local mock server"], false),
+        (
+            "Which browsers should the checkout tests cover?",
+            vec![
+                ("Chromium", "Chrome and Edge; most of the traffic"),
+                ("Firefox", "Catches Gecko-only layout bugs"),
+                ("WebKit", "Safari; slowest to run on Windows"),
+            ],
+            true,
+        ),
+        (
+            "Run them against the staging API or a local mock?",
+            vec![
+                ("Staging API", "Real data; needs the VPN and can be flaky"),
+                ("Local mock server", "Fast and deterministic (Recommended)"),
+            ],
+            false,
+        ),
     ];
     let question_items: Vec<(ItemId, AgentRequest)> = questions
         .iter()
@@ -100,7 +115,7 @@ fn main() {
                     provider_ref: format!("q#{i}"),
                     kind: RequestKind::Question {
                         question: (*q).into(),
-                        options: options.iter().map(|o| (*o).to_owned()).collect(),
+                        options: options.iter().map(|(label, description)| QuestionOption::new(*label, *description)).collect(),
                         multi_select: *multi,
                     },
                     resolution: None,
@@ -200,6 +215,8 @@ fn main() {
     let mut waiting_items = vec![
         item(1, ItemBody::User(UserMessage { text: "Add Playwright tests for the checkout flow: cart, address, payment and the confirmation page.".into(), ..Default::default() })),
         item(1, tool(ToolKind::Read, "Read", "tests/e2e/cart.spec.ts", "", vec![])),
+        // A dev server the preview browser offers ("Open preview localhost:5173").
+        item(1, tool(ToolKind::Command, "Bash", "npm run dev", "\n  VITE v6.0.3  ready in 412 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  Network: use --host to expose\n", vec![])),
         item(1, ItemBody::Assistant { text: "Before I write the specs, two choices change how they run:".into() }),
     ];
     for (id, request) in &question_items {

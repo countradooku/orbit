@@ -162,6 +162,10 @@ fn request_sig(kind: &RequestKind) -> String {
         RequestKind::FileChange { path, .. } => format!("FileChange {path}"),
         RequestKind::Tool { name, .. } => format!("Tool {name}"),
         RequestKind::Question { question, options, multi_select } => {
+            let options: Vec<String> = options
+                .iter()
+                .map(|o| if o.description.is_empty() { o.label.clone() } else { format!("{} ({})", o.label, o.description) })
+                .collect();
             format!("Question {question:?} {options:?} multi={multi_select}")
         }
         RequestKind::Plan { plan } => format!("Plan {plan:?}"),
@@ -255,8 +259,8 @@ fn ask_user_question_supports_several_questions_and_multi_select() {
         })
     });
     let s = filtered(&r);
-    assert!(s.contains(&"Request 2eddbd30-1a72-4978-82cc-fcf953b177a3#0 Question \"Pick colors\" [\"Red, warm\", \"Blue\"] multi=true".to_owned()), "{s:#?}");
-    assert!(s.contains(&"Request 2eddbd30-1a72-4978-82cc-fcf953b177a3#1 Question \"Pick size\" [\"Small\", \"Large\"] multi=false".to_owned()));
+    assert!(s.contains(&"Request 2eddbd30-1a72-4978-82cc-fcf953b177a3#0 Question \"Pick colors\" [\"Red, warm (Red and other warm tones)\", \"Blue (Blue tones)\"] multi=true".to_owned()), "{s:#?}");
+    assert!(s.contains(&"Request 2eddbd30-1a72-4978-82cc-fcf953b177a3#1 Question \"Pick size\" [\"Small (Small size)\", \"Large (Large size)\"] multi=false".to_owned()));
     assert!(s.contains(&"ToolStarted toolu_01VCqgtptj2sZpmzZbwMLtza AskUserQuestion Other \"AskUserQuestion\" input=true files=[]".to_owned()));
     assert_eq!(s.last().unwrap(), "TurnFinished Completed cost=1920 ctx=60577 window=1000000 in=4 out=241 cr=117681 cw=3110");
     // One reply, sent once both questions are answered; the multi-select

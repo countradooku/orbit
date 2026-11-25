@@ -153,6 +153,8 @@ pub struct AppearanceSettings {
     pub code_font_size: u16,
     pub chat_width: ChatWidth,
     pub motion: Motion,
+    /// How times of day are written (timeline stamps, reset times).
+    pub clock: ClockFormat,
 }
 
 impl Default for AppearanceSettings {
@@ -165,8 +167,17 @@ impl Default for AppearanceSettings {
             code_font_size: 13,
             chat_width: ChatWidth::Comfortable,
             motion: Motion::System,
+            clock: ClockFormat::H24,
         }
     }
+}
+
+/// A 24-hour clock (`14:05`) or a 12-hour one (`2:05 PM`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+pub enum ClockFormat {
+    #[default]
+    H24,
+    H12,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
@@ -425,6 +436,12 @@ pub struct ReviewSettings {
     pub split: bool,
     /// Open the review with every file collapsed to its header.
     pub collapse_files: bool,
+    /// Wrap long lines instead of scrolling sideways.
+    pub wrap: bool,
+    /// Blue and orange instead of green and red.
+    pub colorblind: bool,
+    /// Leave test files out of the file list.
+    pub hide_tests: bool,
 }
 
 // ── Notifications ────────────────────────────────────────────────────────

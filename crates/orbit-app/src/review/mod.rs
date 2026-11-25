@@ -43,7 +43,6 @@ use gpui_kit::*;
 use orbit_proto::diff::Side;
 use orbit_proto::*;
 
-#[allow(unused_imports)] // for the thread view's turn and message actions
 pub use dialogs::{confirm_restore, edit_message};
 use model::{Comment, ReviewData};
 use state::{ReviewMarks, prefs, update_prefs};
@@ -140,6 +139,11 @@ pub struct ReviewView {
     /// Indexes into `data.files` shown after filtering, in order.
     visible: Vec<usize>,
     hide_tests: bool,
+    /// A file to select once the first files arrive, as a tool reported it
+    /// (absolute or relative to the repository).
+    reveal: Option<String>,
+    /// The colour-blind palette is in use (follows the saved setting).
+    colorblind: bool,
     selected: Option<SharedString>,
     hovered: Rc<RefCell<Option<(DiffLinePosition, Instant)>>>,
 
@@ -210,11 +214,7 @@ impl ReviewView {
         ];
         subs.push(cx.observe(&app, |this, _, cx| this.thread_changed(cx)));
         // Settings → Review can change while the sheet is open.
-        subs.push(cx.observe_global::<crate::settings::SettingsModel>(|this, cx| {
-            let mode = if crate::settings::get(cx).review.split { DiffMode::Split } else { DiffMode::Unified };
-            this.diff.update(cx, |d, cx| d.set_mode(mode, cx));
-            cx.notify();
-        }));
+        subs.push(cx.observe_global::<crate::settings::SettingsModel>(|this, cx| this.sync_saved_prefs(cx)));
 
         let (reviewed, comments) =
             ReviewMarks::read(cx, thread, |m| (Rc::new(m.reviewed.clone()), Rc::new(m.comments.clone())));
@@ -247,6 +247,8 @@ impl ReviewView {
             split: panes,
             visible: Vec::new(),
             hide_tests: p.hide_tests,
+            reveal: None,
+            colorblind: p.colorblind,
             selected: None,
             hovered: Rc::default(),
             reviewed,
@@ -463,6 +465,18 @@ impl ReviewView {
                 }
             });
         }
+        if let Some(wanted) = self.reveal.take() {
+            let wanted = wanted.replace('\\', "/");
+            let found = self.visible.iter().copied().find(|&ix| {
+                let path = self.data.files[ix].path();
+                wanted == path || wanted.ends_with(&format!("/{path}"))
+            });
+            if let Some(ix) = found {
+                let path = self.data.path(ix);
+                self.diff.update(cx, |d, cx| d.set_file_collapsed(&path, false, cx));
+                self.select_file(path, cx);
+            }
+        }
         cx.notify();
     }
 
@@ -598,23 +612,15 @@ impl ReviewView {
     /// The change as text for writing a commit message or pull request:
     /// the thread's title, then the patch, cut at a size a model reads well.
     fn change_context(&self, cx: &App) -> String {
-        const BUDGET: usize = 48 * 1024;
-        let mut out = String::new();
-        if let Some(t) = self.thread_record(cx) {
-            out.push_str(&format!("Task: {}\n\n", crate::thread::display_title(&t)));
-        }
-        let mut left = Vec::new();
-        for f in &self.data.files {
-            if out.len() + f.raw.len() <= BUDGET {
-                out.push_str(&f.raw);
-            } else {
-                left.push(f.path());
-            }
-        }
-        if !left.is_empty() {
-            out.push_str(&format!("\n…and {} more changed files: {}\n", left.len(), left.join(", ")));
-        }
-        out
+        change_context(self.thread_record(cx).as_ref(), &self.data.files)
+    }
+
+    /// Reloads the sheet after a commit or pull request from it.
+    fn reload_after(&self, cx: &mut Context<Self>) -> AfterGit {
+        let view = cx.weak_entity();
+        Rc::new(move |_, cx| {
+            let _ = view.update(cx, |view, cx| view.load(cx));
+        })
     }
 
     fn reviewed_files(&self) -> usize {
@@ -795,6 +801,40 @@ impl ReviewView {
         .detach();
     }
 
+    /// Puts every comment (and any draft with text) in the thread's
+    /// composer as chips, to send with a message of your own. They leave
+    /// the review, as when sent.
+    fn add_comments_to_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids: Vec<u64> = self.drafts.iter().map(|d| d.comment.id).collect();
+        for id in ids {
+            self.save_draft(id, window, cx);
+        }
+        if self.comments.is_empty() {
+            return;
+        }
+        let chips: Vec<crate::composer::ContextChip> = self
+            .comments
+            .iter()
+            .map(|c| crate::composer::ContextChip::ReviewComment {
+                path: c.path.clone(),
+                line: c.start.map(|(_, line)| line),
+                quote: c.excerpt.clone(),
+                comment: c.text.clone(),
+            })
+            .collect();
+        let count = chips.len();
+        if crate::composer::Composer::add_context_to(self.thread, chips, window, cx) {
+            self.store_comments(Vec::new(), cx);
+            let what = if count == 1 { "1 comment".to_owned() } else { format!("{count} comments") };
+            window.push_notification(Notification::success(format!("Added {what} to the composer")), cx);
+        } else {
+            window.push_notification(
+                Notification::warning("Open the thread to add comments to its composer.").title("The composer isn’t open"),
+                cx,
+            );
+        }
+    }
+
     // ── Navigation ───────────────────────────────────────────────────────
 
     fn select_file(&mut self, path: SharedString, cx: &mut Context<Self>) {
@@ -882,15 +922,30 @@ impl ReviewView {
 
     fn set_colorblind(&mut self, on: bool, cx: &mut Context<Self>) {
         update_prefs(cx, |p| p.colorblind = on);
-        self.palette = None;
-        self.diff.update(cx, |d, cx| d.set_inline_unit((!on).then_some(DiffInlineUnit::Word), cx));
-        cx.notify();
+        self.sync_saved_prefs(cx);
     }
 
     fn set_hide_tests(&mut self, hide: bool, cx: &mut Context<Self>) {
         update_prefs(cx, |p| p.hide_tests = hide);
-        self.hide_tests = hide;
-        self.apply_filter(cx);
+        self.sync_saved_prefs(cx);
+    }
+
+    /// Follows Settings › Review, whether changed here or on the settings
+    /// page (or by another client of the host).
+    fn sync_saved_prefs(&mut self, cx: &mut Context<Self>) {
+        let saved = crate::settings::get(cx).review.clone();
+        let mode = if saved.split { DiffMode::Split } else { DiffMode::Unified };
+        self.diff.update(cx, |d, cx| d.set_mode(mode, cx));
+        if self.colorblind != saved.colorblind {
+            self.colorblind = saved.colorblind;
+            self.palette = None;
+            self.diff.update(cx, |d, cx| d.set_inline_unit((!saved.colorblind).then_some(DiffInlineUnit::Word), cx));
+        }
+        if self.hide_tests != saved.hide_tests {
+            self.hide_tests = saved.hide_tests;
+            self.apply_filter(cx);
+        }
+        cx.notify();
     }
 }
 
@@ -1061,7 +1116,10 @@ impl ReviewView {
                     .small()
                     .icon(Lucide::GitCommitHorizontal)
                     .label("Commit…")
-                    .on_click(cx.listener(|this, _, window, cx| dialogs::commit(this.app.clone(), this.thread, this.change_context(cx), cx.weak_entity(), window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let after = this.reload_after(cx);
+                        dialogs::commit(this.app.clone(), this.thread, this.change_context(cx), after, window, cx)
+                    })),
             )
             .child(
                 Button::new("pull-request")
@@ -1071,7 +1129,8 @@ impl ReviewView {
                     .label("Pull request…")
                     .on_click(cx.listener(|this, _, window, cx| {
                         let files = this.data.files.iter().map(|f| f.path().to_owned()).collect();
-                        dialogs::create_pr(this.app.clone(), this.thread, files, this.change_context(cx), window, cx)
+                        let after = this.reload_after(cx);
+                        dialogs::create_pr(this.app.clone(), this.thread, files, this.change_context(cx), after, window, cx)
                     })),
             )
             .when(mergeable, |el| {
@@ -1544,6 +1603,16 @@ impl ReviewView {
                         })),
                 )
                 .child(
+                    Button::new("comments-to-composer")
+                        .small()
+                        .outline()
+                        .icon(Lucide::MessageSquarePlus)
+                        .label("Add to composer")
+                        .disabled(saved == 0)
+                        .tooltip("Put them in the message you are writing, to send with your own words")
+                        .on_click(cx.listener(|this, _, window, cx| this.add_comments_to_composer(window, cx))),
+                )
+                .child(
                     Button::new("send-comments")
                         .small()
                         .primary()
@@ -1813,11 +1882,113 @@ pub fn open(app: Entity<AppState>, thread: ThreadId, window: &mut Window, cx: &m
     open_at(app, thread, None, window, cx);
 }
 
+/// What runs once a commit, push or pull request has landed (or failed):
+/// the caller refreshes what it shows.
+pub type AfterGit = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// What text generation reads to write a commit message or a pull
+/// request: the task, then the patch, within a budget.
+fn change_context(thread: Option<&Thread>, files: &[FileDiff]) -> String {
+    const BUDGET: usize = 48 * 1024;
+    let mut out = String::new();
+    if let Some(t) = thread {
+        out.push_str(&format!("Task: {}\n\n", crate::thread::display_title(t)));
+    }
+    let mut left = Vec::new();
+    for f in files {
+        if out.len() + f.raw.len() <= BUDGET {
+            out.push_str(&f.raw);
+        } else {
+            left.push(f.path());
+        }
+    }
+    if !left.is_empty() {
+        out.push_str(&format!("\n…and {} more changed files: {}\n", left.len(), left.join(", ")));
+    }
+    out
+}
+
+/// Opens a git dialog from outside the sheet (the thread header's ship
+/// pill) once the patch it describes is read.
+fn with_patch(
+    app: Entity<AppState>,
+    thread: ThreadId,
+    scope: DiffScope,
+    window: &mut Window,
+    cx: &mut App,
+    open: impl FnOnce(Entity<AppState>, Vec<FileDiff>, String, &mut Window, &mut App) + 'static,
+) {
+    let task = app.update(cx, |app, cx| app.call(Command::Diff { thread, scope }, cx));
+    window
+        .spawn(cx, async move |cx| {
+            let patch = match task.await {
+                Ok(Reply::Diff(patch)) => patch,
+                Ok(_) => String::new(),
+                Err(message) => {
+                    let _ = cx.update(|window, cx| {
+                        window.push_notification(Notification::error(message).title("Couldn’t read the changes"), cx)
+                    });
+                    return;
+                }
+            };
+            let files = cx.background_spawn(async move { orbit_proto::diff::parse(&patch) }).await;
+            let _ = cx.update(|window, cx| {
+                let context = change_context(app.read(cx).state().threads.get(&thread), &files);
+                open(app, files, context, window, cx);
+            });
+        })
+        .detach();
+}
+
+/// The commit dialog for `thread`'s uncommitted work, from outside the
+/// sheet; its message is written from those changes.
+pub fn commit_changes(app: Entity<AppState>, thread: ThreadId, after: AfterGit, window: &mut Window, cx: &mut App) {
+    with_patch(app, thread, DiffScope::Uncommitted, window, cx, move |app, _, context, window, cx| {
+        dialogs::commit(app, thread, context, after, window, cx)
+    });
+}
+
+/// Pushes `thread`'s branch, from outside the sheet.
+pub fn push(app: Entity<AppState>, thread: ThreadId, after: AfterGit, window: &mut Window, cx: &mut App) {
+    dialogs::push(app, thread, after, window, cx);
+}
+
+/// The pull request dialog for `thread`'s work, from outside the sheet;
+/// title and description are written from every change of the thread.
+pub fn create_pull_request(app: Entity<AppState>, thread: ThreadId, after: AfterGit, window: &mut Window, cx: &mut App) {
+    with_patch(app, thread, DiffScope::Thread, window, cx, move |app, files, context, window, cx| {
+        let files = files.iter().map(|f| f.path().to_owned()).collect();
+        dialogs::create_pr(app, thread, files, context, after, window, cx)
+    });
+}
+
 /// Opens the review sheet on a given scope (a turn's diff from its
 /// summary, for example).
 pub fn open_at(app: Entity<AppState>, thread: ThreadId, scope: Option<DiffScope>, window: &mut Window, cx: &mut App) {
+    open_with(app, thread, scope, None, window, cx);
+}
+
+/// Opens the review sheet on a scope with one file selected and expanded
+/// (a step's file from the inspector). `path` may be absolute or relative
+/// to the repository, as tools report it.
+pub fn open_file(app: Entity<AppState>, thread: ThreadId, scope: Option<DiffScope>, path: String, window: &mut Window, cx: &mut App) {
+    open_with(app, thread, scope, Some(path), window, cx);
+}
+
+fn open_with(
+    app: Entity<AppState>,
+    thread: ThreadId,
+    scope: Option<DiffScope>,
+    reveal: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     bind_keys(cx);
-    let view = cx.new(|cx| ReviewView::new(app, thread, scope, window, cx));
+    let view = cx.new(|cx| {
+        let mut view = ReviewView::new(app, thread, scope, window, cx);
+        view.reveal = reveal;
+        view
+    });
     cx.set_global(OpenSheet(Some((thread, view.downgrade()))));
     let focus = view.read(cx).focus.clone();
     window.open_sheet_at(Placement::Right, cx, move |sheet, _, _| {

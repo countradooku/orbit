@@ -205,11 +205,11 @@ impl Orchestrator {
         }
     }
 
-    /// `Commit` with push and `CreatePullRequest`, with the repository's
+    /// `Commit` with push, `Push` and `CreatePullRequest`, with the repository's
     /// cached host data dropped once the push lands.
     pub(crate) fn forge_after_push(&mut self, command: Command) -> Outcome {
         let thread = match &command {
-            Command::Commit { thread, .. } | Command::CreatePullRequest { thread, .. } => *thread,
+            Command::Commit { thread, .. } | Command::Push { thread } | Command::CreatePullRequest { thread, .. } => *thread,
             _ => return self.git_command(command),
         };
         let repo = self.repo_for(thread).ok();
@@ -368,7 +368,7 @@ impl Orchestrator {
 
 /// Commands after which a repository's host data is stale.
 pub(crate) fn pushes(command: &Command) -> bool {
-    matches!(command, Command::Commit { push: true, .. } | Command::CreatePullRequest { .. })
+    matches!(command, Command::Commit { push: true, .. } | Command::Push { .. } | Command::CreatePullRequest { .. })
 }
 
 /// Runs `work` on the engine thread and waits for its result.

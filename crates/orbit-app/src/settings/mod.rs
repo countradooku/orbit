@@ -123,7 +123,7 @@ pub fn flush(cx: &mut App) {
         model.dirty = false;
         model.in_flight = Some(settings.clone());
     });
-    app.read(cx).send(Command::UpdateSettings { settings });
+    app.read(cx).send(Command::UpdateSettings { settings: Box::new(settings) });
 }
 
 /// The engine's settings arrived (snapshot or `SettingsChanged`).
@@ -151,6 +151,7 @@ pub fn receive(engine: Settings, cx: &mut App) {
 
 fn apply_effects(old: &Settings, new: &Settings, cx: &mut App) {
     let (a, b) = (&old.appearance, &new.appearance);
+    crate::format::set_clock(b.clock);
     let theme_changed = (a.mode, &a.light_theme, &a.dark_theme, a.ui_scale, a.code_font_size)
         != (b.mode, &b.light_theme, &b.dark_theme, b.ui_scale, b.code_font_size);
     if theme_changed {

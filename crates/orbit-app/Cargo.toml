@@ -14,7 +14,7 @@ path = "src/main.rs"
 default = ["fast"]
 # Render on GPUI Fast (retained mode, scroll layers). Build with
 # `--no-default-features` to compare against the pinned upstream GPUI.
-fast = ["gpui-kit/gpui-fast", "orbit-terminal/fast"]
+fast = ["gpui-kit/gpui-fast", "orbit-terminal/fast", "orbit-browser/fast"]
 
 [dependencies]
 # `x11` is a gpui-kit default; it is listed so the Linux backends stay on if
@@ -31,6 +31,7 @@ orbit-proto = { workspace = true }
 orbit-core = { workspace = true }
 orbit-net = { workspace = true }
 orbit-terminal = { path = "../orbit-terminal", default-features = false }
+orbit-browser = { path = "../orbit-browser", default-features = false }
 mimalloc = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }

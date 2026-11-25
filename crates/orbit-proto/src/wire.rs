@@ -202,6 +202,9 @@ pub enum Command {
     /// Undo the thread's last restore (itself undoable: it swaps back).
     UndoRestore { thread: ThreadId },
     Commit { thread: ThreadId, message: String, push: bool },
+    /// Push the thread's branch, setting its upstream on the first push.
+    /// Replies with [`Reply::Text`] naming where it went (`origin/topic`).
+    Push { thread: ThreadId },
     CreatePullRequest { thread: ThreadId, title: String, body: String },
     Branches { project: ProjectId },
     /// Merge the thread's branch into `into` locally, without a pull
@@ -244,7 +247,9 @@ pub enum Command {
     /// Replace the settings. The engine sanitizes them, persists them,
     /// applies what affects it (provider binaries and environment, git and
     /// worktree locations) and broadcasts [`Event::SettingsChanged`].
-    UpdateSettings { settings: Settings },
+    /// Boxed: settings are by far the largest command, and every other
+    /// command would otherwise be as large.
+    UpdateSettings { settings: Box<Settings> },
 
     /// One-shot text generation (titles, commit messages, pull request
     /// text) on the thread's instance in a cheap mode, or on any available

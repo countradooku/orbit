@@ -144,18 +144,21 @@ fn options(thread: &Thread, picked: Option<&BTreeSet<usize>>) -> Vec<Opt> {
                 opt("Keep planning", Choice::Decide(Decision::Deny { feedback: String::new() }), false),
             ],
             RequestKind::Question { options, multi_select, .. } => {
-                let recommended = options.iter().position(|o| o.to_lowercase().contains("recommended")).unwrap_or(0);
+                let recommended = options
+                    .iter()
+                    .position(|o| format!("{} {}", o.label, o.description).to_lowercase().contains("recommended"))
+                    .unwrap_or(0);
                 let mut out: Vec<Opt> = options
                     .iter()
                     .take(8)
                     .enumerate()
-                    .map(|(ix, label)| {
+                    .map(|(ix, option)| {
                         let choice = if *multi_select {
                             Choice::Toggle(ix)
                         } else {
-                            Choice::Decide(Decision::Answer { text: label.clone() })
+                            Choice::Decide(Decision::Answer { text: option.label.clone() })
                         };
-                        opt(label.clone(), choice, !*multi_select && ix == recommended)
+                        opt(option.label.clone(), choice, !*multi_select && ix == recommended)
                     })
                     .collect();
                 if *multi_select {
@@ -391,7 +394,7 @@ impl InboxView {
                         self.start_reply(id, window, cx);
                         return;
                     }
-                    let text = picked.iter().filter_map(|ix| options.get(*ix).cloned()).collect::<Vec<_>>().join("\n");
+                    let text = picked.iter().filter_map(|ix| options.get(*ix).map(|o| o.label.clone())).collect::<Vec<_>>().join("\n");
                     self.resolve(id, request, Decision::Answer { text }, window, cx);
                 }
             }
@@ -584,7 +587,7 @@ impl InboxView {
 
         let header = h_flex()
             .gap_2()
-            .child(StatusGlyph::new(("deck-glyph", id.0), thread))
+            .child(StatusGlyph::new(("deck-glyph", id.0), thread, state))
             .child(
                 div()
                     .flex_1()
@@ -663,7 +666,7 @@ impl InboxView {
                 this.focus.focus(window, cx);
                 cx.notify();
             }))
-            .context_menu(move |menu, _, _| thread_menu::build(menu, &app, &menu_thread, menu_path.clone()))
+            .context_menu(move |menu, _, cx| thread_menu::build(menu, &app, &menu_thread, menu_path.clone(), cx))
             .child(header)
             .children(body)
             .child(h_flex().gap_2().child(buttons).when(more > 0, |el| {

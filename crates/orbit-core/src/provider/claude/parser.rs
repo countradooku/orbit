@@ -388,6 +388,8 @@ struct QuestionIn<'a> {
 struct OptionIn<'a> {
     #[serde(borrow, default)]
     label: Cow<'a, str>,
+    #[serde(borrow, default)]
+    description: Cow<'a, str>,
 }
 
 #[derive(Deserialize)]
@@ -454,7 +456,7 @@ struct Pending {
 
 struct Question {
     text: String,
-    labels: Vec<String>,
+    options: Vec<QuestionOption>,
     multi: bool,
     answer: Option<Answer>,
 }
@@ -1180,7 +1182,7 @@ impl Parser {
                 .iter()
                 .map(|q| Question {
                     text: q.question.to_string(),
-                    labels: q.options.iter().map(|o| o.label.to_string()).collect(),
+                    options: q.options.iter().map(|o| QuestionOption::new(o.label.trim(), o.description.trim())).collect(),
                     multi: q.multi_select,
                     answer: None,
                 })
@@ -1188,7 +1190,7 @@ impl Parser {
             for (i, q) in pending.questions.iter().enumerate() {
                 out.events.push(AgentEvent::Request {
                     provider_ref: format!("{id}#{i}"),
-                    kind: RequestKind::Question { question: q.text.clone(), options: q.labels.clone(), multi_select: q.multi },
+                    kind: RequestKind::Question { question: q.text.clone(), options: q.options.clone(), multi_select: q.multi },
                 });
             }
         } else {
@@ -1238,7 +1240,7 @@ impl Parser {
                     });
                 }
                 Decision::Allow | Decision::AllowForSession => {
-                    let first = q.labels.first().cloned().unwrap_or_default();
+                    let first = q.options.first().map(|o| o.label.clone()).unwrap_or_default();
                     q.answer = Some(if q.multi { Answer::Many(vec![first]) } else { Answer::One(first) });
                 }
             }
@@ -1444,8 +1446,8 @@ mod tests {
     #[test]
     fn answers_are_appended_to_the_input() {
         let qs = vec![
-            Question { text: "Pick".into(), labels: vec![], multi: true, answer: Some(Answer::Many(vec!["Red, warm".into(), "Blue".into()])) },
-            Question { text: "Size".into(), labels: vec![], multi: false, answer: Some(Answer::One("L".into())) },
+            Question { text: "Pick".into(), options: vec![], multi: true, answer: Some(Answer::Many(vec!["Red, warm".into(), "Blue".into()])) },
+            Question { text: "Size".into(), options: vec![], multi: false, answer: Some(Answer::One("L".into())) },
         ];
         let out = with_answers(r#"{"questions":[]}"#, &qs);
         assert_eq!(out, r#"{"questions":[],"answers":{"Pick":["Red, warm","Blue"],"Size":"L"}}"#);

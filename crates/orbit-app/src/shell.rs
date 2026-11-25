@@ -72,6 +72,8 @@ pub struct Workspace {
     threads: Vec<(ThreadId, Entity<ThreadView>)>,
     /// Threads shown side by side, in grid order; empty or two or more.
     tiles: Vec<ThreadId>,
+    /// The threads last told they are on screen ([`Self::sync_shown_threads`]).
+    shown_threads: Vec<ThreadId>,
     /// Tiles from least to most recently focused, to pick one to replace.
     tile_recency: Vec<ThreadId>,
     maximized: bool,
@@ -168,6 +170,7 @@ impl Workspace {
             forge,
             threads: Vec::new(),
             tiles: Vec::new(),
+            shown_threads: Vec::new(),
             tile_recency: Vec::new(),
             maximized: false,
             tile_focus: HashMap::new(),
@@ -421,6 +424,23 @@ impl Workspace {
         }
         self.route = route;
         cx.notify();
+    }
+
+    /// Tells thread views whether they are on screen (the open thread or a
+    /// visible tile): a thread's preview page is a native surface that must
+    /// be hidden with its thread. Runs when what is visible changed.
+    fn sync_shown_threads(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let visible = self.visible_threads();
+        if visible == self.shown_threads {
+            return;
+        }
+        self.shown_threads = visible.clone();
+        let views: Vec<(ThreadId, Entity<ThreadView>)> = self.threads.clone();
+        window.defer(cx, move |_, cx| {
+            for (id, view) in views {
+                view.update(cx, |view, cx| view.set_shown(visible.contains(&id), cx));
+            }
+        });
     }
 
     fn view(&self, id: ThreadId) -> Option<&Entity<ThreadView>> {
@@ -1047,6 +1067,7 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_shown_threads(window, cx);
         let theme = cx.theme().clone();
         let body = if self.route == Route::Settings {
             div()

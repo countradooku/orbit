@@ -591,6 +591,8 @@ pub struct UserInputQuestion {
 pub struct UserInputOption {
     #[serde(default)]
     pub label: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 #[derive(Deserialize)]

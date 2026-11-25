@@ -6008,6 +6008,7 @@ dependencies = [
  "gpui-kit",
  "log",
  "mimalloc",
+ "orbit-browser",
  "orbit-core",
  "orbit-net",
  "orbit-proto",

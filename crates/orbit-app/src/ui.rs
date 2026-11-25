@@ -10,6 +10,8 @@ use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use orbit_net::ConnectionStatus;
+use orbit_net::state::ClientState;
 use orbit_proto::*;
 
 use crate::assets::Lucide;
@@ -54,12 +56,15 @@ impl Attention {
 /// | Failed      | octagon with `!`              | danger  |
 /// | RateLimited | hourglass                     | warning |
 /// | Working     | rotating open arc             | neutral |
+/// | Quiet       | still open arc, faded         | neutral |
 /// | Unverified  | dashed ring (no live signal)  | neutral |
 /// | Unread      | small filled dot              | primary |
 /// | Settled     | check                         | neutral |
 /// | Idle        | nothing                       |         |
 ///
 /// Working has no hue on purpose: color always means "look" or "act".
+/// A state Orbit only guessed (an agent in a terminal read from its screen,
+/// not its hooks) is drawn faded: it is a guess, and looks like one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Glyph {
     Approval,
@@ -67,6 +72,8 @@ pub enum Glyph {
     Failed,
     RateLimited,
     Working,
+    /// Working, but nothing heard for a while ("No output for 4m").
+    Quiet,
     Unverified,
     Unread,
     Settled,
@@ -86,13 +93,12 @@ impl Glyph {
         }
     }
 
-    /// As [`Glyph::of`], but a working thread whose host is not connected is
-    /// shown as unverified: Orbit never claims work it cannot see.
-    pub fn of_live(thread: &Thread, connected: bool) -> Self {
-        match Glyph::of(thread) {
-            Glyph::Working if !connected => Glyph::Unverified,
-            glyph => glyph,
-        }
+    /// The glyph from the thread's record and its live evidence (see
+    /// `docs/STATUS.md`): quiet or unverified sessions, and agents running
+    /// in its terminals. A working thread whose host is not connected is
+    /// unverified: Orbit never claims work it cannot see.
+    pub fn live(thread: &Thread, state: &ClientState) -> Self {
+        Look::of(thread, state).glyph
     }
 
     pub fn label(self) -> &'static str {
@@ -102,7 +108,8 @@ impl Glyph {
             Glyph::Failed => "Failed",
             Glyph::RateLimited => "Waiting for quota",
             Glyph::Working => "Working",
-            Glyph::Unverified => "No signal from the host",
+            Glyph::Quiet => "No recent output",
+            Glyph::Unverified => "Unverified",
             Glyph::Unread => "New result",
             Glyph::Settled => "Settled",
             Glyph::Idle => "Idle",
@@ -119,8 +126,65 @@ impl Glyph {
             Glyph::Approval | Glyph::Question | Glyph::RateLimited => theme.warning,
             Glyph::Failed => theme.danger,
             Glyph::Unread => theme.primary,
-            Glyph::Working | Glyph::Unverified | Glyph::Settled | Glyph::Idle => theme.muted_foreground,
+            Glyph::Working | Glyph::Quiet | Glyph::Unverified | Glyph::Settled | Glyph::Idle => theme.muted_foreground,
         }
+    }
+}
+
+/// How a thread's status looks: its glyph, whether that is only a guess,
+/// and the lines its hover explains it with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Look {
+    pub glyph: Glyph,
+    /// The glyph comes from a terminal agent Orbit only read from its
+    /// screen (no hook, no report).
+    pub guess: bool,
+    /// "No output for 4m · cargo test", "Claude Code · probably working".
+    pub lines: Vec<String>,
+}
+
+impl Look {
+    pub fn of(thread: &Thread, state: &ClientState) -> Self {
+        let live = state.live.get(&thread.id);
+        let connected = state.connection.as_ref().is_none_or(|c| *c == ConnectionStatus::Connected);
+        Self::from_evidence(thread, live, connected, now_ms())
+    }
+
+    fn from_evidence(thread: &Thread, live: Option<&ThreadLive>, connected: bool, now: u64) -> Self {
+        let status = LiveStatus::of(thread, live);
+        let own = LiveStatus::of(thread, live.map(|l| ThreadLive { terminals: Vec::new(), ..l.clone() }).as_ref());
+        // A terminal agent decided the glyph: a guess when every agent in
+        // that state was only read from the screen.
+        let deciding: Vec<&TerminalAgent> = live
+            .into_iter()
+            .flat_map(|l| l.terminals.iter())
+            .filter(|a| LiveStatus::of_agent(a.state) == status)
+            .collect();
+        let guess = status != own && !deciding.is_empty() && deciding.iter().all(|a| a.evidence.is_guess());
+        let glyph = match status {
+            LiveStatus::Permission => Glyph::Approval,
+            LiveStatus::NeedsYou => Glyph::Question,
+            LiveStatus::Failed => Glyph::Failed,
+            LiveStatus::RateLimited => Glyph::RateLimited,
+            LiveStatus::Working | LiveStatus::Quiet | LiveStatus::Unverified if !connected && status == own => {
+                Glyph::Unverified
+            }
+            LiveStatus::Working => Glyph::Working,
+            LiveStatus::Quiet => Glyph::Quiet,
+            LiveStatus::Unverified => Glyph::Unverified,
+            LiveStatus::DoneUnread => Glyph::Unread,
+            LiveStatus::Idle if thread.settled_ms.is_some() => Glyph::Settled,
+            LiveStatus::Idle => Glyph::Idle,
+        };
+        let mut lines = Vec::new();
+        if !connected && glyph == Glyph::Unverified && status == own {
+            lines.push("No signal from the host".to_owned());
+        }
+        if let Some(line) = live.and_then(|l| liveness_line(&l.liveness, now)) {
+            lines.push(line);
+        }
+        lines.extend(live.into_iter().flat_map(|l| l.terminals.iter()).map(agent_line));
+        Self { glyph, guess, lines }
     }
 }
 
@@ -158,42 +222,40 @@ struct GlyphMemory {
 pub struct StatusGlyph {
     id: ElementId,
     glyph: Glyph,
+    guess: bool,
     tooltip: Option<SharedString>,
 }
 
 impl StatusGlyph {
-    /// The glyph for `thread`, with a tooltip naming the state, its age and
-    /// the tokens spent.
-    pub fn new(id: impl Into<ElementId>, thread: &Thread) -> Self {
-        let glyph = Glyph::of(thread);
-        let tooltip = (glyph != Glyph::Idle).then(|| glyph_tooltip(glyph, thread));
-        Self { id: id.into(), glyph, tooltip }
+    /// The glyph for `thread` from its record and live evidence, with a
+    /// tooltip naming the state, why (quiet, unverified, terminal agents),
+    /// its age and the tokens spent.
+    pub fn new(id: impl Into<ElementId>, thread: &Thread, state: &ClientState) -> Self {
+        let look = Look::of(thread, state);
+        let tooltip = (look.glyph != Glyph::Idle || !look.lines.is_empty()).then(|| glyph_tooltip(&look, thread));
+        Self { id: id.into(), glyph: look.glyph, guess: look.guess, tooltip }
     }
 
     pub fn attention(id: impl Into<ElementId>, attention: Attention) -> Self {
-        Self { id: id.into(), glyph: attention.into(), tooltip: None }
+        Self { id: id.into(), glyph: attention.into(), guess: false, tooltip: None }
     }
 
     pub fn glyph(id: impl Into<ElementId>, glyph: Glyph) -> Self {
-        Self { id: id.into(), glyph, tooltip: None }
-    }
-
-    /// Names the state on hover.
-    pub fn tooltip(mut self, text: impl Into<SharedString>) -> Self {
-        self.tooltip = Some(text.into());
-        self
+        Self { id: id.into(), glyph, guess: false, tooltip: None }
     }
 }
 
-fn glyph_tooltip(glyph: Glyph, thread: &Thread) -> SharedString {
+fn glyph_tooltip(look: &Look, thread: &Thread) -> SharedString {
     let age = format::relative_time(thread.updated_ms, now_ms());
     let age = if age == "now" { "just now".to_owned() } else { format!("{age} ago") };
     let tokens = thread.usage.input_tokens + thread.usage.output_tokens;
-    if tokens > 0 {
-        format!("{} · {age} · {} tokens", glyph.label(), format::tokens(tokens)).into()
-    } else {
-        format!("{} · {age}", glyph.label()).into()
+    let label = if look.guess { format!("Probably: {}", look.glyph.label().to_lowercase()) } else { look.glyph.label().to_owned() };
+    let mut text = if tokens > 0 { format!("{label} · {age} · {} tokens", format::tokens(tokens)) } else { format!("{label} · {age}") };
+    for line in &look.lines {
+        text.push('\n');
+        text.push_str(line);
     }
+    text.into()
 }
 
 /// The glyph's shape, at rest.
@@ -213,6 +275,8 @@ fn glyph_shape(glyph: Glyph, id: &ElementId, window: &Window, theme: &gpui_kit::
                 .with_animation(id.clone(), spin, |icon, t| icon.transform(Transformation::rotate(percentage(t))))
                 .into_any_element()
         }
+        // Still and faded: work that has gone silent, not work in motion.
+        Glyph::Quiet => Icon::new(IconName::LoaderCircle).size_3p5().text_color(color.opacity(0.6)).into_any_element(),
         Glyph::Unverified => Icon::new(Lucide::CircleDashed).size_3p5().text_color(color).into_any_element(),
         Glyph::Question => h_flex()
             .size_3p5()
@@ -249,6 +313,8 @@ impl RenderOnce for StatusGlyph {
         });
         let theme = cx.theme();
         let shape = glyph_shape(glyph, &self.id, window, theme);
+        // A guess is drawn faded, so it never reads like a report.
+        let shape = if self.guess { div().flex().opacity(0.5).child(shape).into_any_element() } else { shape };
         let fresh = changed_at.filter(|at| at.elapsed() < GLYPH_PULSE);
         let color = glyph.color(theme);
 
@@ -562,5 +628,49 @@ mod monogram_tests {
         assert_eq!(initials("Silver Orchard"), "SO");
         assert_eq!(initials("storefront-web"), "SW");
         assert_eq!(initials("orbit"), "OR");
+    }
+}
+
+#[cfg(test)]
+mod look_tests {
+    use super::{Glyph, Look};
+    use orbit_proto::*;
+
+    fn running() -> Thread {
+        Thread { id: ThreadId(1), status: ThreadStatus::Running, ..Default::default() }
+    }
+
+    fn agent(state: AgentState, evidence: Evidence) -> TerminalAgent {
+        TerminalAgent { term: TermId(2), agent: "claude".into(), state, evidence, since_ms: 0, last_signal_ms: 0, detail: String::new() }
+    }
+
+    #[test]
+    fn a_quiet_turn_says_what_it_is_waiting_on() {
+        let live = ThreadLive { liveness: Liveness::Quiet { since_ms: 0, tool: Some("cargo test".into()) }, ..Default::default() };
+        let look = Look::from_evidence(&running(), Some(&live), true, 4 * 60_000);
+        assert_eq!(look.glyph, Glyph::Quiet);
+        assert!(!look.guess);
+        assert_eq!(look.lines, vec!["No output for 4m · cargo test".to_owned()]);
+    }
+
+    #[test]
+    fn terminal_agents_read_from_the_screen_look_like_guesses() {
+        let idle = Thread { id: ThreadId(1), ..Default::default() };
+        let guessed = ThreadLive { terminals: vec![agent(AgentState::Working, Evidence::Heuristic)], ..Default::default() };
+        let look = Look::from_evidence(&idle, Some(&guessed), true, 0);
+        assert_eq!((look.glyph, look.guess), (Glyph::Working, true));
+        assert_eq!(look.lines, vec!["Claude Code · probably working".to_owned()]);
+        let hooked =
+            ThreadLive { terminals: vec![agent(AgentState::NeedsYou(NeedKind::Permission), Evidence::Hook)], ..Default::default() };
+        let look = Look::from_evidence(&idle, Some(&hooked), true, 0);
+        assert_eq!((look.glyph, look.guess), (Glyph::Approval, false));
+    }
+
+    #[test]
+    fn work_on_a_host_out_of_reach_is_unverified() {
+        let look = Look::from_evidence(&running(), None, false, 0);
+        assert_eq!(look.glyph, Glyph::Unverified);
+        assert_eq!(look.lines, vec!["No signal from the host".to_owned()]);
+        assert_eq!(Look::from_evidence(&running(), None, true, 0).glyph, Glyph::Working);
     }
 }

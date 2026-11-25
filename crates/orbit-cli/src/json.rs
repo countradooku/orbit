@@ -171,7 +171,7 @@ fn request_kind(kind: &RequestKind) -> Value {
         RequestKind::FileChange { path, diff } => json!({"kind": "file_change", "path": path, "diff": diff}),
         RequestKind::Tool { name, input } => json!({"kind": "tool", "tool": name, "input": input}),
         RequestKind::Question { question, options, multi_select } => {
-            json!({"kind": "question", "question": question, "options": options, "multi_select": multi_select})
+            json!({"kind": "question", "question": question, "options": options.iter().map(|o| json!({"label": o.label, "description": o.description})).collect::<Vec<_>>(), "multi_select": multi_select})
         }
         RequestKind::Plan { plan } => json!({"kind": "plan", "plan": plan}),
     }

@@ -21,10 +21,32 @@ use super::Composer;
 use crate::assets::Lucide;
 
 /// A queued message being edited in its row.
+///
+/// Moving another message ahead of it makes the host re-issue it under a
+/// new id (queue order is id order), so the edit follows the message: when
+/// its id leaves the queue, the new queued message with the same text and
+/// attachments takes its place, and the edit stays open with what was typed.
 pub(super) struct QueueEdit {
     item: ItemId,
+    /// The message as the host has it, to recognize it under a new id.
+    original: (String, usize),
+    /// The queue's ids when the edit was last matched; a re-issued message
+    /// is one that was not among them.
+    known: Vec<ItemId>,
     input: Entity<TextareaState>,
     _subscription: Subscription,
+}
+
+/// Where a queue edit's message went: `Some(id)` (unchanged or re-issued),
+/// or `None` when it is no longer queued (sent or removed).
+fn follow(item: ItemId, original: &(String, usize), known: &[ItemId], queued: &[Queued]) -> Option<ItemId> {
+    if queued.iter().any(|(id, _, _)| *id == item) {
+        return Some(item);
+    }
+    queued
+        .iter()
+        .find(|(id, text, attachments)| !known.contains(id) && (text, *attachments) == (&original.0, original.1))
+        .map(|(id, _, _)| *id)
 }
 
 /// The queue panel of a thread. Mount it above the thread's composer.
@@ -122,8 +144,39 @@ impl Composer {
             input.set_selected_range(end..end, cx);
             input.focus(window, cx);
         });
-        self.queue_edit = Some(QueueEdit { item, input, _subscription: subscription });
+        let queued = self.queued(cx);
+        let original = queued
+            .iter()
+            .find(|(id, _, _)| *id == item)
+            .map(|(_, text, attachments)| (text.clone(), *attachments))
+            .unwrap_or_else(|| (text.to_owned(), 0));
+        let known = queued.into_iter().map(|(id, _, _)| id).collect();
+        self.queue_edit = Some(QueueEdit { item, original, known, input, _subscription: subscription });
         cx.notify();
+    }
+
+    /// Keeps an open edit on its message when the host re-issues it under a
+    /// new id (another message moved past it). A message that left the
+    /// queue for good (sent, removed) waits for a moment: the removal and
+    /// its re-issued copy can arrive in separate batches.
+    pub(super) fn follow_queue_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = &self.queue_edit else { return };
+        let Some(thread) = self.thread_id() else { return };
+        let still_there = self.app.read(cx).state().timeline(thread).and_then(|t| t.get(edit.item)).is_some_and(|i| i.status == ItemStatus::Queued);
+        if still_there {
+            return;
+        }
+        let queued = self.queued(cx);
+        if queued.is_empty() {
+            // Nothing left to edit: the row and its field are gone.
+            self.queue_edit = None;
+            return;
+        }
+        let edit = self.queue_edit.as_mut().expect("checked above");
+        if let Some(item) = follow(edit.item, &edit.original, &edit.known, &queued) {
+            edit.item = item;
+            edit.known = queued.into_iter().map(|(id, _, _)| id).collect();
+        }
     }
 
     fn save_queue_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -297,5 +350,45 @@ impl RenderOnce for QueuePanel {
             );
         }
         list.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Queued, follow};
+    use orbit_proto::ItemId;
+
+    fn q(id: u64, text: &str) -> Queued {
+        (ItemId(id), text.to_owned(), 0)
+    }
+
+    #[test]
+    fn an_edit_follows_its_message_to_a_new_id() {
+        let original = ("second".to_owned(), 0);
+        let known = [ItemId(1), ItemId(2), ItemId(3)];
+        // Still queued: nothing to follow.
+        assert_eq!(follow(ItemId(2), &original, &known, &[q(1, "first"), q(2, "second"), q(3, "third")]), Some(ItemId(2)));
+        // "third" moved to the front: "first" and "second" were re-issued.
+        let after = [q(3, "third"), q(4, "first"), q(5, "second")];
+        assert_eq!(follow(ItemId(2), &original, &known, &after), Some(ItemId(5)));
+    }
+
+    #[test]
+    fn an_edit_tells_identical_messages_apart_by_what_is_new() {
+        let original = ("again".to_owned(), 0);
+        // Two identical messages; the edited one (2) is re-issued as 4,
+        // while 3 keeps its id.
+        let known = [ItemId(1), ItemId(2), ItemId(3)];
+        let after = [q(1, "x"), q(3, "again"), q(4, "again")];
+        assert_eq!(follow(ItemId(2), &original, &known, &after), Some(ItemId(4)));
+    }
+
+    #[test]
+    fn a_sent_message_has_nowhere_to_go() {
+        let original = ("gone".to_owned(), 0);
+        assert_eq!(follow(ItemId(2), &original, &[ItemId(1), ItemId(2)], &[q(1, "first")]), None);
+        // Same text but attachments differ: not the same message.
+        let other = [(ItemId(9), "gone".to_owned(), 2)];
+        assert_eq!(follow(ItemId(2), &original, &[ItemId(2)], &other), None);
     }
 }

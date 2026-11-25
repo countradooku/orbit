@@ -318,7 +318,7 @@ fn build(workspace: &WeakEntity<Workspace>, query: &str, commands: &[CommandDef]
     let thread_row = |thread: &Thread| -> (CommandItem, Target) {
         let project = thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p)).map(|p| p.name.clone());
         let title: SharedString = display_title(thread).to_owned().into();
-        let glyph = Glyph::of(thread);
+        let glyph = Glyph::live(thread, state);
         let id = thread.id;
         let meta: SharedString = match (thread.archived, project) {
             (true, Some(p)) => format!("{p} · archived").into(),
@@ -353,7 +353,7 @@ fn build(workspace: &WeakEntity<Workspace>, query: &str, commands: &[CommandDef]
                     let Some(thread) = state.threads.get(&hit.thread) else { continue };
                     let title: SharedString = display_title(thread).to_owned().into();
                     let excerpt: SharedString = hit.excerpt.replace('\n', " ").into();
-                    let glyph = Glyph::of(thread);
+                    let glyph = Glyph::live(thread, state);
                     let id = thread.id;
                     let item = CommandItem::new().label(title.clone()).child(move |_, cx| {
                         let theme = cx.theme();

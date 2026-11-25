@@ -25,6 +25,7 @@ gpui_kit::actions!(
         PreviousThread,
         FocusComposer,
         ToggleTerminal,
+        ToggleBrowser,
         Quit,
         ZoomIn,
         ZoomOut,

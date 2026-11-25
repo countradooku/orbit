@@ -30,11 +30,9 @@ pub enum ContextChip {
     Path(String),
     /// Another thread: its conversation, as a digest the agent can read.
     Thread { id: ThreadId, title: String },
-    /// Output selected in a terminal. (For the terminal's "Add to chat".)
-    #[allow(dead_code)]
+    /// Output selected in a terminal (its "Add selection to composer").
     TerminalSelection { text: String, cwd: Option<String> },
-    /// A comment on a line of a diff. (For review's "Send to agent".)
-    #[allow(dead_code)]
+    /// A comment on a line of a diff (review's "Add to composer").
     ReviewComment { path: String, line: Option<u32>, quote: String, comment: String },
 }
 

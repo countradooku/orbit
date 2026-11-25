@@ -673,7 +673,7 @@ impl Sidebar {
         let app = self.app.clone();
         let answers: Vec<(String, Decision)> = match pending.map(|p| &p.request.kind) {
             Some(RequestKind::Question { options, multi_select: false, .. }) => {
-                options.iter().take(6).map(|o| (o.clone(), Decision::Answer { text: o.clone() })).collect()
+                options.iter().take(6).map(|o| (o.label.clone(), Decision::Answer { text: o.label.clone() })).collect()
             }
             Some(RequestKind::Question { .. }) => Vec::new(),
             Some(RequestKind::Plan { .. }) => vec![
@@ -703,7 +703,7 @@ impl Sidebar {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(StatusGlyph::new(("peek-glyph", id.0), thread))
+                    .child(StatusGlyph::new(("peek-glyph", id.0), thread, state))
                     .child(div().flex_1().min_w_0().truncate().text_sm().font_weight(FontWeight::SEMIBOLD).child(display_title(thread).to_owned())),
             )
             .child(div().text_xs().text_color(color).line_clamp(2).child(status))
@@ -753,10 +753,9 @@ impl Sidebar {
     fn activity_strip(&self, project: Option<ProjectId>, cx: &App) -> Div {
         let theme = cx.theme();
         let state = self.app.read(cx).state();
-        let connected = state.connection.as_ref().is_none_or(|c| *c == ConnectionStatus::Connected);
         let mut counts: Vec<(Glyph, usize)> = Vec::new();
         for thread in state.threads.values().filter(|t| t.project == project && !t.archived && t.settled_ms.is_none()) {
-            let glyph = match Glyph::of_live(thread, connected) {
+            let glyph = match Glyph::live(thread, state) {
                 Glyph::Approval => Glyph::Question,
                 Glyph::Idle | Glyph::Settled => continue,
                 glyph => glyph,
@@ -770,7 +769,7 @@ impl Sidebar {
             Glyph::Question => 0,
             Glyph::Failed => 1,
             Glyph::RateLimited => 2,
-            Glyph::Working | Glyph::Unverified => 3,
+            Glyph::Working | Glyph::Quiet | Glyph::Unverified => 3,
             _ => 4,
         };
         counts.sort_by_key(|(g, _)| rank(g));
@@ -790,7 +789,6 @@ impl Sidebar {
         let state = self.app.read(cx).state();
         let current = self.current(cx);
         let tiles: Vec<ThreadId> = self.workspace.upgrade().map(|ws| ws.read(cx).tiles().to_vec()).unwrap_or_default();
-        let connected = state.connection.as_ref().is_none_or(|c| *c == ConnectionStatus::Connected);
         let now = now_ms();
         let mut out = Vec::with_capacity(range.len());
         for ix in range {
@@ -854,7 +852,6 @@ impl Sidebar {
                     let open = current == Some(Route::Thread(id));
                     let picked = self.selection.ids.contains(&id);
                     let tiled = tiles.contains(&id);
-                    let glyph = Glyph::of_live(thread, connected);
                     let attention = Attention::of(thread);
                     let title = display_title(thread).to_owned();
                     let project = thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p));
@@ -885,7 +882,7 @@ impl Sidebar {
                                 let _ = this.workspace.update(cx, |ws, cx| ws.open_beside(id, window, cx));
                             }),
                         )
-                        .context_menu(move |menu, _, _| thread_menu::build(menu, &app, &menu_thread, project_path.clone()));
+                        .context_menu(move |menu, _, cx| thread_menu::build(menu, &app, &menu_thread, project_path.clone(), cx));
                     let row = if compact {
                         base.text_sm()
                             .when(!open, |el| el.text_color(theme.muted_foreground))
@@ -936,7 +933,7 @@ impl Sidebar {
                                     h_flex()
                                         .gap_1()
                                         .text_xs()
-                                        .child(StatusGlyph::new(("glyph", id.0), thread).tooltip(glyph.label()))
+                                        .child(StatusGlyph::new(("glyph", id.0), thread, state))
                                         .child(div().flex_1().min_w_0().truncate().text_color(status_color).child(status))
                                         .when(thread.woke, |el| {
                                             el.child(

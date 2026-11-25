@@ -38,8 +38,9 @@ pub use wire::*;
 /// Bumped on any incompatible wire change. Clients and servers refuse to talk
 /// across versions instead of misreading frames.
 /// Version 3 added live status evidence (`Snapshot::live`,
-/// `Event::ThreadLive`, `Event::TerminalAgent`, `Command::BindTerminal`).
-pub const PROTOCOL_VERSION: u16 = 3;
+/// `Event::ThreadLive`, `Event::TerminalAgent`, `Command::BindTerminal`);
+/// version 4, question options with descriptions and `Command::Push`.
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

@@ -135,7 +135,7 @@ impl World {
         let mut settings = *sub.snapshot.unwrap().settings;
         settings.advanced.gh_binary = gh.display().to_string();
         settings.workspace.worktree_root = root.join("worktrees").display().to_string();
-        call(&engine, Command::UpdateSettings { settings });
+        call(&engine, Command::UpdateSettings { settings: Box::new(settings) });
         let Reply::Project(project) = call(&engine, Command::AddProject { path: work.display().to_string() }) else { panic!() };
         World { _tmp: tmp, engine, events: sub.events, threads: Default::default(), prompts, bin, work, project }
     }
@@ -322,4 +322,35 @@ fn checkout_opens_the_branch_in_a_worktree_and_fix_checks_sends_the_logs() {
     assert!(text.contains("error: Process completed with exit code 101."), "{text}");
     assert!(!text.contains("2026-11-21T10:02"), "timestamps are dropped");
     let _ = &w.work;
+}
+
+#[test]
+fn push_sets_the_upstream_on_the_first_push_then_follows_it() {
+    let w = World::new(RULES);
+    let Reply::Thread(thread) =
+        call(&w.engine, Command::CreateThread { project: Some(w.project), config: ThreadConfig::default(), worktree: false })
+    else {
+        panic!()
+    };
+    git(&w.work, &["checkout", "-q", "-b", "topic"]);
+    std::fs::write(w.work.join("topic.rs"), "fn topic() {}\n").unwrap();
+    git(&w.work, &["add", "-A"]);
+    git(&w.work, &["commit", "-q", "-m", "Topic"]);
+    let bare = w.work.parent().unwrap().join("remote.git");
+
+    // First push: no upstream yet, so it pushes to origin and sets one.
+    assert_eq!(call(&w.engine, Command::Push { thread }), Reply::Text("origin/topic".into()));
+    assert_eq!(git(&w.work, &["rev-parse", "--abbrev-ref", "@{upstream}"]).trim(), "origin/topic");
+    let head = git(&w.work, &["rev-parse", "HEAD"]);
+    assert_eq!(git(&bare, &["rev-parse", "refs/heads/topic"]), head);
+
+    // Later pushes follow the upstream.
+    std::fs::write(w.work.join("topic.rs"), "fn topic() { /* more */ }\n").unwrap();
+    git(&w.work, &["commit", "-q", "-am", "More topic"]);
+    assert_eq!(call(&w.engine, Command::Push { thread }), Reply::Text("origin/topic".into()));
+    assert_eq!(git(&bare, &["rev-parse", "refs/heads/topic"]), git(&w.work, &["rev-parse", "HEAD"]));
+
+    // Nothing to push to: the error says so.
+    git(&w.work, &["checkout", "-q", "--detach"]);
+    assert!(w.engine.call(Command::Push { thread }).recv().unwrap().is_err());
 }

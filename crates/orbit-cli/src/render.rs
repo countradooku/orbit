@@ -455,7 +455,7 @@ impl Printer {
                     if let RequestKind::Question { options, .. } = &r.kind
                         && !options.is_empty()
                     {
-                        let _ = writeln!(out, "    Options: {}", options.join(" | "));
+                        let _ = writeln!(out, "    Options: {}", options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>().join(" | "));
                     }
                     let _ = writeln!(out, "    Answer with `orbit approve`, `orbit deny` or `orbit answer`.");
                     out

@@ -79,8 +79,8 @@ impl FleetView {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let _ = this.workspace.update(cx, |ws, cx| ws.navigate(Route::Thread(id), window, cx));
                     }))
-                    .child(ui::StatusGlyph::new(("fleet-glyph", id.0), thread))
-                    .child(div().w(rems(7.)).text_xs().text_color(theme.muted_foreground).child(ui::Glyph::of(thread).label()))
+                    .child(ui::StatusGlyph::new(("fleet-glyph", id.0), thread, state))
+                    .child(div().w(rems(7.)).text_xs().text_color(theme.muted_foreground).child(ui::Glyph::live(thread, state).label()))
                     .child(div().flex_1().min_w_0().truncate().child(display_title(thread).to_owned()))
                     .child(div().w(rems(9.)).truncate().text_xs().text_color(theme.muted_foreground).child(project))
                     .child(

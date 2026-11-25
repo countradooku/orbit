@@ -16,6 +16,7 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     // Shell: status glyphs, the deck, tiles, peek.
     CircleDashed, OctagonAlert, LayoutGrid, Reply, ScanSearch, OctagonX, BellRing, MessageCircleQuestionMark, CheckCheck,
     Columns2, Maximize2, Minimize2, SquareX, MousePointerClick, ListFilter, BellOff, Volume2,
+    MessageSquarePlus,
 ]);
 
 /// Orbit's icons first, then GPUI Kit's defaults.

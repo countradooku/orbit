@@ -4,8 +4,12 @@
 //! panel only draws it. The shell is started on the view's first real size so
 //! it never begins at a wrong width, keystrokes typed before it exists are
 //! kept, and closing the panel or the thread closes the shell.
+//!
+//! Selected output goes to the thread's composer as a chip: right-click ›
+//! "Add selection to composer", or Ctrl+Shift+L (Cmd+Shift+L on macOS).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -17,10 +21,17 @@ use crate::assets::Lucide;
 
 pub enum TerminalPanelEvent {
     Close,
+    /// Put this selected output in the thread's composer.
+    AddToComposer { text: String, cwd: String },
+    /// The shell printed dev-server addresses (each once).
+    Urls(Vec<orbit_browser::Url>),
 }
 
 pub struct TerminalPanel {
     app: Entity<AppState>,
+    /// The thread this terminal belongs to: agents started in it count
+    /// toward that thread's status.
+    thread: ThreadId,
     view: Entity<TerminalView>,
     cwd: String,
     term: Option<TermId>,
@@ -30,16 +41,18 @@ pub struct TerminalPanel {
     exited: Option<Option<i32>>,
     title: Option<String>,
     error: Option<String>,
+    urls: super::browser::OutputScanner,
     _subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<TerminalPanelEvent> for TerminalPanel {}
 
 impl TerminalPanel {
-    pub fn new(app: Entity<AppState>, cwd: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(app: Entity<AppState>, thread: ThreadId, cwd: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let view = cx.new(|cx| TerminalView::new(window, cx));
         let mut panel = Self {
             app: app.clone(),
+            thread,
             view: view.clone(),
             cwd,
             term: None,
@@ -49,6 +62,7 @@ impl TerminalPanel {
             exited: None,
             title: None,
             error: None,
+            urls: Default::default(),
             _subscriptions: Vec::new(),
         };
         panel._subscriptions = vec![
@@ -56,6 +70,10 @@ impl TerminalPanel {
             cx.subscribe(&app, |this, _, event: &AppEvent, cx| match event {
                 AppEvent::TerminalOutput { term, data } if Some(*term) == this.term => {
                     this.view.update(cx, |view, cx| view.feed(data, cx));
+                    let urls = this.urls.feed(data);
+                    if !urls.is_empty() {
+                        cx.emit(TerminalPanelEvent::Urls(urls));
+                    }
                 }
                 AppEvent::TerminalExited { term, code } if Some(*term) == this.term => {
                     this.exited = Some(*code);
@@ -119,6 +137,10 @@ impl TerminalPanel {
                 match result {
                     Ok(Reply::Terminal(term)) => {
                         this.term = Some(term);
+                        // Said explicitly: the engine binds by folder only when
+                        // exactly one thread works there.
+                        let thread = Some(this.thread);
+                        this.app.update(cx, |app, _| app.send(Command::BindTerminal { term, thread }));
                         if !this.pending.is_empty() {
                             let data = std::mem::take(&mut this.pending);
                             this.app.update(cx, |app, _| app.send(Command::TerminalInput { term, data }));
@@ -131,6 +153,12 @@ impl TerminalPanel {
             });
         })
         .detach();
+    }
+
+    /// Hands the selected output to the composer; nothing when none is selected.
+    fn add_selection(&mut self, _: &super::AddSelectionToComposer, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.view.read(cx).selected_text().filter(|t| !t.trim().is_empty()) else { return };
+        cx.emit(TerminalPanelEvent::AddToComposer { text, cwd: self.cwd.clone() });
     }
 
     fn restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -152,11 +180,19 @@ impl TerminalPanel {
 impl Render for TerminalPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let label = self.title.clone().unwrap_or_else(|| self.cwd.clone());
+        // Shells on Windows title the window with their own executable's
+        // path, which says nothing; the folder does.
+        let label = self
+            .title
+            .clone()
+            .filter(|t| !t.trim().is_empty() && !t.to_ascii_lowercase().ends_with(".exe"))
+            .unwrap_or_else(|| self.cwd.clone());
         let ended = self.exited.is_some() || self.error.is_some();
+        let view = self.view.clone();
         v_flex()
             .size_full()
             .bg(theme.background)
+            .on_action(cx.listener(Self::add_selection))
             .child(
                 h_flex()
                     .h_8()
@@ -203,7 +239,25 @@ impl Render for TerminalPanel {
                     .text_color(theme.danger)
                     .child(error.clone())
                     .into_any_element(),
-                None => div().flex_1().min_h_0().px_2().pt_1().child(self.view.clone()).into_any_element(),
+                None => div()
+                    .id("terminal-body")
+                    .flex_1()
+                    .min_h_0()
+                    .px_2()
+                    .pt_1()
+                    .child(self.view.clone())
+                    .context_menu(move |menu, _, cx| {
+                        let terminal = view.read(cx);
+                        let selected = terminal.has_selection();
+                        menu.action_context(terminal.focus_handle(cx))
+                            .menu_with_disabled("Copy", Box::new(orbit_terminal::Copy), !selected)
+                            .menu("Paste", Box::new(orbit_terminal::Paste))
+                            .menu_with_disabled("Add selection to composer", Box::new(super::AddSelectionToComposer), !selected)
+                            .separator()
+                            .menu("Select all", Box::new(orbit_terminal::SelectAll))
+                            .menu("Clear", Box::new(orbit_terminal::Clear))
+                    })
+                    .into_any_element(),
             })
     }
 }

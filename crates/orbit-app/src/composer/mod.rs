@@ -162,6 +162,12 @@ pub struct Composer {
 
 impl EventEmitter<ComposerEvent> for Composer {}
 
+/// The open thread composers, so other views can add context to them.
+#[derive(Default)]
+struct ThreadComposers(std::collections::HashMap<ThreadId, WeakEntity<Composer>>);
+
+impl Global for ThreadComposers {}
+
 impl Composer {
     /// The Home composer, which starts new threads.
     pub fn new(app: Entity<AppState>, config: ThreadConfig, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -176,7 +182,27 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let weak = cx.entity().downgrade();
+        let composers = cx.default_global::<ThreadComposers>();
+        composers.0.retain(|_, c| c.upgrade().is_some());
+        composers.0.insert(thread, weak);
         Self::build(DraftTarget::Thread(thread), app, config, window, cx)
+    }
+
+    /// Puts context in front of `thread`'s agent from anywhere in the app
+    /// (the review sheet, a terminal): a chip in that thread's composer.
+    /// Returns whether the thread's composer is open to take it.
+    pub fn add_context_to(thread: ThreadId, chips: Vec<ContextChip>, window: &mut Window, cx: &mut App) -> bool {
+        let Some(composer) = cx.try_global::<ThreadComposers>().and_then(|c| c.0.get(&thread)).and_then(|c| c.upgrade())
+        else {
+            return false;
+        };
+        composer.update(cx, |composer, cx| {
+            for chip in chips {
+                composer.add_context(chip, window, cx);
+            }
+        });
+        true
     }
 
     fn build(
@@ -201,7 +227,10 @@ impl Composer {
             _ => {}
         });
         // Providers report their catalogs asynchronously; re-render when they do.
-        let app_sub = cx.observe(&app, |_, _, cx| cx.notify());
+        let app_sub = cx.observe(&app, |this, _, cx| {
+            this.follow_queue_edit(cx);
+            cx.notify();
+        });
         let draft_sub = cx.subscribe_in(&app, window, |this, _, event: &AppEvent, window, cx| {
             if let AppEvent::Draft(target) = event
                 && *target == this.target

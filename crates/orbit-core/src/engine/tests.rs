@@ -467,7 +467,7 @@ fn settings_persist_across_a_restart() {
     {
         let mut h = Harness::open(dir.path().to_owned());
         assert_eq!(h.settings, Settings::default());
-        h.call(Command::UpdateSettings { settings: settings.clone() });
+        h.call(Command::UpdateSettings { settings: Box::new(settings.clone()) });
         h.wait("settings", |h| h.settings.composer.submit == SubmitKey::ModEnter);
         assert_eq!(h.settings.agents.default_access, Access::AutoEdit);
         h.engine.shutdown();
@@ -490,7 +490,7 @@ fn a_provider_binary_override_reaches_the_session() {
     let claude = settings.provider_mut(ProviderKind::Claude);
     claude.binary = "/opt/agents/claude".into();
     claude.env.push(EnvVar::new("CLAUDE_CONFIG_DIR", "/tmp/claude-home"));
-    h.call(Command::UpdateSettings { settings });
+    h.call(Command::UpdateSettings { settings: Box::new(settings) });
 
     let id = h.new_thread();
     h.send(id, "hello");
@@ -588,6 +588,39 @@ fn a_restart_closes_unanswerable_requests_and_sends_queued_messages() {
     let Reply::Timeline { items, .. } = h.call(Command::OpenThread { id }) else { panic!() };
     assert!(items.iter().any(|i| matches!(&i.body, ItemBody::Request(r) if matches!(r.resolution, Some(Decision::Deny { .. })))));
     assert!(items.iter().any(|i| matches!(&i.body, ItemBody::Assistant { text } if text == "echo: after the restart")));
+}
+
+#[test]
+fn a_restart_keeps_the_queue_of_a_rate_limited_thread_until_the_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut h = Harness::open(dir.path().to_owned());
+        id = h.new_thread();
+        // The fake reports no reset time, so no timer retries it by itself.
+        h.send(id, "limited-restart");
+        h.wait("limit", |h| matches!(h.thread(id).status, ThreadStatus::RateLimited { .. }));
+        h.send(id, "behind the limit");
+        h.wait("queued", |h| h.thread(id).queued == 1);
+        h.engine.shutdown();
+    }
+    let mut h = Harness::open(dir.path().to_owned());
+    // Give recovery time to (wrongly) send the queue.
+    std::thread::sleep(Duration::from_millis(150));
+    while let Ok(env) = h.events.try_recv() {
+        h.apply(env.event);
+    }
+    assert!(matches!(h.thread(id).status, ThreadStatus::RateLimited { .. }), "{:?}", h.thread(id).status);
+    assert_eq!(h.thread(id).queued, 1, "the queue waits for the reset");
+    assert_eq!(h.thread(id).turns, 1);
+    // When the limit lifts (here: Retry now), the limited turn runs, then the queue.
+    h.call(Command::Retry { thread: id });
+    h.wait("queue sent after the retry", |h| {
+        h.thread(id).queued == 0 && h.thread(id).turns == 2 && h.thread(id).status == ThreadStatus::Idle
+    });
+    let Reply::Timeline { items, .. } = h.call(Command::OpenThread { id }) else { panic!() };
+    assert!(items.iter().any(|i| matches!(&i.body, ItemBody::Assistant { text } if text == "echo: limited-restart")));
+    assert!(items.iter().any(|i| matches!(&i.body, ItemBody::Assistant { text } if text == "echo: behind the limit")));
 }
 
 #[test]
@@ -734,7 +767,7 @@ fn a_second_account_runs_with_its_own_config_dir_and_hands_off() {
         ..Default::default()
     });
     settings.agents.generate_titles = false;
-    h.call(Command::UpdateSettings { settings });
+    h.call(Command::UpdateSettings { settings: Box::new(settings) });
     let id = h.new_thread();
     h.send(id, "hello");
     h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);

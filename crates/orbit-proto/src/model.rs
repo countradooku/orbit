@@ -539,9 +539,35 @@ pub enum RequestKind {
     /// A question with optional suggested answers. Answer with
     /// [`Decision::Answer`]: a suggested option's label, or free text. When
     /// `multi_select` is set, put each chosen label on its own line.
-    Question { question: String, options: Vec<String>, multi_select: bool },
+    Question { question: String, options: Vec<QuestionOption>, multi_select: bool },
     /// Leave plan mode and carry out this plan.
     Plan { plan: String },
+}
+
+/// A suggested answer to a question: its label (what is sent back when it
+/// is chosen) and the agent's explanation of it, which may be empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Encode, Decode)]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: String,
+}
+
+impl QuestionOption {
+    pub fn new(label: impl Into<String>, description: impl Into<String>) -> Self {
+        Self { label: label.into(), description: description.into() }
+    }
+}
+
+impl From<String> for QuestionOption {
+    fn from(label: String) -> Self {
+        Self { label, description: String::new() }
+    }
+}
+
+impl From<&str> for QuestionOption {
+    fn from(label: &str) -> Self {
+        label.to_owned().into()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
