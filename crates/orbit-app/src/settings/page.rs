@@ -52,6 +52,7 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         keyboard(),
         remote(&app, cx),
         data(cx),
+        crate::update::settings_page(cx),
         about(cx),
     ]))
 }
@@ -714,14 +715,15 @@ fn about(cx: &App) -> SettingPage {
         None => "In this app".to_owned(),
     };
     let platform = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
-    SettingPage::new("About").icon(Icon::new(IconName::Info)).resettable(false).group(
+    SettingPage::new("About").icon(Icon::new(IconName::Info)).resettable(false).groups([
         SettingGroup::new().title("Orbit").items([
             SettingItem::new("Version", copy_text("copy-version", version)),
             SettingItem::new("Protocol", static_value(format!("OWP/{PROTOCOL_VERSION}"))),
             SettingItem::new("Engine", static_value(engine)),
             SettingItem::new("Platform", static_value(platform)),
         ]),
-    )
+        crate::onboarding::help_settings_group(),
+    ])
 }
 
 // ── Fields ───────────────────────────────────────────────────────────────

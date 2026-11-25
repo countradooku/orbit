@@ -21,6 +21,8 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     Mail,
     // Automations.
     CalendarClock, Package, Sunrise, CircleMinus,
+    // First run, updates and diagnostics.
+    Circle, CircleArrowUp, Download, Monitor, LifeBuoy,
 ]);
 
 /// Orbit's icons first, then GPUI Kit's defaults.

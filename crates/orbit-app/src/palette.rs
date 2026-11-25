@@ -83,6 +83,11 @@ fn commands() -> Vec<CommandDef> {
         command("Zoom in", IconName::Plus, "bigger", ZoomIn),
         command("Zoom out", IconName::Minus, "smaller", ZoomOut),
         command("Actual size", IconName::Frame, "zoom reset", ResetZoom),
+        command("Check for updates", Lucide::CircleArrowUp, "upgrade version release", crate::update::CheckForUpdates),
+        command("What’s new", IconName::Info, "release notes changelog", crate::update::ShowWhatsNew),
+        command("About Orbit", IconName::Info, "version build commit help", crate::diagnostics::ShowAbout),
+        command("Collect diagnostics…", Lucide::LifeBuoy, "logs crash report support bug help", crate::diagnostics::CollectDiagnostics),
+        command("Run setup again…", Lucide::ListChecks, "onboarding welcome first run guide", crate::onboarding::RunSetup),
         command("Quit Orbit", IconName::WindowClose, "exit", Quit),
     ]
 }

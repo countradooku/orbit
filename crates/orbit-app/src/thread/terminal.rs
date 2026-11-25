@@ -232,13 +232,21 @@ impl Render for TerminalPanel {
                     ),
             )
             .child(match &self.error {
-                Some(error) => div()
-                    .flex_1()
-                    .p_4()
-                    .text_sm()
-                    .text_color(theme.danger)
-                    .child(error.clone())
-                    .into_any_element(),
+                Some(error) => crate::ui::empty_state(
+                    Icon::new(Lucide::Terminal),
+                    "The terminal didn’t start",
+                    error.clone(),
+                    Some(
+                        Button::new("terminal-try-again")
+                            .outline()
+                            .icon(IconName::RefreshCw)
+                            .label("Try again")
+                            .on_click(cx.listener(|this, _, window, cx| this.restart(window, cx)))
+                            .into_any_element(),
+                    ),
+                    cx,
+                )
+                .into_any_element(),
                 None => div()
                     .id("terminal-body")
                     .flex_1()

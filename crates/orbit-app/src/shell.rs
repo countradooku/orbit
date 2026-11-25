@@ -418,6 +418,10 @@ impl Workspace {
         &self.app
     }
 
+    pub fn home(&self) -> &Entity<HomeView> {
+        &self.home
+    }
+
     pub fn navigate(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
         if let Route::Thread(id) = route {
             // In tiles, a thread already tiled takes focus; another one takes
@@ -742,10 +746,12 @@ impl Workspace {
 
     fn toggle_review(&mut self, _: &ToggleReview, window: &mut Window, cx: &mut Context<Self>) {
         let Route::Thread(id) = self.route else { return };
+        crate::onboarding::mark(crate::onboarding::Milestone::ReviewedDiff, cx);
         crate::review::open(self.app.clone(), id, window, cx);
     }
 
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
+        crate::onboarding::mark(crate::onboarding::Milestone::UsedPalette, cx);
         palette::open(cx.entity(), "", window, cx);
     }
 
@@ -1009,6 +1015,7 @@ impl Workspace {
                     )
                 })
                 .child(div().flex_1())
+                .children(crate::update::title_bar_item(cx))
                 .when(working > 0, |el| {
                     el.child(
                         h_flex()
@@ -1141,7 +1148,10 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_shown_threads(window, cx);
         let theme = cx.theme().clone();
-        let body = if self.route == Route::Settings {
+        let body = if let Some(guide) = crate::onboarding::active_view(cx) {
+            // First run: the guide has the whole window below the title bar.
+            div().flex_1().min_h_0().child(guide).into_any_element()
+        } else if self.route == Route::Settings {
             div()
                 .flex_1()
                 .min_h_0()
@@ -1222,6 +1232,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FocusTileUp, window, cx| this.focus_tile_toward(Direction::Up, window, cx)))
             .on_action(cx.listener(|this, _: &FocusTileDown, window, cx| this.focus_tile_toward(Direction::Down, window, cx)))
             .on_action(cx.listener(Self::quit))
+            .map(crate::update::register_actions)
+            .map(crate::diagnostics::register_actions)
+            .map(crate::onboarding::register_actions)
             .child(self.render_title_bar(cx))
             .child(body)
     }
