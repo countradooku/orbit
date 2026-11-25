@@ -738,8 +738,10 @@ fn targets_list(app: &Entity<AppState>, _: &mut Window, cx: &mut App) -> AnyElem
                         .flex_1()
                         .min_w_0()
                         .py_1p5()
-                        .child(h_flex().gap_2().text_sm().child(target.name.clone()).child(
-                            div().text_xs().text_color(theme.muted_foreground).child(target.kind.label()),
+                        .child(h_flex().gap_2().text_sm().child(target.name.clone()).when(
+                            // "Test · Tests" says nothing twice.
+                            !target.kind.label().to_lowercase().starts_with(&target.name.to_lowercase()),
+                            |el| el.child(div().text_xs().text_color(theme.muted_foreground).child(target.kind.label())),
                         ))
                         .child(
                             div()
@@ -867,7 +869,8 @@ fn edit_target_dialog(app: &Entity<AppState>, project: ProjectId, target: Option
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::describe_import;
+    use orbit_proto::*;
 
     #[test]
     fn imports_are_described_line_by_line() {

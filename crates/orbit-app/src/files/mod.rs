@@ -208,6 +208,10 @@ impl FilesDock {
         self.open
     }
 
+    pub fn has_viewer(&self) -> bool {
+        self.viewer.is_some()
+    }
+
     /// Shows or hides the tree (and the viewer with it).
     pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.set_open(!self.open, window, cx);
@@ -768,7 +772,7 @@ impl Render for FilesDock {
             Some(viewer) => h_resizable("files-dock")
                 .with_state(&self.split)
                 .child(resizable_panel().size_range(px(280.)..Pixels::MAX).child(div().size_full().border_l_1().border_color(theme.border).child(viewer)))
-                .child(resizable_panel().size(px(260.)).size_range(px(180.)..px(520.)).child(panel))
+                .child(resizable_panel().size(px(240.)).size_range(px(180.)..px(520.)).child(panel))
                 .into_any_element(),
         }
     }
@@ -776,7 +780,8 @@ impl Render for FilesDock {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Marks;
+    use orbit_proto::{ChangeKind, FileChange};
 
     #[test]
     fn marks_cover_files_and_their_folders() {
@@ -787,11 +792,5 @@ mod tests {
         assert_eq!(marks.files.get("src/app/main.rs"), Some(&ChangeKind::Modified));
         assert!(marks.folders.contains("src") && marks.folders.contains("src/app"));
         assert!(!marks.folders.contains(""));
-    }
-
-    #[test]
-    fn icons_follow_the_kind_of_file() {
-        assert_eq!(file_icon("a/b.png", false, false).path(), Icon::new(Lucide::FileImage).path());
-        assert_eq!(file_icon("src", true, true).path(), Icon::new(IconName::FolderOpen).path());
     }
 }

@@ -438,15 +438,19 @@ pub fn settings_group() -> gpui_kit::component::setting::SettingGroup {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Goto, goto_args, split_command};
+    use std::path::Path;
 
     #[test]
     fn editors_are_told_where_to_go_their_own_way() {
         let file = Path::new("src/main.rs");
-        assert_eq!(goto_args(Goto::Flag, file, Some(12)), vec!["--goto", "src/main.rs:12"]);
-        assert_eq!(goto_args(Goto::Suffix, file, Some(3)), vec!["src/main.rs:3"]);
-        assert_eq!(goto_args(Goto::LineFlag, file, Some(7)), vec!["--line", "7", "src/main.rs"]);
-        assert_eq!(goto_args(Goto::Flag, file, None), vec!["src/main.rs"]);
+        let args = |goto, line| -> Vec<String> {
+            goto_args(goto, file, line).into_iter().map(|a| a.to_string_lossy().into_owned()).collect()
+        };
+        assert_eq!(args(Goto::Flag, Some(12)), ["--goto", "src/main.rs:12"]);
+        assert_eq!(args(Goto::Suffix, Some(3)), ["src/main.rs:3"]);
+        assert_eq!(args(Goto::LineFlag, Some(7)), ["--line", "7", "src/main.rs"]);
+        assert_eq!(args(Goto::Flag, None), ["src/main.rs"]);
     }
 
     #[test]

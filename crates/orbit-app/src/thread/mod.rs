@@ -846,6 +846,8 @@ impl ThreadView {
         for step in steps.split(';') {
             let items: Vec<Item> = self.app.read(cx).state().timeline(self.id).map(|t| t.items().to_vec()).unwrap_or_default();
             match step.split_once(':') {
+                // `files`, `open:<path>[:line]`, `run:<target>`, `quickopen`, `project`.
+                _ if self.panels_debug_step(step, window, cx) => {}
                 Some(("find", query)) => {
                     self.open_find(window, cx);
                     if let Some(find) = &self.find {
@@ -1202,7 +1204,8 @@ impl ThreadView {
                             .child("·")
                             .child(
                                 crate::project::GitBadge::new(("thread-git", id.0), state.git.get(&WorkspaceRoot::Thread(id)))
-                                    .fallback_branch(thread.workspace.branch.clone()),
+                                    .fallback_branch(thread.workspace.branch.clone())
+                                    .compact(),
                             )
                             .child("·")
                             .child(model),

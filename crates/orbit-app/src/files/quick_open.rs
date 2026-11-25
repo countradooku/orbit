@@ -55,8 +55,18 @@ pub fn open(
             }
             let query = state.read(cx).query(cx).to_string();
             let (path_query, _) = split_line(query.trim());
+            // Nothing typed: what was opened lately, else what the thread changed.
+            let changed: Vec<String> = app
+                .read(cx)
+                .state()
+                .workspace
+                .get(&thread)
+                .map(|files| files.iter().filter(|f| f.kind != ChangeKind::Deleted).map(|f| f.path.replace('\\', "/")).collect())
+                .unwrap_or_default();
+            let lately = !recent.is_empty();
             let paths: Vec<(String, bool)> = if path_query.is_empty() {
-                recent.iter().map(|p| (p.clone(), false)).collect()
+                let list = if lately { &recent } else { &changed };
+                list.iter().map(|p| (p.clone(), false)).collect()
             } else if results.borrow().query == path_query {
                 results.borrow().files.iter().map(|f| (f.path.clone(), f.is_dir)).collect()
             } else {
@@ -65,7 +75,12 @@ pub fn open(
             };
             let paths: Vec<String> = paths.into_iter().filter(|(_, dir)| !dir).map(|(p, _)| p).take(60).collect();
             *shown.borrow_mut() = paths.clone();
-            let label = if path_query.is_empty() { "Opened lately" } else { "Files" };
+            let label = match (path_query.is_empty(), lately) {
+                (true, true) => "Opened lately",
+                (true, false) => "Changed in this thread",
+                (false, _) => "Files",
+            };
+            let empty_text = if path_query.is_empty() { "Type a file name." } else { "No file matches." };
             let items = paths.into_iter().map(|path| {
                 let (dir, name) = match path.rsplit_once('/') {
                     Some((dir, name)) => (dir.to_owned(), name.to_owned()),
@@ -93,8 +108,8 @@ pub fn open(
             let (confirm_shown, confirm_dock, confirm_state) = (shown.clone(), dock.clone(), state.clone());
             content.child(
                 palette
-                    .empty(|_, _, cx| {
-                        div().py_6().text_sm().text_center().text_color(cx.theme().muted_foreground).child("No file matches.")
+                    .empty(move |_, _, cx| {
+                        div().py_6().text_sm().text_center().text_color(cx.theme().muted_foreground).child(empty_text)
                     })
                     .on_query(move |query, window, cx| {
                         search(&on_query_app, thread, query, &on_query_results, &on_query_state, window, cx);

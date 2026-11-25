@@ -28,6 +28,9 @@ use crate::git::LiveWorktree;
 /// across several worktrees is compared once.
 const CONFLICT_DELAY: Duration = Duration::from_millis(800);
 
+/// `(base, ahead, behind)` of a branch against its base.
+type Compared = (String, u32, u32);
+
 /// Background results for the review engine.
 pub enum ReviewInternal {
     /// A watched repository's working tree changed; its status now, and
@@ -126,7 +129,7 @@ impl Orchestrator {
                 }
             };
             // Ahead/behind against the base, recounted only when HEAD moves.
-            let mut counted: Option<(Option<String>, Option<(String, u32, u32)>)> = None;
+            let mut counted: Option<(Option<String>, Option<Compared>)> = None;
             loop {
                 match git.status(&path).await {
                     Ok(status) => {

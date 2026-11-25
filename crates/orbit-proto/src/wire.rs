@@ -31,7 +31,8 @@ pub enum ClientMsg {
 pub enum ServerMsg {
     /// Reply to `Hello`. `snapshot` is `None` when the client's `since` was
     /// replayable; the missed events follow in `Events`.
-    Welcome { version: u16, snapshot: Option<Snapshot> },
+    /// Boxed: a snapshot is large, and `Box<T>` encodes exactly like `T`.
+    Welcome { version: u16, snapshot: Option<Box<Snapshot>> },
     /// Events in order. Ephemeral events have `seq == 0`.
     Events(Vec<Envelope>),
     Reply { id: u32, result: Result<Reply, String> },

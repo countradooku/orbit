@@ -687,7 +687,7 @@ fn render_table(table: Arc<Table>, cx: &App) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Kind, Table, first_lines, format_size, kind_of, language_of, parse_table};
 
     #[test]
     fn csv_quotes_and_line_breaks_parse() {

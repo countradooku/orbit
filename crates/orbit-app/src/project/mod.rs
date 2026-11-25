@@ -137,11 +137,12 @@ impl RenderOnce for GitBadge {
         h_flex()
             .id(self.id)
             .min_w_0()
+            .overflow_hidden()
             .gap_1p5()
             .text_xs()
             .text_color(theme.muted_foreground)
             .child(Icon::new(Lucide::GitBranch).xsmall().flex_none())
-            .child(div().min_w_0().truncate().font_family(theme.mono_font_family.clone()).child(branch))
+            .child(div().min_w(rems(2.5)).max_w(rems(16.)).flex_shrink(1.).truncate().font_family(theme.mono_font_family.clone()).child(branch))
             .when_some(summary.as_ref(), numbers)
             .when_some(tip, |el, tip| el.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)))
     }
@@ -196,7 +197,8 @@ pub fn project_menu(menu: PopupMenu, project: &Project, cx: &App) -> PopupMenu {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::describe;
+    use orbit_proto::GitSummary;
 
     #[test]
     fn summaries_read_as_sentences() {

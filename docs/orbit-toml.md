@@ -5,7 +5,7 @@ repository, so everyone who adds the project gets the same worktree scripts,
 run targets, shared files and environment.
 
 * When a project is **added**, an `orbit.toml` is applied at once.
-* Later, **Settings › Projects › Import from repository** reads it again
+* Later, **Settings › Projects › Import…** reads it again
   and shows what would change before anything is saved.
 * What is set in Orbit afterwards is kept on the host; the file is never
   written by Orbit.

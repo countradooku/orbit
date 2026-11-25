@@ -614,7 +614,8 @@ impl Render for RunDock {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{is_cursor_report, status_label};
+    use orbit_proto::{TargetRun, TargetStatus, ThreadId};
 
     #[test]
     fn cursor_reports_are_recognized() {

@@ -25,13 +25,15 @@ pub(super) struct Panels {
     pub dock: Entity<RunDock>,
     pub files: Entity<FilesDock>,
     files_split: Entity<ResizableState>,
+    /// The split while a file is open beside the tree (wider).
+    viewer_split: Entity<ResizableState>,
 }
 
 impl Panels {
     pub fn new(app: &Entity<crate::app_state::AppState>, thread: ThreadId, window: &mut Window, cx: &mut Context<ThreadView>) -> Self {
         let dock = cx.new(|cx| RunDock::new(app.clone(), thread, window, cx));
         let files = cx.new(|cx| FilesDock::new(app.clone(), thread, cx));
-        Self { dock, files, files_split: cx.new(|_| ResizableState::default()) }
+        Self { dock, files, files_split: cx.new(|_| ResizableState::default()), viewer_split: cx.new(|_| ResizableState::default()) }
     }
 
     /// Subscriptions that connect the panels to the thread view.
@@ -66,10 +68,16 @@ impl Panels {
         if !self.files.read(cx).is_open() {
             return main;
         }
-        h_resizable("thread-files-split")
-            .with_state(&self.files_split)
+        // A tree alone is narrow; with a file open beside it, wider.
+        let (id, state, width) = if self.files.read(cx).has_viewer() {
+            ("thread-files-viewer-split", &self.viewer_split, px(760.))
+        } else {
+            ("thread-files-split", &self.files_split, px(260.))
+        };
+        h_resizable(id)
+            .with_state(state)
             .child(resizable_panel().size_range(px(320.)..Pixels::MAX).child(main))
-            .child(resizable_panel().size(px(560.)).size_range(px(200.)..px(1400.)).child(self.files.clone()))
+            .child(resizable_panel().size(width).size_range(px(200.)..px(1400.)).child(self.files.clone()))
             .into_any_element()
     }
 }
@@ -121,6 +129,28 @@ impl ThreadView {
     pub(super) fn sync_dock_shell(&mut self, cx: &mut Context<Self>) {
         let shell = self.terminal.clone();
         self.panels.dock.update(cx, |d, cx| d.set_shell(shell, cx));
+    }
+}
+
+impl ThreadView {
+    /// Debug builds: screenshot steps for the panels (see `run_debug_steps`).
+    pub(super) fn panels_debug_step(&mut self, step: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match step.split_once(':') {
+            _ if step == "files" => self.toggle_files(&ToggleFiles, window, cx),
+            _ if step == "quickopen" => self.quick_open(&QuickOpen, window, cx),
+            _ if step == "project" => self.project_settings(&ProjectSettings, window, cx),
+            Some(("open", path)) => {
+                let (path, line) = match path.rsplit_once(':') {
+                    Some((p, l)) if l.chars().all(|c| c.is_ascii_digit()) => (p, l.parse().ok()),
+                    _ => (path, None),
+                };
+                let path = path.to_owned();
+                self.panels.files.update(cx, |f, cx| f.open_file(&path, line, window, cx));
+            }
+            Some(("run", target)) => self.run_target(&RunTarget { name: target.to_owned() }, window, cx),
+            _ => return false,
+        }
+        true
     }
 }
 
