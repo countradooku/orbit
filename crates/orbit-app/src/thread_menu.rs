@@ -107,15 +107,28 @@ pub fn confirm_delete(app: Entity<AppState>, thread: &Thread, window: &mut Windo
     });
 }
 
+/// A menu item's command.
+type MenuAction = Box<dyn Fn(&mut Window, &mut App)>;
+
 /// Builds the thread's menu into `menu`.
 pub fn build(menu: PopupMenu, app: &Entity<AppState>, thread: &Thread, project_path: Option<String>) -> PopupMenu {
     let id = thread.id;
     let t = thread.clone();
-    let item = |label: &'static str, icon: Lucide, f: Box<dyn Fn(&mut Window, &mut App)>| {
+    let item = |label: &'static str, icon: Lucide, f: MenuAction| {
         PopupMenuItem::new(label).icon(icon).on_click(move |_, window, cx| f(window, cx))
     };
+    let beside = id.0;
+    let mut menu = menu
+        .item(
+            PopupMenuItem::new("Open beside")
+                .icon(Lucide::Columns2)
+                .on_click(move |_, window, cx| {
+                    window.dispatch_action(Box::new(crate::actions::OpenThreadBeside { thread: beside }), cx)
+                }),
+        )
+        .separator();
     let a = app.clone();
-    let mut menu = menu.item(item(
+    menu = menu.item(item(
         "Rename…",
         Lucide::Pencil,
         Box::new({
