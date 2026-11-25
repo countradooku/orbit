@@ -15,6 +15,7 @@ mod review;
 mod queue;
 mod sessions;
 mod settings;
+mod status;
 mod textgen;
 mod timeline;
 
