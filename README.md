@@ -113,3 +113,7 @@ Results are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 `scripts/bundle.ps1` (Windows `.zip` with `orbit-desktop.exe`, the `orbit` CLI and `orbitd.exe`) build
 and package a release into `dist/`. The Release workflow runs them on every
 OS for `v*` tags.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
