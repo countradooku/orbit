@@ -30,8 +30,9 @@ use crate::endpoint::{self, EndpointInfo};
 pub const BINARY: &str = if cfg!(windows) { "orbitd.exe" } else { "orbitd" };
 /// The preference file in the data folder.
 pub const POLICY_FILE: &str = "host.json";
-/// The host's log in the data folder (local mode).
-pub const LOG_FILE: &str = "host.log";
+/// The host's log in the data folder (local mode), beside the app's
+/// (`logs/orbit-desktop.log`).
+pub const LOG_FILE: &str = "logs/orbitd.log";
 /// How long a host may take to publish its endpoint after it was started.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -258,8 +259,9 @@ impl std::fmt::Display for HostError {
 }
 
 /// Makes sure a host runs on `data_dir` and returns its endpoint: the one
-/// running, or one started from `binary`. `child` keeps the process this
-/// call started (and reaps an earlier one that exited).
+/// running, or one started from `binary`. `child` keeps the process started
+/// here: one still starting is waited for rather than started again, and
+/// one that exited is reaped.
 pub fn ensure_running(
     data_dir: &Path,
     binary: Option<&Path>,
@@ -268,14 +270,12 @@ pub fn ensure_running(
     if let Some(info) = live_endpoint(data_dir)? {
         return Ok(info);
     }
-    if let Some(old) = child.as_mut()
-        && old.try_wait().ok().flatten().is_some()
-    {
-        *child = None;
-    }
-    let binary = binary.ok_or(HostError::Missing)?;
     let started = Instant::now();
-    let mut spawned = spawn(binary, data_dir).map_err(HostError::Spawn)?;
+    let starting = child.take().and_then(|mut c| c.try_wait().ok().flatten().is_none().then_some(c));
+    let mut spawned = match starting {
+        Some(starting) => starting,
+        None => spawn(binary.ok_or(HostError::Missing)?, data_dir).map_err(HostError::Spawn)?,
+    };
     let mut wait = Duration::from_millis(2);
     loop {
         if let Some(info) = live_endpoint(data_dir)? {
@@ -305,8 +305,9 @@ fn live_endpoint(data_dir: &Path) -> Result<Option<EndpointInfo>, HostError> {
         Ok(Some(info)) if info.protocol == PROTOCOL_VERSION => Ok(Some(info)),
         Ok(Some(info)) => Err(HostError::Outdated(Box::new(info))),
         Ok(None) => Ok(None),
-        // Being rewritten right now: try again.
-        Err(err) if err.kind() == io::ErrorKind::InvalidData => Ok(None),
+        // Being rewritten or removed right now (Windows refuses to open a
+        // file pending deletion): look again on the next poll.
+        Err(err) if matches!(err.kind(), io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied) => Ok(None),
         Err(err) => Err(HostError::Io(err)),
     }
 }
@@ -381,8 +382,28 @@ impl LocalHost {
         self.lock().found_running == Some(true)
     }
 
-    /// Finds or starts the host now (blocking). An outdated host is not an
-    /// error here: the app connects and shows it.
+    /// Finds the host or starts its process, without waiting for it to be
+    /// ready (the connection does): what the app does at launch, so its
+    /// window does not wait. Fails only when there is nothing to start.
+    pub fn launch(&self) -> Result<(), HostError> {
+        let mut inner = self.lock();
+        match live_endpoint(&inner.data_dir) {
+            Ok(Some(_)) | Err(HostError::Outdated(_)) => {
+                inner.found_running.get_or_insert(true);
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(err) => return Err(err),
+        }
+        let binary = inner.binary.clone().ok_or(HostError::Missing)?;
+        let child = spawn(&binary, &inner.data_dir).map_err(HostError::Spawn)?;
+        inner.child = Some(child);
+        inner.found_running.get_or_insert(false);
+        Ok(())
+    }
+
+    /// Finds or starts the host now and waits until it serves (blocking).
+    /// An outdated host is not an error here: the app connects and shows it.
     pub fn start(&self) -> Result<(), HostError> {
         match self.resolve() {
             Ok(_) | Err(HostError::Outdated(_)) => Ok(()),
@@ -475,7 +496,7 @@ pub fn local_backend(
     in_process: impl FnOnce() -> io::Result<orbit_core::EngineHandle>,
 ) -> io::Result<LocalBackend> {
     let host = LocalHost::new(data_dir, binary);
-    match host.start() {
+    match host.launch() {
         Ok(()) => {
             let client = host.connect()?;
             Ok(LocalBackend { backend: crate::Backend::Remote(client), host: Some(host), fallback: None })

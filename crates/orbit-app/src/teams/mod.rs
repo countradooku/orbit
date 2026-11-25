@@ -416,8 +416,14 @@ impl TeamsPage {
                 .child(ui::empty_state(
                     Icon::new(IconName::Network),
                     "No teams or races yet",
-                    "Race a prompt above, or start a thread as a team’s architect with `orbit team start`.",
-                    None,
+                    "A race sends one prompt to several agents and shows their work side by side. Teams start from the CLI with `orbit team start`.",
+                    Some(crate::onboarding::teach::action(
+                        "teams-set-up-race",
+                        Lucide::Columns2,
+                        "Set up a race",
+                        Box::new(crate::onboarding::checklist::SetUpRace),
+                        cx,
+                    )),
                     cx,
                 ))
                 .into_any_element();

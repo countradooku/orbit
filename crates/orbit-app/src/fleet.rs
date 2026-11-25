@@ -107,8 +107,8 @@ impl Render for FleetView {
             return v_flex().size_full().child(ui::empty_state(
                 Icon::new(IconName::LayoutDashboard),
                 "No threads yet",
-                "Every thread shows here with its status, agent, context and cost.",
-                None,
+                "Every thread shows here as a row with its status, agent, context and cost, so you can watch many at once.",
+                Some(crate::onboarding::teach::action("fleet-new-thread", crate::assets::Lucide::SquarePen, "New thread", Box::new(crate::actions::NewThread), cx)),
                 cx,
             ));
         }

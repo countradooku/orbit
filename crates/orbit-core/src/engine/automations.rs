@@ -529,13 +529,22 @@ impl Orchestrator {
                     title,
                     prompt: Some(prompt),
                 };
-                match self.cli_command(Command::StartThread(start)) {
+                // The run's thread starts on the automation's pinned account.
+                self.usage_pin_automation(Some(id));
+                let started = self.cli_command(Command::StartThread(start));
+                self.usage_pin_automation(None);
+                match started {
                     Ok(Reply::Thread(thread)) => self.attach(run, thread, 0),
                     Ok(_) => self.finish_run(run, RunStatus::Failed("The thread didn't start.".into())),
                     Err(message) => self.finish_run(run, RunStatus::Failed(message)),
                 }
             }
         }
+    }
+
+    /// The automation whose active run works in `thread`.
+    pub(crate) fn automation_of_thread(&self, thread: ThreadId) -> Option<AutomationId> {
+        self.automations.active.values().find(|a| a.thread == Some(thread)).map(|a| a.automation)
     }
 
     fn pr_thread_ready(&mut self, run: RunId, result: CommandResult, prompt: String) {

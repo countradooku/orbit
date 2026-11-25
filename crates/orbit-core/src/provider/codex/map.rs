@@ -306,6 +306,33 @@ pub fn quota_events(snapshot: &RateLimitSnapshot) -> Vec<AgentEvent> {
         .collect()
 }
 
+/// The windows of an `account/rateLimits/read` answer: the main limit's,
+/// then any other limit's (named), as [`quota_events`] names them.
+pub fn limit_windows(response: &RateLimitsResponse) -> Vec<QuotaWindow> {
+    let mut snapshots = vec![&response.rate_limits];
+    if let Some(by_id) = &response.rate_limits_by_limit_id {
+        // The main limit is usually listed here too; keep it once.
+        snapshots.extend(by_id.values().filter(|s| s.limit_name.is_some() && s.limit_name != response.rate_limits.limit_name));
+    }
+    let mut out: Vec<QuotaWindow> = Vec::new();
+    for snapshot in snapshots {
+        for event in quota_events(snapshot) {
+            if let AgentEvent::Quota { window, utilization, resets_ms, rejected } = event
+                && !out.iter().any(|w| w.window == window)
+            {
+                out.push(QuotaWindow { window, utilization, resets_ms, rejected });
+            }
+        }
+    }
+    out
+}
+
+/// `ChatGPT Plus`, from the limits answer's plan.
+pub fn limit_plan(response: &RateLimitsResponse) -> Option<String> {
+    let plan = response.rate_limits.plan_type.as_deref().filter(|p| !p.is_empty() && *p != "unknown")?;
+    Some(format!("ChatGPT {}", humanize_id(plan)))
+}
+
 fn window_label(slot: &str, minutes: Option<i64>, limit: Option<&str>) -> String {
     let span = match minutes {
         Some(m) if m > 0 && m % (60 * 24 * 7) == 0 => format!("{}w", m / (60 * 24 * 7)),
@@ -725,6 +752,19 @@ mod tests {
         assert_eq!(failure(Some(&plain), Some(&limits)), TurnOutcome::Failed { message: "usage limit\ndetails".into() });
         assert!(matches!(failure(Some(&err(r#""apiKeySpendLimitExceeded""#)), None), TurnOutcome::Failed { .. }));
         assert!(matches!(failure(Some(&err(r#"{"responseStreamDisconnected":{"httpStatusCode":null}}"#)), None), TurnOutcome::Failed { .. }));
+    }
+
+    #[test]
+    fn a_limits_answer_reads_as_windows_and_a_plan() {
+        let text = include_str!("../../../tests/fixtures/usage/codex_rate_limits.json");
+        let response: RateLimitsResponse = sonic_rs::from_str(text).unwrap();
+        let windows = limit_windows(&response);
+        let ids: Vec<&str> = windows.iter().map(|w| w.window.as_str()).collect();
+        assert_eq!(ids, ["5h", "1w", "GPT-5-Codex-Mini 5h"]);
+        assert_eq!(windows[0].utilization, Some(0.42));
+        assert_eq!(windows[0].resets_ms, 1_796_133_600_000);
+        assert!(!windows[0].rejected);
+        assert_eq!(limit_plan(&response).as_deref(), Some("ChatGPT Plus"));
     }
 
     #[test]

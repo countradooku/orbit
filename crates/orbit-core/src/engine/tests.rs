@@ -13,6 +13,8 @@ mod host;
 mod review;
 mod status;
 mod teams;
+mod workspaces;
+mod usage;
 
 /// A fake agent whose behavior is chosen by the prompt text:
 /// `ask` raises an approval, `crash` exits mid-turn, `slow` streams until
@@ -203,7 +205,12 @@ impl Harness {
 
     /// Applies events until `done` holds or two seconds pass.
     fn wait(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        self.wait_for(what, Duration::from_secs(2), done);
+    }
+
+    /// [`Self::wait`] with its own limit, for steps that run git.
+    fn wait_for(&mut self, what: &str, limit: Duration, done: impl Fn(&Self) -> bool) {
+        let deadline = Instant::now() + limit;
         while !done(self) {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             match self.events.try_recv() {
@@ -380,6 +387,37 @@ fn search_finds_text_in_loaded_and_unloaded_threads() {
 fn git(dir: &std::path::Path, args: &[&str]) {
     let ok = std::process::Command::new("git").args(args).current_dir(dir).status().unwrap().success();
     assert!(ok, "git {args:?}");
+}
+
+/// A project that is not a git repository still gets checkpoints, a turn
+/// diff and undo (through a shadow repository), and stays free of `.git`.
+#[test]
+fn a_project_without_git_gets_checkpoints_diffs_and_undo() {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("before.txt"), "already here
+").unwrap();
+    let mut h = Harness::new();
+    let Reply::Project(project) = h.call(Command::AddProject { path: folder.path().display().to_string() }) else { panic!() };
+    let Reply::Thread(id) =
+        h.call(Command::CreateThread { project: Some(project), config: ThreadConfig::default(), worktree: false })
+    else {
+        panic!()
+    };
+    h.send(id, "write");
+    // The first turn creates the shadow repository and two snapshots: real
+    // git work, slow on a loaded machine.
+    let git = Duration::from_secs(20);
+    h.wait_for("turn", git, |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+    h.wait_for("checkpoint", git, |h| {
+        h.items.values().any(|i| matches!(&i.body, ItemBody::TurnEnd(s) if s.checkpoint.is_some() && s.base_checkpoint.is_some()))
+    });
+    let Reply::Diff(patch) = h.call(Command::Diff { thread: id, scope: DiffScope::Turn(1) }) else { panic!() };
+    assert!(patch.contains("written-by-agent.txt") && patch.contains("+hello"), "{patch}");
+    assert!(!patch.contains("before.txt"), "{patch}");
+    h.call(Command::RestoreCheckpoint { thread: id, turn: 1 });
+    assert!(!folder.path().join("written-by-agent.txt").exists(), "undo removes the turn's file");
+    assert!(folder.path().join("before.txt").exists());
+    assert!(!folder.path().join(".git").exists(), "the folder never becomes a repository");
 }
 
 #[test]

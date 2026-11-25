@@ -511,7 +511,25 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
             let Some(item) = item(*id) else { return empty() };
             let ItemBody::Request(request) = &item.body else { return empty() };
             let hits = this.hits(item.id, Part::Body);
-            render_request(&this.app, this.id, request, &hits, &theme)
+            // A change waiting for approval shows its diff, not patch text.
+            let diff = match &request.kind {
+                RequestKind::FileChange { path, diff } if request.resolution.is_none() => {
+                    super::edits::from_patch(path, diff, this.root.as_deref()).map(|d| {
+                        let (key, toggle) = (item.id, weak.clone());
+                        super::edits::render(
+                            ("request-diff", key),
+                            &d,
+                            this.diffs_open.contains(&key),
+                            move |_, cx| {
+                                let _ = toggle.update(cx, |this, cx| this.toggle_diff(key, cx));
+                            },
+                            &theme,
+                        )
+                    })
+                }
+                _ => None,
+            };
+            render_request(&this.app, this.id, request, diff, &hits, &theme)
         }
         Row::Notice(id) => {
             let Some(item) = item(*id) else { return empty() };
@@ -907,7 +925,13 @@ fn render_tool(this: &ThreadView, weak: &WeakEntity<ThreadView>, item: &Item, th
     let failed = item.status == ItemStatus::Failed;
     let key = item.id;
     let open = this.expanded.contains(&key);
-    let changes: (u32, u32) = call.files.iter().fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions));
+    let edit = this.edit_diff(item).filter(|_| !running);
+    let mut changes: (u32, u32) = call.files.iter().fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions));
+    if changes == (0, 0)
+        && let Some(diff) = &edit
+    {
+        changes = (diff.additions(), diff.deletions());
+    }
     let status: AnyElement = if running {
         spinner(("tool-spin", key.0), theme)
     } else if failed {
@@ -970,6 +994,19 @@ fn render_tool(this: &ThreadView, weak: &WeakEntity<ThreadView>, item: &Item, th
                 )
                 .child(status),
         )
+        .when_some(edit, |el, diff| {
+            let open = this.diffs_open.contains(&key);
+            let toggle = weak.clone();
+            el.child(div().ml_6().mt_0p5().mb_1().child(super::edits::render(
+                ("edit-diff", key),
+                &diff,
+                open,
+                move |_, cx| {
+                    let _ = toggle.update(cx, |this, cx| this.toggle_diff(key, cx));
+                },
+                theme,
+            )))
+        })
         .when(open, |el| el.child(render_tool_details(weak, item, call, theme)))
 }
 
@@ -1252,6 +1289,7 @@ fn render_request(
     app: &Entity<crate::app_state::AppState>,
     thread: ThreadId,
     request: &AgentRequest,
+    diff: Option<AnyElement>,
     hits: &[(Range<usize>, bool)],
     theme: &gpui_kit::component::Theme,
 ) -> AnyElement {
@@ -1286,9 +1324,10 @@ fn render_request(
             if reason.is_empty() { "Run this command?".into() } else { reason.clone() },
             Some(if cwd.is_empty() { command.clone() } else { format!("{command}\n  in {cwd}") }),
         ),
-        RequestKind::FileChange { path, diff } => (
-            format!("Change {path}?"),
-            (!diff.is_empty()).then(|| diff.lines().take(24).collect::<Vec<_>>().join("\n")),
+        RequestKind::FileChange { path, diff: patch } => (
+            format!("Change {}?", path.replace('\\', "/").rsplit('/').next().unwrap_or(path)),
+            // Shown as a diff when it parses; as text otherwise.
+            (diff.is_none() && !patch.is_empty()).then(|| patch.lines().take(24).collect::<Vec<_>>().join("\n")),
         ),
         RequestKind::Tool { name, input } => (format!("Use {name}?"), Some(format::pretty_json(input))),
         RequestKind::Plan { plan } => ("Carry out this plan?".into(), Some(plan.clone())),
@@ -1383,6 +1422,7 @@ fn render_request(
                     .child(body),
             )
         })
+        .children(diff)
         .child(actions)
         .into_any_element()
 }

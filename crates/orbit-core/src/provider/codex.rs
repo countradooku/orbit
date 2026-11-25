@@ -232,3 +232,75 @@ async fn probe_at(path: &Path, env: &[(String, String)]) -> ProviderInfo {
     info.modes = map::modes(&modes);
     info
 }
+
+/// Reads the signed-in account's plan limits on a short-lived app-server:
+/// `initialize`, then `account/read` (the plan) and
+/// `account/rateLimits/read`. Used for the quota rings; bounded by
+/// [`PROBE_TIMEOUT`]. Windows are named as sessions name them, so both
+/// sources update the same ones.
+pub async fn read_limits(
+    binary: Option<PathBuf>,
+    env: Vec<(String, String)>,
+) -> Result<crate::usage::Reading, crate::usage::ReadError> {
+    use crate::usage::{ReadError, Reading};
+    let Some(path) = resolve(binary.as_deref()) else {
+        return Err(ReadError::unavailable(not_found_message(binary.as_deref())));
+    };
+    let exchange = async move {
+        let cwd = std::env::temp_dir();
+        let (mut conn, mut lines) =
+            Connection::spawn(&path, &cwd, &env).map_err(|e| ReadError::transient(format!("Couldn't start Codex: {e}")))?;
+        let init = conn.request("initialize", &initialize_params());
+        let (mut account, mut limits) = (None, None);
+        let mut plan: Option<String> = None;
+        let mut snapshot: Option<RateLimitsResponse> = None;
+        while snapshot.is_none() {
+            let Some(line) = lines.recv().await else {
+                return Err(ReadError::transient(conn.exit_reason().await));
+            };
+            let Ok(envelope) = sonic_rs::from_slice::<RpcLine>(&line) else { continue };
+            let Some(id) = envelope.id.as_ref() else { continue };
+            if envelope.method.is_some() {
+                conn.respond_error(id.as_raw_str(), METHOD_NOT_FOUND, "Orbit is only reading limits");
+                continue;
+            }
+            let Ok(id) = id.as_raw_str().parse::<u64>() else { continue };
+            let result = envelope.result.as_ref().map(LazyValue::as_raw_str);
+            if id == init {
+                if let Some(err) = envelope.error {
+                    return Err(ReadError::transient(format!("Codex rejected the handshake: {}", err.message)));
+                }
+                conn.notify("initialized");
+                account = Some(conn.request("account/read", &json!({})));
+            } else if Some(id) == account {
+                account = None;
+                let response = result.and_then(|r| sonic_rs::from_str::<AccountResponse>(r).ok());
+                match response.as_ref().and_then(|r| r.account.as_ref()) {
+                    Some(a) if a.kind == "chatgpt" => {
+                        plan = a.plan_type.as_deref().filter(|p| *p != "unknown").map(|p| format!("ChatGPT {}", humanize_id(p)));
+                        limits = Some(conn.request("account/rateLimits/read", &sonic_rs::Value::new_null()));
+                    }
+                    Some(_) => return Err(ReadError::no_plan("Uses an API key or another provider: no plan limits.")),
+                    None if response.as_ref().is_some_and(|r| r.requires_openai_auth) => {
+                        return Err(ReadError::no_plan("Codex is signed out. Run `codex login` in a terminal."));
+                    }
+                    None => return Err(ReadError::no_plan("Not signed in to a ChatGPT plan.")),
+                }
+            } else if Some(id) == limits {
+                limits = None;
+                match result.map(sonic_rs::from_str::<RateLimitsResponse>) {
+                    Some(Ok(response)) => snapshot = Some(response),
+                    _ => {
+                        let reason = envelope.error.map(|e| e.message).unwrap_or_else(|| "an unreadable answer".into());
+                        return Err(ReadError::transient(format!("Codex couldn't read its limits: {reason}")));
+                    }
+                }
+            }
+        }
+        let response = snapshot.expect("loop ends with a snapshot");
+        Ok(Reading { windows: map::limit_windows(&response), plan: plan.or_else(|| map::limit_plan(&response)) })
+    };
+    tokio::time::timeout(PROBE_TIMEOUT, exchange).await.unwrap_or_else(|_| {
+        Err(ReadError::transient(format!("Codex didn't answer within {} seconds.", PROBE_TIMEOUT.as_secs())))
+    })
+}

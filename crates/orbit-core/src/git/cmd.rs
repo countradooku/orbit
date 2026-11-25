@@ -108,6 +108,11 @@ impl Git {
         for key in SCRUBBED_ENV {
             cmd.env_remove(key);
         }
+        // A folder without a repository: git works on Orbit's shadow store,
+        // with the folder as its working tree.
+        if name == "git" && let Some(shadow) = self.shadow_for(cwd) {
+            cmd.env("GIT_DIR", &shadow.git_dir).env("GIT_WORK_TREE", &shadow.root);
+        }
         // Never wait on a prompt nobody can see; English messages so errors
         // can be recognized; no opportunistic index writes behind the user.
         cmd.env("GIT_TERMINAL_PROMPT", "0")

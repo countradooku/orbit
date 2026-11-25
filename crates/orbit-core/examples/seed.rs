@@ -55,6 +55,27 @@ fn main() {
     };
     store.commit(Event::ProjectUpserted(Box::new(project.clone()))).unwrap();
     store.commit(Event::ProjectUpserted(Box::new(web.clone()))).unwrap();
+    // Run targets and an icon (Settings › Projects, the thread's Run control).
+    let (dev, test) = if cfg!(windows) {
+        ("Write-Output 'VITE v6.0.1  ready in 312 ms'; Write-Output '  Local:   http://localhost:5173/'; Start-Sleep -Seconds 900", "cargo --version")
+    } else {
+        ("echo 'VITE v6.0.1  ready in 312 ms'; echo '  Local:   http://localhost:5173/'; sleep 900", "cargo --version")
+    };
+    let config = ProjectConfig {
+        icon: "🛰".into(),
+        env: vec![EnvVar::new("RUST_LOG", "info")],
+        include: vec![".env".into()],
+        targets: vec![
+            ProjectTarget { name: "Dev".into(), command: dev.into(), kind: TargetKind::Dev, url: "http://localhost:5173".into() },
+            ProjectTarget { name: "Test".into(), command: test.into(), kind: TargetKind::Test, url: String::new() },
+            ProjectTarget { name: "Lint".into(), command: "cargo clippy --all-targets".into(), kind: TargetKind::Lint, url: String::new() },
+        ],
+        imported_from: vec!["Cargo.toml".into()],
+        ..Default::default()
+    };
+    let web_config = ProjectConfig { icon: "🛒".into(), ..config.clone() };
+    store.commit(Event::ProjectConfigChanged { project: project.id, config: Box::new(config) }).unwrap();
+    store.commit(Event::ProjectConfigChanged { project: web.id, config: Box::new(web_config) }).unwrap();
 
     let usage = Usage {
         input_tokens: 48_200,

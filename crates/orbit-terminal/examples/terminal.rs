@@ -1,6 +1,6 @@
 //! A window with one terminal running the user's shell.
 //!
-//! `cargo run -p orbit-terminal --example standalone [-- --dark]`
+//! `cargo run -p orbit-terminal --example terminal [-- --dark]`
 //!
 //! The PTY comes from `orbit_core::terminal`; the view knows nothing about
 //! it. Output is drained in batches (one `feed`, so one redraw, per batch),

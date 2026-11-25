@@ -6,7 +6,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -377,15 +376,8 @@ impl ContextMeter {
 }
 
 impl RenderOnce for ContextMeter {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = cx.theme();
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let fill = self.usage.context_fill();
-        let pct = fill.map(|f| (f * 100.0).round() as u32);
-        let color = match pct {
-            Some(p) if p >= 90 => theme.danger,
-            Some(p) if p >= 75 => theme.warning,
-            _ => theme.muted_foreground,
-        };
         let tooltip: SharedString = match fill {
             Some(_) => format!(
                 "Context {} of {} tokens{}",
@@ -399,24 +391,13 @@ impl RenderOnce for ContextMeter {
             .into(),
             None => "Context size appears after the first reply".into(),
         };
-        h_flex()
+        // The same ring and color ramp as the quota rings in the title bar.
+        div()
             .id(self.id.clone())
-            .gap_1p5()
             .px_1()
             .rounded_md()
-            .text_xs()
-            .text_color(color)
             .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx))
-            .child(
-                ProgressCircle::new(ElementId::NamedChild(std::sync::Arc::new(self.id), "ring".into()))
-                    .xsmall()
-                    .color(color)
-                    .value(pct.unwrap_or(0) as f32),
-            )
-            .child(match pct {
-                Some(p) => format!("{p}%"),
-                None => "–".into(),
-            })
+            .child(crate::usage::ring::Meter::new(ElementId::NamedChild(std::sync::Arc::new(self.id), "meter".into()), fill))
     }
 }
 

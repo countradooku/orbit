@@ -27,6 +27,8 @@ mod status;
 mod teams;
 mod textgen;
 mod timeline;
+mod workspaces;
+mod usage;
 
 pub use review::ReviewInternal;
 pub use sessions::{CLEAR_COMMANDS, HANDOFF_TOKENS, build_handoff};

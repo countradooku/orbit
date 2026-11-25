@@ -209,7 +209,7 @@ async fn connection(
         return Err("bad token".into());
     }
     let sub = engine.subscribe(epoch, since).await.map_err(|_| "engine stopped")?;
-    writer.send(link.message(&ServerMsg::Welcome { version: PROTOCOL_VERSION, snapshot: sub.snapshot })).await?;
+    writer.send(link.message(&ServerMsg::Welcome { version: PROTOCOL_VERSION, snapshot: sub.snapshot.map(Box::new) })).await?;
     if !sub.replay.is_empty() {
         for chunk in sub.replay.chunks(crate::MAX_BATCH) {
             for bytes in link.events(chunk.to_vec()) {

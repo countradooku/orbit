@@ -37,6 +37,10 @@ pub enum AppEvent {
     Draft(DraftTarget),
     /// A team or race changed (`crate::teams` views listen).
     Teams,
+    /// A checkout's git status changed.
+    Git(WorkspaceRoot),
+    /// A thread's run targets started, ended or were stopped.
+    Runs(ThreadId),
     /// A terminal's shell was stopped to save resources, or started again.
     TerminalSleep { term: TermId, sleeping: bool },
     /// The connection came back after it was lost (the host may have
@@ -166,6 +170,13 @@ impl AppState {
         for thread in changes.workspace {
             cx.emit(AppEvent::Workspace(thread));
         }
+        for root in changes.git {
+            cx.emit(AppEvent::Git(root));
+        }
+        // Before their output, so a view can attach to a new run's terminal.
+        for thread in changes.runs {
+            cx.emit(AppEvent::Runs(thread));
+        }
         for (term, data) in changes.terminals {
             cx.emit(AppEvent::TerminalOutput { term, data });
         }
@@ -198,6 +209,13 @@ impl AppState {
                     {
                         self.send(Command::Host(HostCommand::Restart { when: RestartWhen::WhenIdle }));
                     }
+                }
+                // Usage limits are read only while a window was in front
+                // lately: say so again to this (possibly new) host. The
+                // first connection is the window opening, in front.
+                let reconnect = self.was_connected;
+                if !reconnect || cx.active_window().is_some() {
+                    self.send(Command::Usage(UsageCommand::Seen));
                 }
                 if std::mem::replace(&mut self.was_connected, true) {
                     cx.emit(AppEvent::Reconnected);

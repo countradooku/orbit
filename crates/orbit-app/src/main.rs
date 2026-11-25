@@ -20,8 +20,10 @@ mod assets;
 mod automations;
 mod bots;
 mod composer;
+mod files;
 #[cfg(debug_assertions)]
 mod demo;
+mod diagnostics;
 mod fleet;
 mod forge;
 mod format;
@@ -31,8 +33,10 @@ mod inbox;
 mod instance;
 mod keymap;
 mod notify;
+mod onboarding;
 mod palette;
 mod prefs;
+mod project;
 mod review;
 mod settings;
 mod shortcuts;
@@ -44,6 +48,8 @@ mod thread;
 mod thread_menu;
 mod tiles;
 mod ui;
+mod usage;
+mod update;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
@@ -105,13 +111,19 @@ fn control_endpoint(backend: &Backend, data_dir: &std::path::Path) -> Option<orb
 }
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    let data_dir: std::path::PathBuf =
+        std::env::var_os("ORBIT_DATA").map(Into::into).unwrap_or_else(EngineOptions::default_data_dir);
+    // The log file and the crash reporter, before anything can fail.
+    diagnostics::install(&data_dir);
+    // The update installer runs as this program; a just-updated Orbit that
+    // never got going is rolled back here.
+    if update::handle_launch(&data_dir) {
+        return;
+    }
     // One Orbit per data folder: a second launch hands over and exits.
     let launch = instance::this_launch();
     // Restarted for an update: the previous window is still closing.
     host::wait_for_previous(&launch.args);
-    let data_dir: std::path::PathBuf =
-        std::env::var_os("ORBIT_DATA").map(Into::into).unwrap_or_else(EngineOptions::default_data_dir);
     let instance = match instance::claim(&data_dir, &launch) {
         Ok(instance::Claim::Primary(instance)) => instance,
         Ok(instance::Claim::Forwarded) => return,
@@ -120,6 +132,8 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // Last run's crash report, if it left one (only the running Orbit looks).
+    let crash = diagnostics::startup(&data_dir);
     // Reaching the engine (starting the background host and waiting for it)
     // overlaps with the interface's own setup; it is joined just before the
     // first view needs it.
@@ -144,6 +158,8 @@ fn main() {
         host::init(&data_dir, cx);
         keymap::install(&data_dir, cx);
         thread::init(cx);
+        files::init(cx);
+        project::init(cx);
         // The user's bindings go last so they win over every default.
         keymap::reload(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
@@ -157,9 +173,24 @@ fn main() {
             }
         })
         .detach();
-        // macOS shows an application menu even without one; give it Quit.
+        // macOS shows an application menu even without one; give it About,
+        // updates, Quit and a Help menu.
         #[cfg(target_os = "macos")]
-        cx.set_menus([Menu::new("Orbit").items([MenuItem::action("Quit Orbit", actions::Quit)])]);
+        cx.set_menus([
+            Menu::new("Orbit").items([
+                MenuItem::action("About Orbit", diagnostics::ShowAbout),
+                MenuItem::action("Check for Updates…", update::CheckForUpdates),
+                MenuItem::separator(),
+                MenuItem::action("Quit Orbit", actions::Quit),
+            ]),
+            Menu::new("Help").items([
+                MenuItem::action("Keyboard Shortcuts", actions::ShowShortcuts),
+                MenuItem::action("What’s New", update::ShowWhatsNew),
+                MenuItem::action("Run Setup Again…", onboarding::RunSetup),
+                MenuItem::separator(),
+                MenuItem::action("Collect Diagnostics…", diagnostics::CollectDiagnostics),
+            ]),
+        ]);
         let (Started { backend, host: local_host, fallback }, startup) = match starting.join() {
             Ok(Ok(started)) => started,
             Ok(Err(err)) => {
@@ -185,6 +216,7 @@ fn main() {
         cx.on_app_quit(move |cx| {
             // Terminals stay in the background host; start no host again.
             let _ = quitting.update(cx, |app, _| app.detach());
+            diagnostics::note_clean_exit(&quit_data_dir);
             endpoint.iter().for_each(orbit_net::endpoint::LocalEndpoint::close);
             if let Some(bots) = chat_bots.lock().ok().and_then(|mut b| b.take()) {
                 bots.stop();
@@ -196,9 +228,15 @@ fn main() {
         })
         .detach();
 
+        diagnostics::init(crash, cx);
+        update::init(&startup.data_dir, app.clone(), cx);
+        // With the background host, an update restarts the window only.
+        host::install_restart(&app, cx);
+        onboarding::init(&startup.data_dir, app.clone(), cx);
         settings::init(app.clone(), startup, cx);
         forge::init(app.clone(), cx);
         bots::init(app.clone(), cx);
+        usage::init(app.clone(), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(820.)), cx))),
             window_min_size: Some(size(px(720.), px(480.))),
@@ -233,7 +271,10 @@ fn main() {
                 // This launch's own arguments, then later launches' as they come.
                 let mut instance = instance;
                 let _ = window.update(cx, |_, window, cx| {
-                    workspace.update(cx, |ws, cx| ws.handle_launch(launch, window, cx))
+                    workspace.update(cx, |ws, cx| ws.handle_launch(launch, window, cx));
+                    diagnostics::on_window_open(window, cx);
+                    update::on_window_open(window, cx);
+                    onboarding::on_window_open(window, workspace.downgrade(), cx);
                 });
                 cx.spawn(async move |cx| {
                     use futures::StreamExt as _;

@@ -19,6 +19,7 @@ pub mod render;
 pub mod select;
 pub mod spec;
 pub mod teams;
+pub mod usage;
 
 use std::io::Write;
 

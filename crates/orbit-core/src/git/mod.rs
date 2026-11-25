@@ -38,6 +38,7 @@ mod worktree;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::hash::Hash;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -53,7 +54,7 @@ pub use remote::{CommitResult, PushResult, parse_pr_url};
 pub use status::{Branch, Status};
 pub use watch::{Changes, RepoWatcher, WatchOptions, watch, watch_with};
 pub use worktree::{
-    BranchCleanup, NewWorktree, OutputStream, RemoveWorktree, RemovedWorktree, ScriptResult, WorktreeInfo,
+    BranchCleanup, NewWorktree, OutputStream, RemoveWorktree, RemovedWorktree, ScriptResult, WorktreeExtras, WorktreeInfo,
     WorktreeRecord, disk_usage,
 };
 
@@ -201,6 +202,23 @@ impl RepoInfo {
     }
 }
 
+/// Ignored in shadow repositories in addition to the folder's .gitignore.
+const SHADOW_EXCLUDES: &str = "# Written by Orbit: kept out of checkpoints of this folder.
+node_modules/
+target/
+.venv/
+venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.gradle/
+.next/
+dist/
+build/
+.DS_Store
+Thumbs.db
+";
+
 /// The git layer. Cheap to clone; clones share the process limit and caches.
 #[derive(Clone)]
 pub struct Git {
@@ -216,6 +234,9 @@ struct Inner {
     permits: Semaphore,
     spawned: AtomicU64,
     repos: Mutex<HashMap<PathBuf, Arc<RepoInfo>>>,
+    /// Folders that are not git repositories, by root, with the shadow git
+    /// directory that holds their checkpoints.
+    shadows: Mutex<HashMap<PathBuf, Arc<RepoInfo>>>,
     index_locks: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
     /// Known checkpoints per (git dir, thread), sorted by number.
     checkpoints: Mutex<HashMap<(PathBuf, ThreadId), CheckpointList>>,
@@ -235,6 +256,7 @@ impl Git {
                 permits,
                 spawned: AtomicU64::new(0),
                 repos: Mutex::default(),
+                shadows: Mutex::default(),
                 index_locks: Mutex::default(),
                 checkpoints: Mutex::default(),
                 diffs: Memo::new(cache),
@@ -260,6 +282,11 @@ impl Git {
         if let Some(info) = self.inner.repos.lock().unwrap().get(&key) {
             return Ok(info.clone());
         }
+        // A folder Orbit shadows is not a repository, whatever git would say
+        // with the shadow's environment set.
+        if self.shadow_for(&key).is_some() {
+            return Err(GitError::NotARepo(key));
+        }
         let out = self
             .git_output(
                 &key,
@@ -278,6 +305,73 @@ impl Git {
         let info = Arc::new(RepoInfo { root, git_dir, common_dir });
         self.inner.repos.lock().unwrap().insert(key, info.clone());
         Ok(info)
+    }
+
+    /// Where checkpoints of `path` live: its repository, or, for a folder
+    /// that is not one, a shadow repository in Orbit's data folder
+    /// (`<data>/shadow/<hash>.git`) whose working tree is the folder. The
+    /// folder itself is never touched: no `.git` is created in it. Only
+    /// checkpoints, restores and checkpoint diffs use this; commits,
+    /// branches, worktrees and pull requests need a real repository.
+    ///
+    /// Refused for a home folder or a drive root, which are never projects
+    /// and would be too large to snapshot.
+    pub(crate) async fn checkpoint_repo(&self, path: &Path) -> Result<Arc<RepoInfo>> {
+        match self.repo(path).await {
+            Err(GitError::NotARepo(root)) => self.shadow_repo(&root).await,
+            other => other,
+        }
+    }
+
+    async fn shadow_repo(&self, root: &Path) -> Result<Arc<RepoInfo>> {
+        if let Some(info) = self.inner.shadows.lock().unwrap().get(root) {
+            return Ok(info.clone());
+        }
+        let too_broad = root.parent().is_none() || dirs::home_dir().is_some_and(|home| home == root);
+        if too_broad || !root.is_dir() {
+            return Err(GitError::NotARepo(root.to_owned()));
+        }
+        let key = blake3::hash(root.to_string_lossy().as_bytes()).to_hex();
+        let git_dir = self.inner.cfg.data_dir.join("shadow").join(format!("{}.git", &key[..24]));
+        if !git_dir.join("HEAD").exists() {
+            std::fs::create_dir_all(&git_dir)?;
+            let init = self
+                .git_output(&self.inner.cfg.data_dir, [OsStr::new("init"), OsStr::new("--bare"), OsStr::new("--quiet"), git_dir.as_os_str()], cmd::Opts::default())
+                .await?;
+            if !init.ok() {
+                return Err(GitError::Failed { command: "git init (shadow)".into(), code: init.code, stderr: init.stderr_text() });
+            }
+            // Checkpoints hold the folder's exact bytes, whatever the user's
+            // global line-ending settings say.
+            let config = git_dir.join("config");
+            for (key, value) in [("core.autocrlf", "false"), ("core.safecrlf", "false")] {
+                let set = self
+                    .git_output(
+                        &self.inner.cfg.data_dir,
+                        [OsStr::new("config"), OsStr::new("--file"), config.as_os_str(), OsStr::new(key), OsStr::new(value)],
+                        cmd::Opts::default(),
+                    )
+                    .await?;
+                if !set.ok() {
+                    return Err(GitError::Failed { command: format!("git config {key}"), code: set.code, stderr: set.stderr_text() });
+                }
+            }
+            // Build output and dependencies stay out even without a
+            // .gitignore; the folder's own .gitignore files apply too.
+            let info_dir = git_dir.join("info");
+            std::fs::create_dir_all(&info_dir)?;
+            std::fs::write(info_dir.join("exclude"), SHADOW_EXCLUDES)?;
+            std::fs::write(git_dir.join("orbit-folder"), root.to_string_lossy().as_bytes())?;
+        }
+        let info = Arc::new(RepoInfo { root: root.to_owned(), git_dir: git_dir.clone(), common_dir: git_dir });
+        self.inner.shadows.lock().unwrap().insert(root.to_owned(), info.clone());
+        Ok(info)
+    }
+
+    /// The shadow repository whose working tree contains `cwd`, if any.
+    pub(crate) fn shadow_for(&self, cwd: &Path) -> Option<Arc<RepoInfo>> {
+        let shadows = self.inner.shadows.lock().unwrap();
+        shadows.iter().find(|(root, _)| cwd.starts_with(root)).map(|(_, info)| info.clone())
     }
 
     /// The async mutex serializing all writers of one index file.

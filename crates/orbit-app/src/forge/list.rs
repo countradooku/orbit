@@ -70,8 +70,14 @@ pub fn render_pull_requests(view: &mut ForgeView, window: &mut Window, cx: &mut 
                 PrFilter::Merged => format!("No merged {noun}s"),
                 PrFilter::Closed => format!("No closed {noun}s"),
             };
-            ui::empty_state(Icon::new(Lucide::GitPullRequest), what, "Open one from a thread’s review, or switch the filter.", None, cx)
-                .into_any_element()
+            ui::empty_state(
+                Icon::new(Lucide::GitPullRequest),
+                what,
+                "Pull requests open from a thread’s review once an agent has changes to ship. Switch the filter to see others.",
+                Some(crate::onboarding::teach::action("forge-new-thread", Lucide::SquarePen, "New thread", Box::new(crate::actions::NewThread), cx)),
+                cx,
+            )
+            .into_any_element()
         }
         (Some(list), _) => uniform_list("forge-pr-rows", list.items.len(), cx.processor(ForgeView::render_pr_rows))
             .track_scroll(&view.scroll)

@@ -12,6 +12,7 @@
 //! while Orbit was closed is told when the window opens again instead.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogFooter;
@@ -169,8 +170,42 @@ pub fn settings_group() -> SettingGroup {
 
 // ── Restarting the window ────────────────────────────────────────────────
 
-/// How long the host waits for the window to come back after [`relaunch`].
-#[allow(dead_code)] // With `relaunch`.
+/// What an update's restart means with the background host: nothing stops.
+/// The host is held while the window is replaced, and the new window
+/// re-attaches; a new host binary takes over when the old host is idle
+/// (or, across a protocol change, when the user says).
+struct HostRestart {
+    app: Entity<AppState>,
+}
+
+impl crate::update::host::RestartHost for HostRestart {
+    fn agents_at_risk(&self, _: &App) -> usize {
+        0
+    }
+
+    fn prepare(&self, cx: &mut App) -> Task<Result<(), String>> {
+        crate::settings::flush(cx);
+        let held = self.app.update(cx, |app, cx| app.call(Command::Host(HostCommand::Hold { ms: RELAUNCH_HOLD_MS }), cx));
+        let app = self.app.clone();
+        cx.spawn(async move |cx| {
+            held.await.map_err(|err| format!("The background host didn’t answer: {err}"))?;
+            // Terminals stay running when the window goes.
+            app.update(cx, |app, _| app.detach());
+            Ok(())
+        })
+    }
+}
+
+/// Makes updates drain into the background host instead of stopping
+/// agents, when the engine runs in one.
+pub fn install_restart(app: &Entity<AppState>, cx: &mut App) {
+    if app.read(cx).host().is_some() {
+        crate::update::host::set_restart_host(Rc::new(HostRestart { app: app.clone() }), cx);
+    }
+}
+
+/// How long the host waits for the window to come back after an update or
+/// [`relaunch`].
 const RELAUNCH_HOLD_MS: u64 = 60_000;
 
 /// Restarts the window (after an update) without stopping the background

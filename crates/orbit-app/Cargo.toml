@@ -40,10 +40,34 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 serde = { workspace = true }
 sonic-rs = { workspace = true }
 futures = "0.3"
+# Updates and diagnostics (`update`, `diagnostics`). HTTPS is the hyper and
+# rustls stack the engine already links; minisign-verify is a dependency-free
+# Ed25519 (minisign) verifier; zip reads update bundles and writes the
+# diagnostics archive.
+tokio = { workspace = true }
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "http1", "tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "native-tokio", "ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+http-body-util = "0.1"
+bytes = "1"
+minisign-verify = "0.3"
+sha2 = "0.10"
+semver = "1"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 tempfile = "3"
+# Signing test manifests and bundles (`update` tests).
+ring = "0.17"
+blake2 = "0.10"
+tar = "0.4"
 gpui-kit = { version = "0.11", features = ["tree-sitter", "x11", "test-support"] }
+
+# Linux updates may arrive as a tarball.
+[target.'cfg(target_os = "linux")'.dependencies]
+tar = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"

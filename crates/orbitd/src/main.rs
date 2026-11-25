@@ -15,7 +15,7 @@
 //! over a named pipe or Unix socket and the CLI over loopback WebSockets
 //! (`endpoint.json`), and exits by itself: once no window is attached and,
 //! per `host.json`, nothing is working, after a grace period; or when a
-//! restart is requested. It logs to `<data>/host.log`.
+//! restart is requested. It logs to `<data>/logs/orbitd.log`.
 
 mod fake;
 mod lifetime;
@@ -114,11 +114,13 @@ fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     std::fs::write(path, contents)
 }
 
-/// The local host has no console: it logs to `<data>/host.log`, moved to
-/// `host.log.old` once it has grown past a megabyte.
+/// The local host has no console: it logs to `<data>/logs/orbitd.log`,
+/// moved to `orbitd.log.old` once it has grown past a megabyte.
 fn init_local_log(data: &Path) {
     let path = data.join(orbit_net::host::LOG_FILE);
-    let _ = std::fs::create_dir_all(data);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1024 * 1024) {
         let _ = std::fs::rename(&path, path.with_extension("log.old"));
     }
