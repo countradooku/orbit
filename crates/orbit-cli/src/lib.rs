@@ -15,6 +15,7 @@ pub mod forge;
 pub mod help;
 pub mod json;
 pub mod mcp;
+pub mod plugin;
 pub mod render;
 pub mod select;
 pub mod spec;

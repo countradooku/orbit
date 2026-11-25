@@ -594,3 +594,52 @@ fn automations_are_created_run_paused_and_deleted_from_the_command_line() {
     assert_eq!(h.json("automation list", 0).as_array().unwrap().len(), 1);
     assert_eq!(h.json("automation show nothing-like-this", 4)["code"], "not_found");
 }
+
+#[test]
+fn plugins_are_started_checked_installed_approved_and_removed() {
+    let h = Harness::new();
+    let work = tempfile::tempdir().unwrap();
+    let dir = work.path().display().to_string();
+
+    // new + validate, here, without the engine.
+    let r = h.json(&format!("plugin new my-notes --name \"My notes\" --dir \"{dir}\""), 0);
+    let created = r["path"].as_str().unwrap().to_owned();
+    let r = h.json(&format!("plugin validate \"{created}\""), 0);
+    assert_eq!((r["id"].as_str(), r["tier"].as_str()), (Some("my-notes"), Some("data")));
+    assert!(r["hash"].as_str().unwrap().starts_with("blake3:"));
+    let manifest = Path::new(&created).join("orbit-plugin.toml");
+    std::fs::write(&manifest, std::fs::read_to_string(&manifest).unwrap() + "\ncolour = \"blue\"\n").unwrap();
+    let (code, _, err) = h.run(&format!("plugin validate \"{created}\""));
+    assert_eq!(code, 1);
+    assert!(err.contains("unknown field `colour`"), "{err}");
+
+    // A plugin that asks for capabilities waits for approval.
+    let guard = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins/guard-rm");
+    let r = h.json(&format!("plugin install \"{}\"", guard.display()), 0);
+    assert_eq!(r["status"], "needs approval");
+    assert_eq!(r["capabilities"], json!(["hooks.tools"]));
+    let (_, out, _) = h.run(&format!("plugin install \"{}\"", guard.display()));
+    assert!(out.contains("See every agent tool call"), "{out}");
+    assert!(out.contains("orbit plugin enable guard-rm --yes"), "{out}");
+
+    h.json("plugin enable guard-rm --yes", 0);
+    let list = h.json("plugin list", 0);
+    let row = list["plugins"].as_array().unwrap().iter().find(|p| p["id"] == "guard-rm").unwrap().clone();
+    assert_eq!((row["status"].as_str(), row["granted"].clone()), (Some("on"), json!(["hooks.tools"])));
+
+    // Packed archives install too (the theme example: one click, no consent).
+    let archive = work.path().join("midnight.orbitplugin");
+    let theme = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins/midnight-theme");
+    h.json(&format!("plugin pack \"{}\" --out \"{}\"", theme.display(), archive.display()), 0);
+    let r = h.json(&format!("plugin install \"{}\"", archive.display()), 0);
+    assert_eq!(r["status"], "on");
+
+    h.json("plugin disable guard-rm", 0);
+    let logs = h.json("plugin logs guard-rm", 0);
+    let calls: Vec<&str> = logs["logs"].as_array().unwrap().iter().map(|l| l["call"].as_str().unwrap()).collect();
+    assert!(calls.contains(&"install") && calls.contains(&"grant") && calls.contains(&"disable"), "{calls:?}");
+    h.json("plugin remove guard-rm", 0);
+    let e = h.json("plugin enable guard-rm", 4);
+    assert_eq!(e["code"], "not_found");
+    assert!(h.json("plugin install https://example.invalid/x", 2)["message"].as_str().unwrap().contains("--commit"));
+}

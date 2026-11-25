@@ -140,6 +140,7 @@ pub async fn execute(ctx: &Ctx, spec: &Spec, args: &Map<String, Value>, out: &mu
         }
         ["mcp", "install"] => crate::mcp::install(s(args, "client").unwrap_or("all"), flag(args, "apply"), ctx.json()),
         ["open"] => open(ctx, args).await,
+        ["plugin", "new" | "validate" | "pack"] => crate::plugin::local(ctx, spec.path, args),
         _ => {
             let conn = ctx.conn().await?;
             run(ctx, &conn, spec, args, out).await
@@ -371,6 +372,7 @@ async fn run(ctx: &Ctx, conn: &Conn, spec: &Spec, args: &Map<String, Value>, out
         ["bot", _] => crate::bot::run(ctx, conn, spec.path, args).await,
         ["team", _] | ["race"] => crate::teams::run(ctx, conn, spec.path, args).await,
         ["usage"] | ["usage", _] => crate::usage::run(ctx, conn, spec.path, args).await,
+        ["plugin", _] => crate::plugin::run(ctx, conn, spec.path, args).await,
         ["terminal", "read"] => {
             let raw = s(args, "terminal").unwrap_or_default();
             let term: TermId = raw.parse().map_err(|_| CliError::usage(format!("“{raw}” is not a terminal id.")))?;
