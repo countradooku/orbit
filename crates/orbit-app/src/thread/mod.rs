@@ -9,6 +9,7 @@
 //!   row list, and an append keeps the reader's scroll position.
 
 pub(crate) mod rows;
+mod terminal;
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -26,6 +27,8 @@ use orbit_proto::*;
 use crate::app_state::{AppEvent, AppState};
 use crate::assets::Lucide;
 use crate::composer::{Composer, ComposerEvent};
+use gpui_kit::component::resizable::{ResizableState, resizable_panel, v_resizable};
+use terminal::{TerminalPanel, TerminalPanelEvent};
 use crate::{format, ui};
 
 pub use rows::{COLUMN, Row};
@@ -42,6 +45,8 @@ pub struct ThreadView {
     composer: Entity<Composer>,
     focus: FocusHandle,
     loaded: bool,
+    terminal: Option<Entity<TerminalPanel>>,
+    split: Entity<ResizableState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -80,6 +85,8 @@ impl ThreadView {
             composer,
             focus: cx.focus_handle(),
             loaded: false,
+            terminal: None,
+            split: cx.new(|_| ResizableState::default()),
             _subscriptions: subscriptions,
         };
         view.rebuild(true, cx);
@@ -94,6 +101,32 @@ impl ThreadView {
     pub fn focus_composer(view: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let composer = view.read(cx).composer.clone();
         Composer::focus(&composer, window, cx);
+    }
+
+    /// Opens the thread's terminal in its folder, or closes it.
+    pub fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal.take().is_some() {
+            Composer::focus(&self.composer.clone(), window, cx);
+            cx.notify();
+            return;
+        }
+        let Some(thread) = self.thread(cx).cloned() else { return };
+        let state = self.app.read(cx).state();
+        let cwd = thread
+            .workspace
+            .worktree
+            .clone()
+            .or_else(|| thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p)).map(|p| p.path.clone()))
+            .unwrap_or_else(|| orbit_core::EngineOptions::default_data_dir().display().to_string());
+        let panel = cx.new(|cx| TerminalPanel::new(self.app.clone(), cwd, window, cx));
+        let sub = cx.subscribe_in(&panel, window, |this, _, event: &TerminalPanelEvent, window, cx| match event {
+            TerminalPanelEvent::Close => this.toggle_terminal(window, cx),
+        });
+        self._subscriptions.push(sub);
+        let focus = panel.clone();
+        window.defer(cx, move |window, cx| TerminalPanel::focus(&focus, window, cx));
+        self.terminal = Some(panel);
+        cx.notify();
     }
 
     pub fn stop(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -392,10 +425,8 @@ impl Render for ThreadView {
         .flex_1()
         .min_h_0();
 
-        v_flex()
+        let conversation = v_flex()
             .size_full()
-            .track_focus(&self.focus)
-            .child(self.render_header(cx))
             .child(if empty {
                 ui::empty_state(
                     Icon::new(Lucide::MessageSquare),
@@ -424,6 +455,28 @@ impl Render for ThreadView {
                             .children(self.render_queue(cx))
                             .child(self.composer.clone()),
                     ),
-            )
+            );
+        v_flex()
+            .size_full()
+            .track_focus(&self.focus)
+            .child(self.render_header(cx))
+            .child(match &self.terminal {
+                None => div().flex_1().min_h_0().child(conversation).into_any_element(),
+                Some(terminal) => div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        v_resizable("thread-split")
+                            .with_state(&self.split)
+                            .child(resizable_panel().child(conversation))
+                            .child(
+                                resizable_panel()
+                                    .size(px(300.))
+                                    .size_range(px(120.)..px(900.))
+                                    .child(terminal.clone()),
+                            ),
+                    )
+                    .into_any_element(),
+            })
     }
 }

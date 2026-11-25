@@ -53,6 +53,7 @@ fn main() {
 
     gpui_kit::application().with_assets(assets::OrbitAssets).run(move |cx| {
         gpui_kit::init(cx);
+        orbit_terminal::init(cx);
         theme::install(cx);
         actions::bind(cx);
         cx.set_global(settings::Preferences::default());

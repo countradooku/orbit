@@ -67,15 +67,23 @@ impl Workspace {
             // Follow deletions: never leave the user on a thread that is gone.
             cx.observe_in(&app, window, |this, app, window, cx| {
                 if let Some(route) = this.debug_route.take() {
+                    let route_name = route.clone();
                     let state = app.read(cx).state();
                     let target = match route.as_str() {
                         "inbox" => Some(Route::Inbox),
                         "fleet" => Some(Route::Fleet),
-                        "latest" => state.threads.values().max_by_key(|t| t.updated_ms).map(|t| Route::Thread(t.id)),
+                        "latest" | "terminal" => {
+                            state.threads.values().max_by_key(|t| t.updated_ms).map(|t| Route::Thread(t.id))
+                        }
                         _ => None,
                     };
                     match target {
-                        Some(route) => this.navigate(route, window, cx),
+                        Some(route) => {
+                            this.navigate(route, window, cx);
+                            if route_name_is_terminal(&route_name) {
+                                this.toggle_terminal(&ToggleTerminal, window, cx);
+                            }
+                        }
                         None if state.threads.is_empty() => this.debug_route = Some(route),
                         None => {}
                     }
@@ -234,6 +242,12 @@ impl Workspace {
         }
     }
 
+    fn toggle_terminal(&mut self, _: &ToggleTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(view) = self.current_thread_view().cloned() {
+            view.update(cx, |view, cx| view.toggle_terminal(window, cx));
+        }
+    }
+
     fn focus_composer(&mut self, _: &FocusComposer, window: &mut Window, cx: &mut Context<Self>) {
         match self.current_thread_view() {
             Some(view) => ThreadView::focus_composer(&view.clone(), window, cx),
@@ -364,6 +378,10 @@ impl Workspace {
     }
 }
 
+fn route_name_is_terminal(name: &str) -> bool {
+    name == "terminal"
+}
+
 fn humanize_window(window: &str) -> String {
     match window {
         "five_hour" => "5-hour".into(),
@@ -401,6 +419,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::add_project))
             .on_action(cx.listener(Self::stop_turn))
             .on_action(cx.listener(Self::focus_composer))
+            .on_action(cx.listener(Self::toggle_terminal))
             .on_action(cx.listener(Self::next_thread))
             .on_action(cx.listener(Self::previous_thread))
             .on_action(cx.listener(Self::quit))

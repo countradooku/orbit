@@ -19,6 +19,7 @@ gpui_kit::actions!(
         NextThread,
         PreviousThread,
         FocusComposer,
+        ToggleTerminal,
         Quit,
     ]
 );
@@ -38,6 +39,8 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-tab", NextThread, None),
         KeyBinding::new("ctrl-shift-tab", PreviousThread, None),
         KeyBinding::new("ctrl-l", FocusComposer, Some("Workspace")),
+        KeyBinding::new("ctrl-`", ToggleTerminal, None),
+        KeyBinding::new("ctrl-j", ToggleTerminal, Some("Workspace")),
         KeyBinding::new("ctrl-q", Quit, None),
     ]);
 }
