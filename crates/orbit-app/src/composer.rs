@@ -292,38 +292,86 @@ impl Composer {
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = picked.await else { return };
-            for path in paths {
-                let _ = this.update(cx, |this, cx| {
-                    this.attaching += 1;
-                    cx.notify();
-                });
-                let read = cx
-                    .background_spawn({
-                        let path = path.clone();
-                        async move { std::fs::read(&path).map(|data| (path, data)) }
-                    })
-                    .await;
-                let Ok((path, data)) = read else {
-                    let _ = this.update(cx, |this, cx| this.attaching -= 1);
-                    continue;
-                };
-                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let mime = mime_for(&name).to_owned();
-                let stored = this.update(cx, |this, cx| {
-                    this.app.update(cx, |app, cx| app.call(Command::PutBlob { name, mime, data }, cx))
-                });
-                let Ok(stored) = stored else { return };
-                let result = stored.await;
+            let _ = this.update(cx, |this, cx| this.attach_paths(paths, cx));
+        })
+        .detach();
+    }
+
+    /// Attaches files from disk (picker, drop, pasted files). Folders are
+    /// skipped: agents read the project directly.
+    pub fn attach_paths(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        for path in paths {
+            if !path.is_file() {
+                continue;
+            }
+            self.attaching += 1;
+            cx.notify();
+            let read = cx.background_spawn({
+                let path = path.clone();
+                async move { std::fs::read(&path) }
+            });
+            cx.spawn(async move |this, cx| {
+                let data = read.await;
                 let _ = this.update(cx, |this, cx| {
                     this.attaching -= 1;
-                    if let Ok(Reply::Blob(attachment)) = result {
-                        this.attachments.push(attachment);
+                    if let Ok(data) = data {
+                        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        let mime = mime_for(&name).to_owned();
+                        this.attach_bytes(name, mime, data, cx);
                     }
                     cx.notify();
                 });
-            }
+            })
+            .detach();
+        }
+    }
+
+    /// Stores bytes in the blob store (once per content) and attaches them.
+    fn attach_bytes(&mut self, name: String, mime: String, data: Vec<u8>, cx: &mut Context<Self>) {
+        self.attaching += 1;
+        let task = self.app.update(cx, |app, cx| app.call(Command::PutBlob { name, mime, data }, cx));
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.attaching -= 1;
+                if let Ok(Reply::Blob(attachment)) = result
+                    && !this.attachments.iter().any(|a| a.hash == attachment.hash)
+                {
+                    this.attachments.push(attachment);
+                }
+                cx.notify();
+            });
         })
         .detach();
+        cx.notify();
+    }
+
+    /// Images and files on the clipboard become attachments; text pastes
+    /// normally. Returns whether the paste was handled here.
+    fn paste(&mut self, item: &ClipboardItem, cx: &mut Context<Self>) -> bool {
+        let mut handled = false;
+        for entry in item.entries() {
+            match entry {
+                ClipboardEntry::Image(image) => {
+                    let (ext, mime) = match image.format {
+                        ImageFormat::Png => ("png", "image/png"),
+                        ImageFormat::Jpeg => ("jpg", "image/jpeg"),
+                        ImageFormat::Webp => ("webp", "image/webp"),
+                        ImageFormat::Gif => ("gif", "image/gif"),
+                        _ => ("png", "image/png"),
+                    };
+                    let n = self.attachments.len() + self.attaching + 1;
+                    self.attach_bytes(format!("pasted-image-{n}.{ext}"), mime.into(), image.bytes.clone(), cx);
+                    handled = true;
+                }
+                ClipboardEntry::ExternalPaths(paths) => {
+                    self.attach_paths(paths.paths().to_vec(), cx);
+                    handled = true;
+                }
+                ClipboardEntry::String(_) => {}
+            }
+        }
+        handled
     }
 
     /// The current model and its non-default options, read from the
@@ -729,14 +777,24 @@ impl Render for Composer {
             .children(self.render_slash_menu(cx))
             .child(
                 v_flex()
+                    .id("composer-box")
                     .w_full()
                     .rounded(theme.radius_lg)
                     .border_1()
                     .border_color(theme.input)
+                    .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                        style.border_color(cx.theme().drag_border).bg(cx.theme().drop_target)
+                    })
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach_paths(paths.paths().to_vec(), cx)))
                     .bg(theme.popover)
                     .shadow_sm()
                     .children(self.render_attachments(cx))
-                    .child(div().px_3().pt_3().child(Textarea::new(&self.input).appearance(false)))
+                    .child({
+                        let this = cx.weak_entity();
+                        div().px_3().pt_3().child(Textarea::new(&self.input).appearance(false).on_paste(move |item, _, cx| {
+                            this.update(cx, |this, cx| this.paste(item, cx)).unwrap_or(false)
+                        }))
+                    })
                     .child(
                         h_flex()
                             .px_2()
