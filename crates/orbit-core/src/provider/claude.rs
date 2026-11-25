@@ -658,7 +658,7 @@ pub async fn user_message(uuid: &str, text: &str, attachments: &[PromptAttachmen
 
 /// Detects Claude Code and reads its catalog with an `initialize` request
 /// and no prompt, so it costs nothing.
-pub async fn probe(binary: Option<PathBuf>) -> ProviderInfo {
+pub async fn probe(binary: Option<PathBuf>, user_env: Vec<(String, String)>) -> ProviderInfo {
     let Some(path) = resolve(binary.as_deref()) else {
         return ProviderInfo {
             kind: ProviderKind::Claude,
@@ -685,6 +685,7 @@ pub async fn probe(binary: Option<PathBuf>) -> ProviderInfo {
         r#"{"disableAllHooks":true}"#,
     ]);
     let mut env = base_env();
+    env.extend(user_env);
     env.push(("ENABLE_CLAUDEAI_MCP_SERVERS".into(), "false".into()));
     env.push(("CLAUDE_CODE_AUTO_CONNECT_IDE".into(), "0".into()));
     let cwd = dirs::home_dir().unwrap_or_else(std::env::temp_dir);

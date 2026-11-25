@@ -34,7 +34,7 @@ impl InboxView {
     }
 }
 
-fn request_summary(kind: &RequestKind) -> (Icon, String, Option<String>) {
+pub(crate) fn request_summary(kind: &RequestKind) -> (Icon, String, Option<String>) {
     match kind {
         RequestKind::Command { command, reason, .. } => (
             Icon::new(Lucide::Terminal),
@@ -97,7 +97,7 @@ impl Render for InboxView {
                 )
         };
 
-        let mut list = v_flex().w_full().max_w(crate::thread::COLUMN).gap_3().px_4().py_6();
+        let mut list = v_flex().w_full().max_w(crate::settings::chat_column(cx)).gap_3().px_4().py_6();
         if !waiting.is_empty() {
             list = list.child(ui::section_label(format!("Needs you · {}", waiting.iter().map(|t| t.pending.len().max(1)).sum::<usize>()), cx));
             for thread in &waiting {

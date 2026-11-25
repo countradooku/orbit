@@ -3,7 +3,7 @@
 //! Layout of the data directory:
 //!
 //! ```text
-//! meta.log            projects, threads, defaults, drafts (durable envelopes)
+//! meta.log            projects, threads, defaults, settings, drafts (durable envelopes)
 //! threads/<id>.log    one thread's timeline records
 //! blobs/<ab>/<hash>   attachments and large tool outputs, by BLAKE3 hash
 //! ```
@@ -190,6 +190,7 @@ pub struct Store {
     defaults: ThreadConfig,
     /// Unsent composer messages; never empty drafts.
     drafts: HashMap<DraftTarget, Draft>,
+    settings: Settings,
     open: HashMap<ThreadId, OpenTimeline>,
 }
 
@@ -216,6 +217,7 @@ impl Store {
             threads: HashMap::new(),
             defaults: ThreadConfig::default(),
             drafts: HashMap::new(),
+            settings: Settings::default(),
             open: HashMap::new(),
         };
         for env in records {
@@ -271,6 +273,10 @@ impl Store {
         self.drafts.get(&target)
     }
 
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
     pub fn snapshot(&self, providers: Vec<ProviderInfo>) -> Snapshot {
         let mut threads: Vec<Thread> = self.threads.values().cloned().collect();
         threads.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
@@ -282,6 +288,7 @@ impl Store {
             providers,
             defaults: self.defaults.clone(),
             drafts: self.drafts.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            settings: Box::new(self.settings.clone()),
         }
     }
 
@@ -310,6 +317,7 @@ impl Store {
                     self.drafts.insert(target, draft);
                 }
             }
+            Event::SettingsChanged(settings) => self.settings = settings,
             _ => {}
         }
     }
@@ -427,7 +435,7 @@ impl Store {
     }
 
     fn maybe_compact_meta(&mut self) -> io::Result<()> {
-        let live = self.projects.len() + self.threads.len() + self.drafts.len() + 1;
+        let live = self.projects.len() + self.threads.len() + self.drafts.len() + 2;
         if self.meta.records > 256 && self.meta.records > live * 4 {
             let seq = self.seq;
             let mut records = Vec::with_capacity(live);
@@ -441,6 +449,7 @@ impl Store {
             for (target, draft) in &self.drafts {
                 records.push(Envelope { seq, event: Event::DraftSaved { target: *target, draft: draft.clone() } });
             }
+            records.push(Envelope { seq, event: Event::SettingsChanged(self.settings.clone()) });
             self.meta.rewrite(records.iter())?;
         }
         Ok(())
@@ -562,6 +571,29 @@ mod tests {
         assert_eq!(store.thread(id).unwrap().title, "Fix the build");
         assert!(store.timeline(id).is_none(), "timeline must not load at startup");
         assert_eq!(store.load_timeline(id).unwrap().items(), &[item]);
+    }
+
+    #[test]
+    fn settings_survive_reopen_and_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.appearance.ui_scale = 125;
+        settings.provider_mut(ProviderKind::Claude).binary = "/opt/claude/bin/claude".into();
+        {
+            let mut store = Store::open(dir.path()).unwrap();
+            store.commit(Event::SettingsChanged(settings.clone())).unwrap();
+            // Enough unrelated records to force a meta-log rewrite.
+            let id = ThreadId::new();
+            for n in 0..300 {
+                let mut t = thread(id);
+                t.turns = n;
+                store.commit(Event::ThreadUpserted(t)).unwrap();
+            }
+            assert!(store.meta.records < 300, "the meta log was compacted");
+        }
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.settings(), &settings);
+        assert_eq!(*store.snapshot(Vec::new()).settings, settings);
     }
 
     #[test]

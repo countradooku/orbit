@@ -12,6 +12,7 @@ mod drafts;
 mod files;
 mod orchestrator;
 mod queue;
+mod settings;
 
 #[cfg(test)]
 mod tests;

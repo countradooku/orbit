@@ -2,8 +2,9 @@
 //!
 //! The model list and every model option (reasoning effort, fast mode, …)
 //! come from the provider's own catalog at runtime; nothing here names a
-//! model or an effort level. While a turn runs, Enter queues the message and
-//! Ctrl+Enter steers the running turn, and the composer says which will
+//! model or an effort level. The send key (Enter or Ctrl+Enter) and what
+//! sending does while a turn runs (queue or steer; the alternate key does the
+//! other) come from Settings › Composer, and the composer says which will
 //! happen before you press anything.
 
 use std::rc::Rc;
@@ -19,9 +20,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use orbit_proto::*;
 
+use crate::actions::SendAlternate;
 use crate::app_state::AppState;
 use crate::assets::Lucide;
-use crate::ui;
+use crate::{settings, ui};
 
 pub enum ComposerEvent {
     Submit { text: String, attachments: Vec<Attachment>, steer: bool },
@@ -57,18 +59,26 @@ impl EventEmitter<ComposerEvent> for Composer {}
 
 impl Composer {
     pub fn new(app: Entity<AppState>, config: ThreadConfig, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let enter_sends = settings::get(cx).composer.submit == SubmitKey::Enter;
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 14)
-                .submit_on_enter(true)
+                .submit_on_enter(enter_sends)
                 .placeholder("Describe a change, a fix or a question — / for commands")
         });
-        let input_sub = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
-            InputEvent::PressEnter { shift: false, secondary } => {
-                if !this.slash_matches(cx).is_empty() {
-                    this.complete_slash(window, cx);
-                } else {
-                    this.submit(*secondary, window, cx);
+        let input_sub = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match *event {
+            InputEvent::PressEnter { shift, secondary } => {
+                let send = match (settings::get(cx).composer.submit, secondary, shift) {
+                    (SubmitKey::Enter, false, false) | (SubmitKey::ModEnter, true, false) => Some(false),
+                    (SubmitKey::Enter, true, _) => Some(true),
+                    _ => None, // a new line
+                };
+                if let Some(alternate) = send {
+                    if !this.slash_matches(cx).is_empty() && !alternate {
+                        this.complete_slash(window, cx);
+                    } else {
+                        this.submit(alternate, window, cx);
+                    }
                 }
             }
             InputEvent::Change => {
@@ -82,6 +92,11 @@ impl Composer {
         });
         // Providers report their catalogs asynchronously; re-render when they do.
         let app_sub = cx.observe(&app, |_, _, cx| cx.notify());
+        let settings_sub = cx.observe_global::<settings::SettingsModel>(|this, cx| {
+            let enter_sends = settings::get(cx).composer.submit == SubmitKey::Enter;
+            this.input.update(cx, |input, cx| input.set_submit_on_enter(enter_sends, cx));
+            cx.notify();
+        });
         Self {
             app,
             input,
@@ -95,7 +110,7 @@ impl Composer {
             worktree_choice: None,
             slash_ix: 0,
             slash_dismissed: false,
-            _subscriptions: vec![input_sub, app_sub],
+            _subscriptions: vec![input_sub, app_sub, settings_sub],
         }
     }
 
@@ -259,7 +274,9 @@ impl Composer {
         )
     }
 
-    fn submit(&mut self, steer_key: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// Sends the message. While a turn runs it is queued or steers the turn
+    /// as the follow-up setting says; `alternate` does the opposite.
+    fn submit(&mut self, alternate: bool, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input.read(cx).value().trim().to_owned();
         if text.is_empty() && self.attachments.is_empty() {
             return;
@@ -269,7 +286,8 @@ impl Composer {
         }
         self.input.update(cx, |input, cx| input.set_value("", window, cx));
         let attachments = std::mem::take(&mut self.attachments);
-        cx.emit(ComposerEvent::Submit { text, attachments, steer: self.running && steer_key });
+        let steer_by_default = settings::get(cx).composer.follow_up == FollowUp::Steer;
+        cx.emit(ComposerEvent::Submit { text, attachments, steer: self.running && (steer_by_default != alternate) });
         cx.notify();
     }
 
@@ -756,6 +774,21 @@ impl Render for Composer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let has_text = !self.input.read(cx).value().trim().is_empty() || !self.attachments.is_empty();
+        let (send_key, alternate_key) = settings::send_keys(cx);
+        let (primary, other) = match settings::get(cx).composer.follow_up {
+            FollowUp::Queue => ("queues", "steers the running turn"),
+            FollowUp::Steer => ("steers the running turn", "queues"),
+        };
+        let hint = self.running.then(|| format!("{send_key} {primary} · {alternate_key} {other}"));
+        let send_tooltip: SharedString = if self.running {
+            let (primary, other) = match settings::get(cx).composer.follow_up {
+                FollowUp::Queue => ("Queue", "Steer"),
+                FollowUp::Steer => ("Steer", "Queue"),
+            };
+            format!("{primary} ({send_key}) · {other} ({alternate_key})").into()
+        } else {
+            format!("Send ({send_key})").into()
+        };
         let send = if self.running && !has_text {
             Button::new("stop")
                 .icon(Icon::new(IconName::Square))
@@ -767,12 +800,14 @@ impl Render for Composer {
                 .primary()
                 .icon(Icon::new(IconName::ArrowUp))
                 .rounded(ButtonRounded::Size(px(999.)))
-                .tooltip(if self.running { "Queue (Enter) · Steer the running turn (Ctrl+Enter)" } else { "Send (Enter)" })
+                .tooltip(send_tooltip)
                 .disabled(!has_text || self.attaching > 0)
                 .on_click(cx.listener(|this, _, window, cx| this.submit(false, window, cx)))
         };
         v_flex()
             .w_full()
+            .key_context("Composer")
+            .on_action(cx.listener(|this, _: &SendAlternate, window, cx| this.submit(true, window, cx)))
             .capture_key_down(cx.listener(Self::on_key))
             .children(self.render_slash_menu(cx))
             .child(
@@ -817,7 +852,7 @@ impl Render for Composer {
                                         .text_xs()
                                         .text_color(theme.muted_foreground)
                                         .mr_1()
-                                        .child(if has_text { "Enter queues · Ctrl+Enter steers" } else { "Working…" }),
+                                        .child(if has_text { hint.clone().unwrap_or_default() } else { "Working…".to_owned() }),
                                 )
                             })
                             .child(self.render_model_pill(cx))

@@ -1,0 +1,43 @@
+[package]
+name = "orbit-browser"
+description = "Orbit preview browser: a native web view embedded in a GPUI Kit window."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["fast"]
+# Render on GPUI Fast, like orbit-app. GPUI Fast's window composition is what
+# keeps GPUI menus, popovers and dialogs above the page. Features unify: an app
+# that compares backends depends on this crate with `default-features = false`
+# and forwards its own `fast` feature here.
+fast = ["gpui-kit/gpui-fast", "gpui-webview/gpui-fast", "dep:webview2-com", "dep:windows", "dep:raw-window-handle"]
+
+[dependencies]
+gpui-kit = { version = "0.11" }
+url = "2"
+log = { workspace = true }
+anyhow = "1"
+futures = "0.3"
+
+# macOS and Linux: WKWebView / WebKitGTK through Wry, hosted in GPUI Fast's
+# window composition by gpui-webview.
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+gpui-webview = { version = "0.11", default-features = false }
+wry = { version = "0.53.3", package = "lb-wry", features = ["devtools"] }
+
+# Windows: a WebView2 composition controller drawn into a DirectComposition
+# visual that GPUI Fast stacks between its base content and its overlays.
+# Only with `fast`: upstream GPUI has no window composition.
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = { version = "0.39", optional = true }
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+raw-window-handle = { version = "0.6", optional = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }

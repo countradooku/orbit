@@ -71,6 +71,9 @@ impl AppState {
             return;
         }
         let shell = changes.affects_shell() || changes.reset;
+        if changes.settings || changes.reset {
+            crate::settings::receive(self.state.settings.clone(), cx);
+        }
         if changes.reset {
             // Everything was replaced: reload every timeline a view shows.
             let open: Vec<ThreadId> = self.open.keys().copied().collect();
