@@ -61,6 +61,11 @@ pub enum Event {
     DefaultsChanged(ThreadConfig),
     /// The thread's working tree changed on disk. Ephemeral.
     WorkspaceChanged { thread: ThreadId, files: Vec<FileChange> },
+    /// Live token and context accounting of a running turn. Ephemeral; the
+    /// durable total lands on the thread when the turn ends.
+    UsageChanged { thread: ThreadId, usage: Usage },
+    /// Files changed in more than one live worktree. Ephemeral.
+    Conflicts(Vec<Conflict>),
     /// Ephemeral.
     TerminalOutput { term: TermId, data: Vec<u8> },
     TerminalExited { term: TermId, code: Option<i32> },
@@ -71,7 +76,12 @@ impl Event {
     pub fn is_durable(&self) -> bool {
         !matches!(
             self,
-            Event::ItemDelta { .. } | Event::WorkspaceChanged { .. } | Event::TerminalOutput { .. }
+            Event::ItemDelta { .. }
+                | Event::WorkspaceChanged { .. }
+                | Event::UsageChanged { .. }
+                | Event::Conflicts(_)
+                | Event::Providers(_)
+                | Event::TerminalOutput { .. }
         )
     }
 }
@@ -173,6 +183,13 @@ pub enum Reply {
     Blob(Attachment),
     Terminal(TermId),
     PullRequest { url: String },
+}
+
+/// A path that more than one thread's worktree changed.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub struct Conflict {
+    pub path: String,
+    pub threads: Vec<ThreadId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]

@@ -26,5 +26,6 @@ pub async fn probe(binary: Option<PathBuf>) -> ProviderInfo {
         modes: Vec::new(),
         slash_commands: Vec::new(),
         message: Some("Codex support is not built yet".into()),
+        ..Default::default()
     }
 }

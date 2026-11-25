@@ -271,6 +271,17 @@ pub struct Thread {
     pub turns: u32,
     /// Messages queued to send after the current turn.
     pub queued: u32,
+    /// Unanswered agent requests, kept on the thread record so the inbox
+    /// can show every request across threads without loading timelines.
+    pub pending: Vec<PendingRequest>,
+}
+
+/// An unanswered request as the inbox shows it.
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
+pub struct PendingRequest {
+    pub item: ItemId,
+    pub request: AgentRequest,
+    pub created_ms: u64,
 }
 
 /// One entry of a thread's timeline.
@@ -426,6 +437,9 @@ pub enum Decision {
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
 pub struct TurnSummary {
     pub usage: Usage,
+    /// The provider's message id at the end of the turn: where a rollback or
+    /// fork resumes the provider's own history.
+    pub provider_cursor: Option<String>,
     pub duration_ms: u64,
     /// Git tree id of the workspace after the turn; the revert target.
     pub checkpoint: Option<String>,
@@ -434,7 +448,7 @@ pub struct TurnSummary {
 }
 
 /// Availability of a provider on this host.
-#[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
 pub struct ProviderInfo {
     pub kind: ProviderKind,
     pub installed: bool,
@@ -446,6 +460,21 @@ pub struct ProviderInfo {
     pub modes: Vec<ModeInfo>,
     pub slash_commands: Vec<SlashCommand>,
     pub message: Option<String>,
+    /// Account quota windows, latest known state.
+    pub quota: Vec<QuotaWindow>,
+}
+
+/// One rate-limit window of an account (for example the five-hour or
+/// seven-day window).
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
+pub struct QuotaWindow {
+    pub window: String,
+    /// Share used, 0.0–1.0, when the provider reports it.
+    pub utilization: Option<f32>,
+    /// Unix time in milliseconds when the window resets; 0 when unknown.
+    pub resets_ms: u64,
+    /// Requests are being refused until the reset.
+    pub rejected: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
