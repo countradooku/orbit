@@ -17,7 +17,7 @@ use crate::provider::{
     AgentEvent, BlockKind, EventSender, PromptAttachment, SessionHandle, SessionInput, SessionSpec,
     TurnOutcome,
 };
-use crate::git::{BranchCleanup, Git, NewWorktree, RemoveWorktree, TreeId};
+use crate::git::{BranchCleanup, Git, NewWorktree, RemoveWorktree, TreeId, WorktreeExtras};
 use crate::store::Store;
 use crate::terminal::{ExitSender, OutputSender, TermSize, Terminals};
 
@@ -144,6 +144,8 @@ pub struct Orchestrator {
     pub(crate) bots: super::bots::BotsLink,
     /// Agent teams and races (`engine/teams.rs`).
     pub(crate) teams: crate::teams::TeamsState,
+    /// Run targets and git status (`engine/workspaces.rs`).
+    pub(crate) workspaces: super::workspaces::WorkspacesState,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -200,6 +202,7 @@ impl Orchestrator {
             guard: Default::default(),
             bots: Default::default(),
             teams,
+            workspaces: Default::default(),
         }
     }
 
@@ -253,21 +256,39 @@ impl Orchestrator {
     pub(crate) fn diff(&mut self, thread: ThreadId, scope: DiffScope) -> Outcome {
         let repo = match self.repo_for(thread) {
             Ok(repo) => repo,
-            Err(e) => return Outcome::Ready(Err(e)),
+            // Outside a project (a chat in its scratch folder) nothing is
+            // checkpointed; the agent's own edits still say what changed.
+            Err(e) => {
+                let scratch = self.store.dir().join("scratch").join(thread.to_string());
+                return match scope {
+                    DiffScope::Turn(n) => self.edits_diff(thread, &scratch, move |turn| turn == n),
+                    DiffScope::Thread => self.edits_diff(thread, &scratch, |_| true),
+                    DiffScope::SinceTurn(n) => self.edits_diff(thread, &scratch, move |turn| turn >= n),
+                    _ => Outcome::Ready(Err(e)),
+                };
+            }
         };
         let git = self.git.clone();
+        // Without checkpoints (turns from before Orbit could snapshot this
+        // folder), the diff is what the agent's own edits describe.
         let range = match &scope {
             DiffScope::Turn(n) => match self.turn_range(thread, *n) {
                 Some(range) => Some(range),
-                None => return Outcome::Ready(Err("This turn has no snapshot to compare.".into())),
+                None => {
+                    let n = *n;
+                    return self.edits_diff(thread, &repo, move |turn| turn == n);
+                }
             },
             DiffScope::Thread => match self.thread_base(thread) {
                 Some(base) => Some((base, None)),
-                None => return Outcome::Ready(Err("Nothing has run in this thread yet.".into())),
+                None => return self.edits_diff(thread, &repo, |_| true),
             },
             DiffScope::SinceTurn(n) => match self.since_turn_range(thread, *n) {
                 Some(range) => Some(range),
-                None => return Outcome::Ready(Err("This turn has no snapshot to compare.".into())),
+                None => {
+                    let n = *n;
+                    return self.edits_diff(thread, &repo, move |turn| turn >= n);
+                }
             },
             _ => None,
         };
@@ -282,6 +303,24 @@ impl Orchestrator {
             result
                 .map(|diff| Reply::Diff(diff.files.iter().map(|f| f.raw.as_str()).collect::<String>()))
                 .map_err(|e| e.to_string())
+        }))
+    }
+
+    /// The changes of the turns `turns` accepts, from the agent's recorded
+    /// edits rather than checkpoints.
+    fn edits_diff(&mut self, thread: ThreadId, repo: &Path, turns: impl Fn(u32) -> bool + Send + 'static) -> Outcome {
+        let items = match self.store.load_timeline(thread) {
+            Ok(timeline) => timeline.items().to_vec(),
+            Err(e) => return Outcome::Ready(Err(e.to_string())),
+        };
+        let repo = repo.to_owned();
+        Outcome::Deferred(Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let read = |rel: &str| std::fs::read_to_string(repo.join(rel)).ok();
+                Reply::Diff(crate::edits::scope_patch(&items, turns, Some(&repo), read).unwrap_or_default())
+            })
+            .await
+            .map_err(|e| e.to_string())
         }))
     }
 
@@ -378,6 +417,7 @@ impl Orchestrator {
         self.terminals.remove_exited(term);
         self.status_terminal_closed(term);
         self.cli.exited(term, code);
+        self.run_exited(term, code);
         self.emit(Event::TerminalExited { term, code });
     }
 
@@ -429,6 +469,7 @@ impl Orchestrator {
         }
         self.rearm_quota_resets();
         self.automations_recover();
+        self.watch_projects();
     }
 
     pub fn store(&self) -> &Store {
@@ -440,7 +481,13 @@ impl Orchestrator {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot { live: self.live_snapshot(), teams: self.teams.board(), ..self.store.snapshot(self.providers.clone()) }
+        Snapshot {
+            live: self.live_snapshot(),
+            teams: self.teams.board(),
+            git: self.workspaces.git_snapshot(),
+            runs: self.workspaces.runs_snapshot(),
+            ..self.store.snapshot(self.providers.clone())
+        }
     }
 
     pub fn subscribe(&mut self, epoch: u64, since: u64) -> (Option<Snapshot>, Vec<Envelope>, EventRx) {
@@ -646,6 +693,7 @@ impl Orchestrator {
             Command::Forge(command) => self.forge(command),
             Command::Bots(command) => self.bots_command(command),
             Command::Team(command) => self.team_command(*command),
+            Command::Workspace(command) => self.workspace_command(command),
             command if super::forge::pushes(&command) => self.forge_after_push(command),
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
             Command::SearchFiles { thread, project, query, limit } => {
@@ -683,6 +731,7 @@ impl Orchestrator {
                 for thread in threads {
                     self.delete_thread(thread)?;
                 }
+                self.project_removed(id);
                 self.emit(Event::ProjectRemoved(id));
                 Ok(Reply::Done)
             }
@@ -747,6 +796,10 @@ impl Orchestrator {
                 Outcome::Deferred(future) => futures_block_on(future),
             },
             Command::Guard(settings) => self.guard_command(settings),
+            Command::Workspace(command) => match self.workspace_command(command) {
+                Outcome::Ready(result) => result,
+                Outcome::Deferred(future) => futures_block_on(future),
+            },
             Command::Bots(command) => match self.bots_command(command) {
                 Outcome::Ready(result) => result,
                 Outcome::Deferred(future) => futures_block_on(future),
@@ -801,6 +854,7 @@ impl Orchestrator {
         let id = project.id;
         let path = PathBuf::from(&project.path);
         self.emit(Event::ProjectUpserted(Box::new(project)));
+        self.project_added(id);
         let (git, tx) = (self.git.clone(), self.internal_tx.clone());
         tokio::spawn(async move {
             let branch = git.current_branch(&path).await.ok().flatten();
@@ -852,6 +906,12 @@ impl Orchestrator {
     pub(crate) fn create_worktree_from(&mut self, thread: ThreadId, project: Project, base: Option<String>) {
         let (git, tx) = (self.git.clone(), self.internal_tx.clone());
         let branch = worktree_branch(thread);
+        let config = self.project_config(project.id);
+        let extras = WorktreeExtras {
+            env: config.env.iter().map(|v| (v.name.clone(), v.value.clone())).collect(),
+            include: config.include.clone(),
+            ports: (config.ports > 0).then_some(config.ports),
+        };
         tokio::spawn(async move {
             let mut log = String::new();
             let mut on_output = |_: crate::git::OutputStream, line: &str| {
@@ -868,7 +928,7 @@ impl Orchestrator {
                 path: None,
                 setup: project.scripts.setup.clone(),
             };
-            let result = git.create_worktree(spec, &mut on_output).await;
+            let result = git.create_worktree_with(spec, extras, &mut on_output).await;
             let (result, setup_log) = match result {
                 Ok(info) => {
                     let failed = info.setup.as_ref().is_some_and(|s| s.code != Some(0));
@@ -948,9 +1008,11 @@ impl Orchestrator {
             && let Some(path) = thread.workspace.worktree.clone()
         {
             let teardown = thread.project.and_then(|p| self.store.project(p)).and_then(|p| p.scripts.teardown.clone());
+            let env = thread.project.map(|p| self.project_config(p).env).unwrap_or_default();
+            let env = env.into_iter().map(|v| (v.name, v.value)).collect();
             let git = self.git.clone();
             tokio::spawn(async move {
-                let opts = RemoveWorktree { teardown, branch: BranchCleanup::DeleteIfMerged, force: true };
+                let opts = RemoveWorktree { teardown, branch: BranchCleanup::DeleteIfMerged, force: true, env };
                 if let Err(err) = git.remove_worktree(Path::new(&path), opts, &mut |_, _| {}).await {
                     log::warn!("removing worktree {path}: {err}");
                 }
@@ -971,6 +1033,7 @@ impl Orchestrator {
         }
         self.open.remove(&id);
         self.unwatch_workspace(id);
+        self.thread_removed(id);
         self.dirty.retain(|(t, _)| *t != id);
         self.emit(Event::ThreadRemoved(id));
         if let Err(err) = self.store.collect_garbage() {

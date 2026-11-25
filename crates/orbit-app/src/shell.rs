@@ -240,6 +240,14 @@ impl Workspace {
                 let (view, editing) = (self.automations.clone(), route == "automation-editor");
                 window.defer(cx, move |window, cx| view.update(cx, |view, cx| view.debug_open_editor(editing, window, cx)));
             }
+            // A thread by part of its title, archived and settled included.
+            route if route.starts_with("title:") => {
+                let needle = route["title:".len()..].to_lowercase();
+                let found = state.threads.values().find(|t| t.title.to_lowercase().contains(&needle)).map(|t| t.id);
+                if let Some(id) = found {
+                    self.navigate(Route::Thread(id), window, cx);
+                }
+            }
             // A team architect's thread: crew strip, Team button.
             "architect" => {
                 let lead = state.teams.values().max_by_key(|t| t.workers.len()).map(|t| t.architect);

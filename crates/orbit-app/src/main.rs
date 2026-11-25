@@ -12,6 +12,7 @@ mod assets;
 mod automations;
 mod bots;
 mod composer;
+mod files;
 #[cfg(debug_assertions)]
 mod demo;
 mod diagnostics;
@@ -26,6 +27,7 @@ mod notify;
 mod onboarding;
 mod palette;
 mod prefs;
+mod project;
 mod review;
 mod settings;
 mod shortcuts;
@@ -136,6 +138,8 @@ fn main() {
         prefs::init(&startup.data_dir, cx);
         keymap::install(&startup.data_dir, cx);
         thread::init(cx);
+        files::init(cx);
+        project::init(cx);
         // The user's bindings go last so they win over every default.
         keymap::reload(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());

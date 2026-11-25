@@ -304,6 +304,8 @@ pub struct Store {
     open: HashMap<ThreadId, OpenTimeline>,
     /// Automations and their recent runs.
     automations: crate::automations::records::Records,
+    /// Projects' configurations (`engine/workspaces.rs`).
+    project_configs: HashMap<ProjectId, ProjectConfig>,
 }
 
 impl Store {
@@ -338,6 +340,7 @@ impl Store {
             settings: Settings::default(),
             open: HashMap::new(),
             automations: Default::default(),
+            project_configs: HashMap::new(),
         };
         for env in records {
             store.seq = store.seq.max(env.seq);
@@ -406,6 +409,11 @@ impl Store {
         &self.automations
     }
 
+    /// A project's configuration; `None` when it was never set.
+    pub fn project_config(&self, id: ProjectId) -> Option<&ProjectConfig> {
+        self.project_configs.get(&id)
+    }
+
     pub fn snapshot(&self, providers: Vec<ProviderInfo>) -> Snapshot {
         let mut threads: Vec<Thread> = self.threads.values().cloned().collect();
         threads.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
@@ -423,6 +431,9 @@ impl Store {
             automations,
             automation_runs,
             teams: Default::default(),
+            project_configs: self.project_configs.iter().map(|(id, c)| (*id, c.clone())).collect(),
+            git: Vec::new(),
+            runs: Vec::new(),
         }
     }
 
@@ -435,7 +446,15 @@ impl Store {
                     self.projects.sort_by_key(|p| p.order);
                 }
             },
-            Event::ProjectRemoved(id) => self.projects.retain(|p| p.id != id),
+            Event::ProjectRemoved(id) => {
+                self.projects.retain(|p| p.id != id);
+                self.project_configs.remove(&id);
+            }
+            Event::ProjectConfigChanged { project, config } => {
+                if self.projects.iter().any(|p| p.id == project) {
+                    self.project_configs.insert(project, *config);
+                }
+            }
             Event::ThreadUpserted(thread) => {
                 self.threads.insert(thread.id, *thread);
             }
@@ -584,7 +603,12 @@ impl Store {
     }
 
     fn maybe_compact_meta(&mut self) -> io::Result<()> {
-        let live = self.projects.len() + self.threads.len() + self.drafts.len() + self.automations.len() + 2;
+        let live = self.projects.len()
+            + self.project_configs.len()
+            + self.threads.len()
+            + self.drafts.len()
+            + self.automations.len()
+            + 2;
         if self.meta.records > 256 && self.meta.records > live * 4 {
             self.rewrite_meta()?;
         }
@@ -598,6 +622,10 @@ impl Store {
         let mut records = Vec::with_capacity(self.projects.len() + self.threads.len() + self.drafts.len() + 2);
         for p in &self.projects {
             records.push(Envelope { seq, event: Event::ProjectUpserted(Box::new(p.clone())) });
+            if let Some(config) = self.project_configs.get(&p.id) {
+                let event = Event::ProjectConfigChanged { project: p.id, config: Box::new(config.clone()) };
+                records.push(Envelope { seq, event });
+            }
         }
         for t in self.threads.values() {
             records.push(Envelope { seq, event: Event::ThreadUpserted(Box::new(t.clone())) });

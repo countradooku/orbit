@@ -43,6 +43,18 @@ pub struct NewWorktree {
     pub setup: Option<String>,
 }
 
+/// What a project adds to a new worktree beyond [`NewWorktree`]: its own
+/// environment, more files to copy and how many ports it reserves.
+#[derive(Clone, Debug, Default)]
+pub struct WorktreeExtras {
+    /// Exported to the setup script, after the worktree's own variables.
+    pub env: Vec<(String, String)>,
+    /// More `.worktreeinclude` patterns (gitignore syntax).
+    pub include: Vec<String>,
+    /// Ports to reserve; `None` uses the configured block size.
+    pub ports: Option<u16>,
+}
+
 /// A worktree Orbit created, as persisted in `<data>/worktrees.json`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorktreeRecord {
@@ -156,6 +168,8 @@ pub struct RemoveWorktree {
     pub branch: BranchCleanup,
     /// Remove even with uncommitted or untracked files (checkpoint first).
     pub force: bool,
+    /// Exported to the teardown script, after the worktree's own variables.
+    pub env: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,6 +189,17 @@ impl Git {
     pub async fn create_worktree(
         &self,
         spec: NewWorktree,
+        on_output: &mut (dyn FnMut(OutputStream, &str) + Send),
+    ) -> Result<WorktreeInfo> {
+        self.create_worktree_with(spec, WorktreeExtras::default(), on_output).await
+    }
+
+    /// [`Self::create_worktree`] with a project's own environment, shared
+    /// files and port count.
+    pub async fn create_worktree_with(
+        &self,
+        spec: NewWorktree,
+        extras: WorktreeExtras,
         on_output: &mut (dyn FnMut(OutputStream, &str) + Send),
     ) -> Result<WorktreeInfo> {
         let info = self.repo(&spec.project_root).await?;
@@ -235,7 +260,7 @@ impl Git {
             let _guard = self.inner.registry.lock().await;
             let mut records = self.load_registry()?;
             records.retain(|r| r.path != path);
-            let (port_base, port_count) = allocate_ports(&self.inner.cfg, &records)?;
+            let (port_base, port_count) = allocate_ports(&self.inner.cfg, extras.ports, &records)?;
             let record = WorktreeRecord {
                 thread: spec.thread,
                 project_root: root.clone(),
@@ -251,10 +276,14 @@ impl Git {
         };
         // Registered first, so a failed copy still leaves a worktree that
         // remove_worktree knows how to clean up.
-        let copied = self.copy_includes(&root, &path).await?;
+        let copied = self.copy_includes(&root, &path, &extras.include).await?;
 
         let setup = match spec.setup.as_deref().filter(|s| !s.trim().is_empty()) {
-            Some(script) => Some(run_script(script, &path, &record.env(), on_output).await?),
+            Some(script) => {
+                let mut env = record.env();
+                env.extend(extras.env.iter().cloned());
+                Some(run_script(script, &path, &env, on_output).await?)
+            }
             None => None,
         };
         Ok(WorktreeInfo { record, copied, setup })
@@ -280,7 +309,8 @@ impl Git {
 
         let teardown = match (opts.teardown.as_deref().filter(|s| !s.trim().is_empty()), path.is_dir()) {
             (Some(script), true) => {
-                let env = record.as_ref().map(WorktreeRecord::env).unwrap_or_default();
+                let mut env = record.as_ref().map(WorktreeRecord::env).unwrap_or_default();
+                env.extend(opts.env.iter().cloned());
                 Some(run_script(script, &path, &env, on_output).await?)
             }
             _ => None,
@@ -344,17 +374,24 @@ impl Git {
     }
 
     /// Copies untracked files of the main checkout that match
-    /// `.worktreeinclude` (one `ls-files`; gitignore rules, `!` negation).
-    async fn copy_includes(&self, root: &Path, dest: &Path) -> Result<Vec<String>> {
+    /// `.worktreeinclude` or `extra` patterns (one `ls-files`; gitignore
+    /// rules, `!` negation).
+    async fn copy_includes(&self, root: &Path, dest: &Path, extra: &[String]) -> Result<Vec<String>> {
         let include = root.join(".worktreeinclude");
-        if !include.is_file() {
+        let has_file = include.is_file();
+        if !has_file && extra.is_empty() {
             return Ok(Vec::new());
         }
-        let mut flag = std::ffi::OsString::from("--exclude-from=");
-        flag.push(include.as_os_str());
-        let out = self
-            .git(root, [std::ffi::OsStr::new("ls-files"), "-z".as_ref(), "--others".as_ref(), "--ignored".as_ref(), &flag])
-            .await?;
+        let mut argv: Vec<std::ffi::OsString> = vec!["ls-files".into(), "-z".into(), "--others".into(), "--ignored".into()];
+        if has_file {
+            let mut flag = std::ffi::OsString::from("--exclude-from=");
+            flag.push(include.as_os_str());
+            argv.push(flag);
+        }
+        for pattern in extra.iter().map(|p| p.trim()).filter(|p| !p.is_empty() && !p.starts_with('#')) {
+            argv.push(format!("--exclude={pattern}").into());
+        }
+        let out = self.git(root, argv).await?;
         let files: Vec<String> = nul_fields(&out).collect();
         let (root, dest) = (root.to_owned(), dest.to_owned());
         tokio::task::spawn_blocking(move || {
@@ -437,8 +474,8 @@ pub async fn disk_usage(path: &Path) -> std::io::Result<u64> {
 }
 
 /// The lowest free port block that is also bindable right now.
-fn allocate_ports(cfg: &super::GitConfig, records: &[WorktreeRecord]) -> Result<(u16, u16)> {
-    let block = cfg.port_block.max(1);
+fn allocate_ports(cfg: &super::GitConfig, ports: Option<u16>, records: &[WorktreeRecord]) -> Result<(u16, u16)> {
+    let block = ports.filter(|p| *p > 0).unwrap_or(cfg.port_block).max(1);
     let mut base = cfg.port_first;
     while u32::from(base) + u32::from(block) - 1 <= u32::from(cfg.port_last) {
         let (lo, hi) = (u32::from(base), u32::from(base) + u32::from(block));
@@ -605,12 +642,12 @@ mod tests {
             port_base: base,
             port_count: 10,
         };
-        let (a, n) = allocate_ports(&cfg, &[]).unwrap();
+        let (a, n) = allocate_ports(&cfg, None, &[]).unwrap();
         assert_eq!(n, 10);
         assert!(a >= 52_000);
-        let (b, _) = allocate_ports(&cfg, &[rec(a)]).unwrap();
+        let (b, _) = allocate_ports(&cfg, None, &[rec(a)]).unwrap();
         assert!(b >= a + 10);
         let all: Vec<_> = (0..10).map(|i| rec(52_000 + i * 10)).collect();
-        assert!(allocate_ports(&cfg, &all).is_err());
+        assert!(allocate_ports(&cfg, None, &all).is_err());
     }
 }

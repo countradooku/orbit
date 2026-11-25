@@ -12,6 +12,7 @@ mod automations;
 mod review;
 mod status;
 mod teams;
+mod workspaces;
 
 /// A fake agent whose behavior is chosen by the prompt text:
 /// `ask` raises an approval, `crash` exits mid-turn, `slow` streams until
@@ -379,6 +380,34 @@ fn search_finds_text_in_loaded_and_unloaded_threads() {
 fn git(dir: &std::path::Path, args: &[&str]) {
     let ok = std::process::Command::new("git").args(args).current_dir(dir).status().unwrap().success();
     assert!(ok, "git {args:?}");
+}
+
+/// A project that is not a git repository still gets checkpoints, a turn
+/// diff and undo (through a shadow repository), and stays free of `.git`.
+#[test]
+fn a_project_without_git_gets_checkpoints_diffs_and_undo() {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("before.txt"), "already here
+").unwrap();
+    let mut h = Harness::new();
+    let Reply::Project(project) = h.call(Command::AddProject { path: folder.path().display().to_string() }) else { panic!() };
+    let Reply::Thread(id) =
+        h.call(Command::CreateThread { project: Some(project), config: ThreadConfig::default(), worktree: false })
+    else {
+        panic!()
+    };
+    h.send(id, "write");
+    h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+    h.wait("checkpoint", |h| {
+        h.items.values().any(|i| matches!(&i.body, ItemBody::TurnEnd(s) if s.checkpoint.is_some() && s.base_checkpoint.is_some()))
+    });
+    let Reply::Diff(patch) = h.call(Command::Diff { thread: id, scope: DiffScope::Turn(1) }) else { panic!() };
+    assert!(patch.contains("written-by-agent.txt") && patch.contains("+hello"), "{patch}");
+    assert!(!patch.contains("before.txt"), "{patch}");
+    h.call(Command::RestoreCheckpoint { thread: id, turn: 1 });
+    assert!(!folder.path().join("written-by-agent.txt").exists(), "undo removes the turn's file");
+    assert!(folder.path().join("before.txt").exists());
+    assert!(!folder.path().join(".git").exists(), "the folder never becomes a repository");
 }
 
 #[test]

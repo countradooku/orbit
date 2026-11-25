@@ -21,6 +21,8 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     Mail,
     // Automations.
     CalendarClock, Package, Sunrise, CircleMinus,
+    // Workspaces: files, run targets.
+    FolderTree, FileCode, FileImage, FileSpreadsheet, Braces, ListCollapse, AtSign, FlaskConical,
     // First run, updates and diagnostics.
     Circle, CircleArrowUp, Download, Monitor, LifeBuoy,
 ]);

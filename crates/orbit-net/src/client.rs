@@ -125,7 +125,7 @@ async fn run(
                                         if let Some(snapshot) = snapshot {
                                             epoch = snapshot.epoch;
                                             since = snapshot.seq;
-                                            let _ = updates.send(Update::Reset(Box::new(snapshot)));
+                                            let _ = updates.send(Update::Reset(snapshot));
                                         }
                                         let _ = updates.send(Update::Status(ConnectionStatus::Connected));
                                     }

@@ -72,6 +72,10 @@ fn commands() -> Vec<CommandDef> {
         command("Archive thread", Lucide::Archive, "", ArchiveThread),
         command("Review changes", Lucide::FileDiff, "diff", ToggleReview),
         command("Terminal", Lucide::Terminal, "shell console", ToggleTerminal),
+        command("Open file…", Lucide::FileSearch, "quick open find file go to", crate::files::QuickOpen),
+        command("Show or hide files", Lucide::FolderTree, "explorer tree worktree memory", crate::files::ToggleFiles),
+        command("Run or stop the first target", IconName::Play, "dev server test lint script", crate::project::runs::RunDefaultTarget),
+        command("Project settings…", IconName::Settings2, "scripts targets worktree env ports orbit.toml", crate::thread::panels::ProjectSettings),
         command("Stop the running turn", Lucide::CircleStop, "interrupt cancel", StopTurn),
         command("Next thread", IconName::ArrowDown, "", NextThread),
         command("Previous thread", IconName::ArrowUp, "", PreviousThread),
@@ -347,10 +351,30 @@ fn build(workspace: &WeakEntity<Workspace>, query: &str, commands: &[CommandDef]
         (item, Target::Thread(id))
     };
 
+    // The current thread's run targets: `Run Dev`, `Stop Dev`.
+    let target_rows = |query: &str| -> Rows {
+        let Route::Thread(thread) = ws.route() else { return Vec::new() };
+        crate::project::runs::palette_commands(state, *thread)
+            .into_iter()
+            .filter(|(label, _, _)| score(query, label).is_some())
+            .map(|(label, icon, action)| {
+                let label: SharedString = label.into();
+                let shown = label.clone();
+                let item = CommandItem::new().label(label.clone()).child(move |_, cx| {
+                    row(icon.clone().size_4().into_any_element(), shown.clone(), None, None, cx)
+                });
+                let action: Rc<dyn Fn() -> Box<dyn Action>> = Rc::new(move || action.boxed_clone());
+                (item, Target::Action(action))
+            })
+            .collect()
+    };
+
     match query.chars().next() {
         Some('>') => {
             let q = query[1..].trim().to_lowercase();
-            groups.push(("Commands".into(), command_rows(&q, usize::MAX)));
+            let mut rows = target_rows(&q);
+            rows.extend(command_rows(&q, usize::MAX));
+            groups.push(("Commands".into(), rows));
         }
         Some('#') => {
             let q = query[1..].trim();
@@ -446,7 +470,8 @@ fn build(workspace: &WeakEntity<Workspace>, query: &str, commands: &[CommandDef]
             if !rows.is_empty() {
                 groups.push(("Threads".into(), rows));
             }
-            let commands = command_rows(&q, 6);
+            let mut commands = target_rows(&q);
+            commands.extend(command_rows(&q, 6));
             if !commands.is_empty() {
                 groups.push(("Commands".into(), commands));
             }
