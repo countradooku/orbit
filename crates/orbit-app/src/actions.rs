@@ -21,6 +21,11 @@ gpui_kit::actions!(
         FocusComposer,
         ToggleTerminal,
         Quit,
+        ZoomIn,
+        ZoomOut,
+        ResetZoom,
+        CloseSettings,
+        SendAlternate,
     ]
 );
 
@@ -42,6 +47,13 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-`", ToggleTerminal, None),
         KeyBinding::new("ctrl-j", ToggleTerminal, Some("Workspace")),
         KeyBinding::new("ctrl-q", Quit, None),
+        KeyBinding::new(platform("cmd-+", "ctrl-+"), ZoomIn, None),
+        // Bound last, so menus and the keyboard page show it.
+        KeyBinding::new(platform("cmd-=", "ctrl-="), ZoomIn, None),
+        KeyBinding::new(platform("cmd--", "ctrl--"), ZoomOut, None),
+        KeyBinding::new(platform("cmd-0", "ctrl-0"), ResetZoom, None),
+        KeyBinding::new("escape", CloseSettings, Some("SettingsPage")),
+        KeyBinding::new(platform("cmd-shift-enter", "ctrl-shift-enter"), SendAlternate, Some("Composer")),
     ]);
     // macOS: the same commands on Cmd, as Mac apps expect (Ctrl-Tab stays).
     // Bound after the Ctrl set, so menus and key hints show these.
@@ -61,4 +73,10 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("cmd-j", ToggleTerminal, Some("Workspace")),
         KeyBinding::new("cmd-q", Quit, None),
     ]);
+}
+
+/// The macOS or the other platforms' spelling of a binding. `KeyBinding::new`
+/// parses statically, so it does not accept the `secondary-` alias.
+pub const fn platform(mac: &'static str, other: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") { mac } else { other }
 }

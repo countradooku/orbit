@@ -126,6 +126,8 @@ pub struct ReviewView {
     reload: bool,
     generation: u64,
     last_load: Option<Instant>,
+    /// The next files shown are a new scope, not a refresh of the same one.
+    fresh: bool,
     /// Turn count and busy state last seen, to follow a finishing turn.
     seen: (u32, bool),
 
@@ -160,14 +162,15 @@ struct Palette {
 impl ReviewView {
     pub fn new(app: Entity<AppState>, thread: ThreadId, scope: Option<DiffScope>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let p = prefs(cx);
+        let split = crate::settings::get(cx).review.split;
         let diff = cx.new(|cx| {
             DiffState::new(Vec::new(), cx)
-                .with_mode(if p.split { DiffMode::Split } else { DiffMode::Unified })
+                .with_mode(if split { DiffMode::Split } else { DiffMode::Unified })
                 .with_inline_unit((!p.colorblind).then_some(DiffInlineUnit::Word))
         });
         let tree = cx.new(|cx| TreeState::new(cx));
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files").clean_on_escape());
-        let split = cx.new(|_| ResizableState::default());
+        let panes = cx.new(|_| ResizableState::default());
         let mut subs = vec![
             cx.subscribe(&filter, |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) {
@@ -203,6 +206,12 @@ impl ReviewView {
             }),
         ];
         subs.push(cx.observe(&app, |this, _, cx| this.thread_changed(cx)));
+        // Settings → Review can change while the sheet is open.
+        subs.push(cx.observe_global::<crate::settings::SettingsModel>(|this, cx| {
+            let mode = if crate::settings::get(cx).review.split { DiffMode::Split } else { DiffMode::Unified };
+            this.diff.update(cx, |d, cx| d.set_mode(mode, cx));
+            cx.notify();
+        }));
 
         let (reviewed, comments) =
             ReviewMarks::read(cx, thread, |m| (Rc::new(m.reviewed.clone()), Rc::new(m.comments.clone())));
@@ -226,12 +235,13 @@ impl ReviewView {
             reload: false,
             generation: 0,
             last_load: None,
+            fresh: true,
             seen: (turns, busy),
             tree,
             filter,
             filter_text: String::new(),
             collapsed: HashSet::new(),
-            split,
+            split: panes,
             visible: Vec::new(),
             hide_tests: p.hide_tests,
             selected: None,
@@ -420,9 +430,15 @@ impl ReviewView {
                 _ => {}
             }
         });
-        // Reviewed files start collapsed, as on a code host.
-        let collapsed: Vec<SharedString> =
-            self.visible.iter().filter(|&&ix| self.data.file_reviewed(ix, &self.reviewed)).map(|&ix| self.data.path(ix)).collect();
+        // Reviewed files start collapsed, as on a code host; with the
+        // "collapse files" setting, every file of a new scope does.
+        let collapse_all = std::mem::take(&mut self.fresh) && crate::settings::get(cx).review.collapse_files;
+        let collapsed: Vec<SharedString> = self
+            .visible
+            .iter()
+            .filter(|&&ix| collapse_all || self.data.file_reviewed(ix, &self.reviewed))
+            .map(|&ix| self.data.path(ix))
+            .collect();
         if !collapsed.is_empty() {
             self.diff.update(cx, |d, cx| {
                 for path in &collapsed {
@@ -495,6 +511,7 @@ impl ReviewView {
                         && this.base.as_ref() != Some(value)
                     {
                         this.base = Some(value.clone());
+                        this.fresh = true;
                         this.load(cx);
                     }
                 }));
@@ -516,6 +533,7 @@ impl ReviewView {
             return;
         }
         self.scope = scope;
+        self.fresh = true;
         self.error = None;
         if scope == Scope::Branch && self.branches.is_none() {
             self.load_branches(window, cx);
@@ -813,8 +831,10 @@ impl ReviewView {
         self.load(cx);
     }
 
+    /// Side by side is a saved setting: changing it here changes it for
+    /// every review.
     fn set_split(&mut self, split: bool, cx: &mut Context<Self>) {
-        update_prefs(cx, |p| p.split = split);
+        crate::settings::update(cx, |s| s.review.split = split);
         let mode = if split { DiffMode::Split } else { DiffMode::Unified };
         self.diff.update(cx, |d, cx| d.set_mode(mode, cx));
         cx.notify();
@@ -928,6 +948,7 @@ impl ReviewView {
                 menu = menu.item(PopupMenuItem::new("Latest turn").checked(following).on_click(move |_, _, cx| {
                     let _ = v.update(cx, |this, cx| {
                         this.turn = None;
+                        this.fresh = true;
                         this.load(cx);
                     });
                 }));
@@ -937,6 +958,7 @@ impl ReviewView {
                     menu = menu.item(PopupMenuItem::new(text.clone()).checked(!following && n == current).on_click(move |_, _, cx| {
                         let _ = v.update(cx, |this, cx| {
                             this.turn = Some(n);
+                            this.fresh = true;
                             this.load(cx);
                         });
                     }));
@@ -1054,6 +1076,7 @@ impl ReviewView {
     fn render_summary(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let p = prefs(cx);
+        let split = crate::settings::get(cx).review.split;
         let total = self.visible.len();
         let reviewed = self.reviewed_files();
         let (adds, dels) = self.visible.iter().fold((0, 0), |(a, d), &ix| (a + self.data.files[ix].additions, d + self.data.files[ix].deletions));
@@ -1120,7 +1143,7 @@ impl ReviewView {
                             })
                         };
                         menu.min_w(px(240.))
-                            .item(item("Side by side", p.split, |this, cx| this.set_split(!prefs(cx).split, cx)))
+                            .item(item("Side by side", split, |this, cx| this.set_split(!crate::settings::get(cx).review.split, cx)))
                             .item(item("Wrap lines", p.wrap, |this, cx| {
                                 update_prefs(cx, |p| p.wrap = !p.wrap);
                                 cx.notify();

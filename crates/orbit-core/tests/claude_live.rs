@@ -42,7 +42,7 @@ fn prompt(text: &str) -> SessionInput {
 #[ignore = "runs the real Claude Code CLI (costs a few cents)"]
 async fn real_cli_initialize_prompt_approval_and_interrupt() {
     // Probe: initialize only, no prompt.
-    let info = provider::probe(ProviderKind::Claude, None).await;
+    let info = provider::probe(ProviderKind::Claude, None, Vec::new()).await;
     eprintln!("probe: installed={} version={:?} signed_in={:?} account={:?}", info.installed, info.version, info.signed_in, info.account);
     assert!(info.installed, "{:?}", info.message);
     assert_eq!(info.signed_in, Some(true), "{:?}", info.message);

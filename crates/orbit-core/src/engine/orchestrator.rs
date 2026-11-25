@@ -14,10 +14,10 @@ use orbit_proto::*;
 
 use super::bus::{Bus, EventRx};
 use crate::provider::{
-    self, AgentEvent, BlockKind, EventSender, PromptAttachment, SessionHandle, SessionInput, SessionSpec,
+    AgentEvent, BlockKind, EventSender, PromptAttachment, SessionHandle, SessionInput, SessionSpec,
     TurnOutcome,
 };
-use crate::git::{BranchCleanup, Git, GitConfig, NewWorktree, RemoveWorktree, TreeId};
+use crate::git::{BranchCleanup, Git, NewWorktree, RemoveWorktree, TreeId};
 use crate::store::Store;
 use crate::terminal::{ExitSender, OutputSender, TermSize, Terminals};
 
@@ -151,7 +151,7 @@ impl Orchestrator {
         terminal_output: OutputSender,
         terminal_exits: ExitSender,
     ) -> Self {
-        let git = Git::new(GitConfig::new(store.dir()));
+        let git = Git::new(super::settings::git_config(store.dir(), store.settings()));
         let providers = ProviderKind::ALL
             .iter()
             .map(|&kind| ProviderInfo { kind, message: Some("Checking…".into()), ..Default::default() })
@@ -505,11 +505,7 @@ impl Orchestrator {
 
     pub fn refresh_providers(&self) {
         for kind in ProviderKind::ALL {
-            let tx = self.internal_tx.clone();
-            tokio::spawn(async move {
-                let info = provider::probe(kind, None).await;
-                let _ = tx.send(Internal::Probed(info));
-            });
+            self.probe_provider(kind);
         }
     }
 
@@ -694,6 +690,7 @@ impl Orchestrator {
                 self.emit(Event::DefaultsChanged(config));
                 Ok(Reply::Done)
             }
+            Command::UpdateSettings { settings } => self.update_settings(settings),
             Command::Diff { .. }
             | Command::RevertPatch { .. }
             | Command::RestoreCheckpoint { .. }
@@ -1067,7 +1064,7 @@ impl Orchestrator {
         }
         let thread = self.store.thread(thread_id).cloned().ok_or("That thread no longer exists.")?;
         let cwd = self.workspace_dir(&thread);
-        let mut env = Vec::new();
+        let (binary, mut env) = super::settings::provider_launch(self.store.settings(), thread.config.provider);
         if let Some(port) = thread.workspace.port_base {
             env.push(("PORT".to_owned(), port.to_string()));
             env.push(("ORBIT_PORT_BASE".to_owned(), port.to_string()));
@@ -1079,7 +1076,7 @@ impl Orchestrator {
             config: thread.config.clone(),
             resume: thread.session.clone(),
             resume_at: runtime.resume_at.take(),
-            binary: None,
+            binary,
             env,
             extra_dirs: vec![self.store.dir().join("blobs")],
         };

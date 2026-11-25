@@ -83,8 +83,14 @@ pub fn rename(app: Entity<AppState>, thread: &Thread, window: &mut Window, cx: &
     });
 }
 
+/// Deletes a thread, asking first unless Settings › General turned the
+/// confirmation off.
 pub fn confirm_delete(app: Entity<AppState>, thread: &Thread, window: &mut Window, cx: &mut App) {
     let id = thread.id;
+    if !crate::settings::get(cx).general.confirm_delete {
+        app.update(cx, |app, cx| app.run(Command::DeleteThread { id }, window, cx));
+        return;
+    }
     let title = display_title(thread).to_owned();
     window.open_alert_dialog(cx, move |alert, _, _| {
         let app = app.clone();

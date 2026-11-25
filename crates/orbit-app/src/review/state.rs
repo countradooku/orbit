@@ -8,11 +8,11 @@ use orbit_proto::ThreadId;
 
 use super::model::Comment;
 
-/// How the review sheet shows diffs. Kept for the session; the next open
-/// sheet starts the way the last one was left.
+/// How the review sheet shows diffs, beyond the saved settings (side by
+/// side and collapsed files live in Settings → Review). Kept for the
+/// session; the next sheet starts the way the last one was left.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewPrefs {
-    pub split: bool,
     pub wrap: bool,
     /// Blue and orange instead of green and red.
     pub colorblind: bool,
@@ -22,7 +22,7 @@ pub struct ReviewPrefs {
 
 impl Default for ReviewPrefs {
     fn default() -> Self {
-        Self { split: false, wrap: false, colorblind: false, tree: true, hide_tests: false }
+        Self { wrap: false, colorblind: false, tree: true, hide_tests: false }
     }
 }
 
