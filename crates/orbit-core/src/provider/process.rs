@@ -8,6 +8,11 @@
 //!   Unix the child leads its own process group, which is killed on drop.
 //! * stderr is always drained and its tail kept for error messages (T3 Code
 //!   dropped stderr on Windows and lost every startup diagnostic).
+//! * The exit is watched on its own, not inferred from stdout closing: a
+//!   tool the agent started can inherit stdout and keep it open long after
+//!   the agent died, which used to leave a turn "working" forever.
+//!   [`JsonlReader::until_exit`] ends the stream shortly after the process
+//!   exits, whoever still holds the pipe.
 //! * Binaries resolve through PATH and PATHEXT plus each runtime's known
 //!   install locations, so `.cmd` shims and WinGet installs both work.
 //! * On Unix a GUI launch (Finder, Dock, a desktop launcher) never ran the
@@ -20,16 +25,64 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{ChildStdin, ChildStdout, Command};
+use tokio::sync::{oneshot, watch};
 
 /// Bytes of stderr kept for diagnostics.
 const STDERR_TAIL: usize = 8 * 1024;
+/// How long output may still arrive after the process exited (what it
+/// wrote just before exiting is still in the pipe). After that the stream
+/// ends even if a leftover child holds the pipe open.
+pub const EXIT_DRAIN: Duration = Duration::from_millis(750);
+
+/// How a process ended: its exit status, or why it could not be read.
+pub type ExitStatus = Result<std::process::ExitStatus, String>;
+
+/// Watches one process's exit. Cheap to clone; every clone sees the exit.
+#[derive(Clone)]
+pub struct ExitWatch(watch::Receiver<Option<(ExitStatus, tokio::time::Instant)>>);
+
+impl ExitWatch {
+    /// The exit status, once the process has exited.
+    pub fn status(&self) -> Option<ExitStatus> {
+        self.0.borrow().as_ref().map(|(s, _)| s.clone())
+    }
+
+    pub fn has_exited(&self) -> bool {
+        self.0.borrow().is_some()
+    }
+
+    /// When the process exited, by the monotonic clock.
+    fn exited_at(&self) -> Option<tokio::time::Instant> {
+        self.0.borrow().as_ref().map(|(_, at)| *at)
+    }
+
+    /// Resolves when the process has exited (at once if it already has).
+    pub async fn exited(&mut self) {
+        // An error means the watcher is gone, which only happens after it
+        // published the exit or when the runtime shuts down.
+        let _ = self.0.wait_for(Option::is_some).await;
+    }
+
+    /// Resolves [`EXIT_DRAIN`] after the process exited: by then whatever
+    /// it wrote before exiting has been read.
+    pub async fn drained(&mut self) {
+        self.exited().await;
+        if let Some(at) = self.exited_at() {
+            tokio::time::sleep_until(at + EXIT_DRAIN).await;
+        }
+    }
+}
 
 /// A running agent process. Dropping it kills the process tree.
 pub struct AgentProcess {
-    child: Child,
+    pid: Option<u32>,
+    /// Asks the watcher task to kill the child; dropping it does too.
+    kill: Option<oneshot::Sender<()>>,
+    exit: ExitWatch,
     pub stdin: Option<ChildStdin>,
     pub stdout: Option<ChildStdout>,
     stderr_tail: Arc<Mutex<VecDeque<u8>>>,
@@ -89,10 +142,30 @@ impl AgentProcess {
                 }
             });
         }
+        let pid = child.id();
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take();
+        // The watcher owns the child: it reaps it the moment it exits (no
+        // polling; tokio is woken by the OS) and publishes the status.
+        let (kill, kill_rx) = oneshot::channel::<()>();
+        let (exit_tx, exit_rx) = watch::channel(None);
+        tokio::spawn(async move {
+            let status = tokio::select! {
+                status = child.wait() => status,
+                // An explicit kill, or the process handle was dropped.
+                _ = kill_rx => {
+                    let _ = child.start_kill();
+                    child.wait().await
+                }
+            };
+            let _ = exit_tx.send(Some((status.map_err(|e| e.to_string()), tokio::time::Instant::now())));
+        });
         Ok(Self {
-            stdin: child.stdin.take(),
-            stdout: child.stdout.take(),
-            child,
+            pid,
+            kill: Some(kill),
+            exit: ExitWatch(exit_rx),
+            stdin,
+            stdout,
             stderr_tail,
             #[cfg(windows)]
             _job: job,
@@ -100,7 +173,12 @@ impl AgentProcess {
     }
 
     pub fn id(&self) -> Option<u32> {
-        self.child.id()
+        self.pid
+    }
+
+    /// A watch on the process's exit, independent of its pipes.
+    pub fn exit_watch(&self) -> ExitWatch {
+        self.exit.clone()
     }
 
     /// The last lines the process wrote to stderr.
@@ -114,19 +192,28 @@ impl AgentProcess {
     }
 
     pub async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        self.child.wait().await
+        let mut exit = self.exit.clone();
+        exit.exited().await;
+        match exit.status() {
+            Some(status) => status.map_err(std::io::Error::other),
+            None => Err(std::io::Error::other("the process watcher stopped")),
+        }
     }
 
     /// Kills the process tree now.
     pub fn kill(&mut self) {
         #[cfg(unix)]
-        if let Some(pid) = self.child.id() {
+        if let Some(pid) = self.pid
+            && !self.exit.has_exited()
+        {
             // SAFETY: plain syscall; a negative pid targets the process group.
             unsafe {
                 libc_kill(-(pid as i32), 9);
             }
         }
-        let _ = self.child.start_kill();
+        if let Some(kill) = self.kill.take() {
+            let _ = kill.send(());
+        }
     }
 }
 
@@ -174,21 +261,46 @@ impl JsonlWriter {
 
 /// Reads newline-delimited JSON lines from a child's stdout, reusing one
 /// buffer. Lines can be many megabytes (tool results with file contents).
-pub struct JsonlReader {
-    reader: BufReader<ChildStdout>,
+pub struct JsonlReader<R = ChildStdout> {
+    reader: BufReader<R>,
     line: Vec<u8>,
+    exit: Option<ExitWatch>,
 }
 
-impl JsonlReader {
-    pub fn new(stdout: ChildStdout) -> Self {
-        Self { reader: BufReader::with_capacity(64 * 1024, stdout), line: Vec::with_capacity(16 * 1024) }
+impl<R: tokio::io::AsyncRead + Unpin> JsonlReader<R> {
+    pub fn new(stdout: R) -> Self {
+        Self { reader: BufReader::with_capacity(64 * 1024, stdout), line: Vec::with_capacity(16 * 1024), exit: None }
+    }
+
+    /// Ends the stream [`EXIT_DRAIN`] after the process exits, even when a
+    /// process it started still holds stdout open.
+    pub fn until_exit(mut self, exit: ExitWatch) -> Self {
+        self.exit = Some(exit);
+        self
     }
 
     /// The next non-empty line, or `None` at end of stream.
     pub async fn next_line(&mut self) -> std::io::Result<Option<&[u8]>> {
+        self.line.clear();
         loop {
-            self.line.clear();
-            if self.reader.read_until(b'\n', &mut self.line).await? == 0 {
+            // `read_until` keeps what it read when it is cancelled, so a
+            // line interrupted by the exit continues where it stopped.
+            let read = match self.exit.as_mut() {
+                None => self.reader.read_until(b'\n', &mut self.line).await?,
+                Some(exit) => match exit.exited_at() {
+                    None => tokio::select! {
+                        read = self.reader.read_until(b'\n', &mut self.line) => read?,
+                        _ = exit.exited() => continue,
+                    },
+                    Some(at) => {
+                        match tokio::time::timeout_at(at + EXIT_DRAIN, self.reader.read_until(b'\n', &mut self.line)).await {
+                            Ok(read) => read?,
+                            Err(_) => 0, // a leftover child holds the pipe
+                        }
+                    }
+                },
+            };
+            if read == 0 && self.line.is_empty() {
                 return Ok(None);
             }
             while matches!(self.line.last(), Some(b'\n' | b'\r')) {
@@ -196,6 +308,9 @@ impl JsonlReader {
             }
             if !self.line.is_empty() {
                 return Ok(Some(&self.line));
+            }
+            if read == 0 {
+                return Ok(None);
             }
         }
     }

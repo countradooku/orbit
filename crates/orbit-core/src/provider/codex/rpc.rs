@@ -47,8 +47,9 @@ impl Connection {
         let stdin = process.stdin.take().ok_or_else(|| std::io::Error::other("no stdin"))?;
 
         let (line_tx, lines) = mpsc::channel(LINE_BUFFER);
+        let exit = process.exit_watch();
         tokio::spawn(async move {
-            let mut reader = JsonlReader::new(stdout);
+            let mut reader = JsonlReader::new(stdout).until_exit(exit);
             loop {
                 match reader.next_line().await {
                     Ok(Some(line)) => {

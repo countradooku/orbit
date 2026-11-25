@@ -9,6 +9,7 @@ use super::*;
 use crate::provider::{AgentEvent, BlockKind, SessionHandle, SessionInput, SessionSpec, TurnOutcome};
 
 mod review;
+mod status;
 
 /// A fake agent whose behavior is chosen by the prompt text:
 /// `ask` raises an approval, `crash` exits mid-turn, `slow` streams until
@@ -59,6 +60,18 @@ fn fake_launcher() -> Launcher {
                             "crash" => {
                                 emit(AgentEvent::Exited { error: Some("boom".into()) });
                                 return;
+                            }
+                            "vanish" => {
+                                // The session task dies without a word.
+                                return;
+                            }
+                            "hang" => {
+                                // Alive, but says nothing more until shut down.
+                                while let Ok(msg) = rx.recv().await {
+                                    if matches!(msg, SessionInput::Shutdown) {
+                                        return;
+                                    }
+                                }
                             }
                             t if t.starts_with("Write a title") => {
                                 // No title from this fake: threads keep the

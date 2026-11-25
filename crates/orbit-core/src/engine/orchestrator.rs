@@ -41,6 +41,8 @@ pub enum Internal {
     Review(super::review::ReviewInternal),
     /// A generated title for a thread still titled `seed`.
     TitleGenerated { thread: ThreadId, seed: String, title: String },
+    /// A hook call from an agent in a terminal (see `status::hook`).
+    Hook(crate::status::hook::HookMessage),
     /// Work to apply on the engine thread once a task has finished.
     Run(Box<dyn FnOnce(&mut Orchestrator) + Send>),
 }
@@ -131,6 +133,8 @@ pub struct Orchestrator {
     /// How one-shot text is generated.
     pub(crate) generator: super::textgen::Generator,
     pub(crate) seeded_titles: super::textgen::SeededTitles,
+    /// Liveness and terminal-agent evidence (`engine/status.rs`).
+    pub(crate) status: crate::status::StatusState,
     pub(crate) forge: super::forge::ForgeState,
 }
 
@@ -179,6 +183,7 @@ impl Orchestrator {
             files: Default::default(),
             generator: super::textgen::Generator::Native,
             seeded_titles: Default::default(),
+            status: Default::default(),
             forge: Default::default(),
         }
     }
@@ -328,12 +333,9 @@ impl Orchestrator {
 
     pub(crate) fn terminal_command(&mut self, command: Command) -> CommandResult {
         match command {
-            Command::OpenTerminal { cwd, cols, rows } => self
-                .terminals
-                .open(Path::new(&cwd), TermSize::new(cols.max(2), rows.max(1)), None)
-                .map(Reply::Terminal)
-                .map_err(|e| format!("Couldn’t open a terminal in {cwd}: {e}")),
+            Command::OpenTerminal { cwd, cols, rows } => self.open_terminal(&cwd, TermSize::new(cols.max(2), rows.max(1))),
             Command::TerminalInput { term, data } => {
+                self.status_terminal_input(term, &data);
                 self.terminals.input(term, &data);
                 Ok(Reply::Done)
             }
@@ -343,18 +345,22 @@ impl Orchestrator {
             }
             Command::CloseTerminal { term } => {
                 self.terminals.close(term);
+                self.status_terminal_closed(term);
                 Ok(Reply::Done)
             }
+            Command::BindTerminal { term, thread } => self.bind_terminal(term, thread),
             _ => Err("not a terminal command".into()),
         }
     }
 
     pub fn terminal_output(&mut self, term: TermId, data: Vec<u8>) {
+        self.status_terminal_output(term, &data);
         self.emit(Event::TerminalOutput { term, data });
     }
 
     pub fn terminal_exited(&mut self, term: TermId, code: Option<i32>) {
         self.terminals.remove_exited(term);
+        self.status_terminal_closed(term);
         self.emit(Event::TerminalExited { term, code });
     }
 
@@ -416,7 +422,7 @@ impl Orchestrator {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        self.store.snapshot(self.providers.clone())
+        Snapshot { live: self.live_snapshot(), ..self.store.snapshot(self.providers.clone()) }
     }
 
     pub fn subscribe(&mut self, epoch: u64, since: u64) -> (Option<Snapshot>, Vec<Envelope>, EventRx) {
@@ -487,6 +493,7 @@ impl Orchestrator {
     /// Periodic work: persist streaming items, flush logs, release idle
     /// agent processes.
     pub fn tick(&mut self) {
+        self.status_tick();
         let now = Instant::now();
         for runtime in self.runtimes.values_mut() {
             let idle = runtime.turn.is_none() && !runtime.checkpointing && runtime.held_prompt.is_none();
@@ -606,6 +613,7 @@ impl Orchestrator {
             Internal::Run(work) => work(self),
             Internal::QuotaReset(thread) => self.quota_reset(thread),
             Internal::Review(msg) => self.handle_review(msg),
+            Internal::Hook(msg) => self.on_hook(msg),
         }
     }
 
@@ -727,7 +735,8 @@ impl Orchestrator {
             command @ (Command::OpenTerminal { .. }
             | Command::TerminalInput { .. }
             | Command::ResizeTerminal { .. }
-            | Command::CloseTerminal { .. }) => self.terminal_command(command),
+            | Command::CloseTerminal { .. }
+            | Command::BindTerminal { .. }) => self.terminal_command(command),
         }
     }
 
@@ -1308,6 +1317,9 @@ impl Orchestrator {
     }
 
     pub(crate) fn finish_turn(&mut self, thread_id: ThreadId, outcome: TurnOutcome, usage: Usage, duration_ms: u64) {
+        if self.runtimes.get(&thread_id).is_some_and(|r| r.turn.is_some()) {
+            self.status_close_requests(thread_id);
+        }
         let Some(runtime) = self.runtimes.get_mut(&thread_id) else { return };
         let Some(turn) = runtime.turn.take() else { return };
         // Settle everything still streaming in this turn.
@@ -1415,6 +1427,7 @@ impl Orchestrator {
         if let Some(runtime) = self.runtimes.get_mut(&thread_id) {
             runtime.last_active = Some(Instant::now());
         }
+        self.status_on_agent(thread_id, &event);
         match event {
             AgentEvent::Ready { session_id, .. } => {
                 self.update_thread(thread_id, |t| t.session = Some(session_id));
@@ -1600,6 +1613,7 @@ impl Orchestrator {
                 } else if let Some(error) = error {
                     self.notice(thread_id, NoticeLevel::Error, error);
                 }
+                self.status_after_exit(thread_id);
             }
         }
     }

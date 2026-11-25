@@ -130,6 +130,8 @@ pub struct Changes {
     pub loaded: Vec<ThreadId>,
     /// Composers whose saved draft changed.
     pub drafts: HashSet<DraftTarget>,
+    /// Terminals whose agent started, changed or ended.
+    pub terminal_agents: Vec<TermId>,
 }
 
 impl Changes {
@@ -150,6 +152,7 @@ impl Changes {
             && self.exited_terminals.is_empty()
             && self.loaded.is_empty()
             && self.drafts.is_empty()
+            && self.terminal_agents.is_empty()
     }
 
     /// The shell (sidebar, inbox, fleet) needs a render.
@@ -182,6 +185,11 @@ pub struct ClientState {
     pub workspace: HashMap<ThreadId, Vec<FileChange>>,
     /// Unsent messages saved on the host, per composer.
     pub drafts: HashMap<DraftTarget, Draft>,
+    /// Live status evidence per thread (quiet, unverified, terminal
+    /// agents); absent means nothing to qualify. See [`LiveStatus::of`].
+    pub live: HashMap<ThreadId, ThreadLive>,
+    /// Agents running in terminals, bound to a thread or not.
+    pub terminal_agents: HashMap<TermId, TerminalAgent>,
     timelines: HashMap<ThreadId, Timeline>,
     /// Timelines being fetched: the reply and the stream are separate
     /// channels, so events are held until both the reply and its mark have
@@ -277,6 +285,12 @@ impl ClientState {
             .unwrap_or_default()
     }
 
+    /// The status glyph of a thread, with its live evidence: what every
+    /// surface draws (see [`LiveStatus`]).
+    pub fn live_status(&self, thread: &Thread) -> LiveStatus {
+        LiveStatus::of(thread, self.live.get(&thread.id))
+    }
+
     /// Threads in sidebar order: pinned first, then most recently updated.
     pub fn sorted_threads(&self, project: Option<ProjectId>) -> Vec<&Thread> {
         let mut threads: Vec<&Thread> =
@@ -296,6 +310,12 @@ impl ClientState {
                     self.defaults = snapshot.defaults;
                     self.drafts = snapshot.drafts.into_iter().collect();
                     self.settings = *snapshot.settings;
+                    self.live = snapshot.live.into_iter().collect();
+                    self.terminal_agents = self
+                        .live
+                        .values()
+                        .flat_map(|l| l.terminals.iter().map(|a| (a.term, a.clone())))
+                        .collect();
                     self.live_usage.clear();
                     // Open timelines may be stale; the UI refetches them.
                     self.timelines.clear();
@@ -351,6 +371,7 @@ impl ClientState {
                 self.threads.remove(&id);
                 self.timelines.remove(&id);
                 self.live_usage.remove(&id);
+                self.live.remove(&id);
                 self.drafts.remove(&DraftTarget::Thread(id));
                 changes.removed_threads.insert(id);
             }
@@ -397,6 +418,22 @@ impl ClientState {
             Event::TerminalOutput { term, data } => changes.terminals.push((term, data)),
             Event::TimelineMark { .. } => {}
             Event::TerminalExited { term, code } => changes.exited_terminals.push((term, code)),
+            Event::ThreadLive { thread, live } => {
+                if live.is_default() {
+                    self.live.remove(&thread);
+                } else {
+                    self.live.insert(thread, live);
+                }
+                // The shell redraws the thread's row and glyph.
+                changes.threads.insert(thread);
+            }
+            Event::TerminalAgent { term, agent } => {
+                match agent {
+                    Some(agent) => self.terminal_agents.insert(term, agent),
+                    None => self.terminal_agents.remove(&term),
+                };
+                changes.terminal_agents.push(term);
+            }
             Event::DraftSaved { target, draft } => {
                 if draft.is_empty() {
                     self.drafts.remove(&target);
@@ -475,6 +512,37 @@ mod tests {
         let changes = state.apply(events(vec![Event::ItemUpserted { thread, item: item("x") }]));
         assert!(changes.is_empty());
         assert!(state.timeline(thread).is_none());
+    }
+
+    #[test]
+    fn live_status_reaches_the_glyph_and_clears() {
+        let mut state = ClientState::default();
+        let thread = Thread { id: ThreadId::new(), status: ThreadStatus::Running, ..Default::default() };
+        let id = thread.id;
+        let quiet = ThreadLive { liveness: Liveness::Quiet { since_ms: 1, tool: None }, last_signal_ms: 1, terminals: vec![] };
+        let changes = state.apply(vec![Update::Events(vec![
+            Envelope { seq: 1, event: Event::ThreadUpserted(thread.clone()) },
+            Envelope { seq: 0, event: Event::ThreadLive { thread: id, live: quiet } },
+        ])]);
+        assert!(changes.affects_shell());
+        assert_eq!(state.live_status(&thread), LiveStatus::Quiet);
+        state.apply(vec![Update::Events(vec![Envelope { seq: 0, event: Event::ThreadLive { thread: id, live: ThreadLive::default() } }])]);
+        assert_eq!(state.live_status(&thread), LiveStatus::Working);
+        assert!(state.live.is_empty());
+        let agent = TerminalAgent {
+            term: TermId(7),
+            agent: "claude".into(),
+            state: AgentState::Working,
+            evidence: Evidence::Hook,
+            since_ms: 0,
+            last_signal_ms: 0,
+            detail: String::new(),
+        };
+        let changes = state.apply(vec![Update::Events(vec![Envelope { seq: 0, event: Event::TerminalAgent { term: TermId(7), agent: Some(agent) } }])]);
+        assert_eq!(changes.terminal_agents, vec![TermId(7)]);
+        assert!(state.terminal_agents.contains_key(&TermId(7)));
+        state.apply(vec![Update::Events(vec![Envelope { seq: 0, event: Event::TerminalAgent { term: TermId(7), agent: None } }])]);
+        assert!(state.terminal_agents.is_empty());
     }
 
     #[test]
