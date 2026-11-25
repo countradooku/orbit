@@ -340,23 +340,34 @@ impl ThreadView {
     fn apply_changes(&mut self, changes: &[ItemChange], cx: &mut Context<Self>) {
         let structural = changes.iter().any(|c| matches!(c, ItemChange::Inserted(_) | ItemChange::Removed(_)));
         if structural {
+            // Positions shift in a structural batch; the re-layout also
+            // brings streaming text views up to date.
             self.rebuild(false, cx);
             return;
         }
-        let mut touched = Vec::new();
+        // What changed, without copying the items (a step's output can be
+        // 64 KiB; a token must not clone it).
+        let mut touched: Vec<(ItemId, Option<String>)> = Vec::new();
         if let Some(timeline) = self.app.read(cx).state().timeline(self.id) {
             for change in changes {
                 if let ItemChange::Updated(ix) = change
                     && let Some(item) = timeline.items().get(*ix)
+                    && !touched.iter().any(|(id, _)| *id == item.id)
                 {
-                    touched.push(item.clone());
+                    let text = match &item.body {
+                        ItemBody::Assistant { text } | ItemBody::Reasoning { text } => Some(text.clone()),
+                        _ => None,
+                    };
+                    touched.push((item.id, text));
                 }
             }
         }
         let mut remeasure = HashSet::new();
-        for item in &touched {
-            self.sync_markdown(item, cx);
-            if let Some(&row) = self.item_row.get(&item.id) {
+        for (id, text) in &touched {
+            if let Some(text) = text {
+                self.sync_markdown(*id, text, cx);
+            }
+            if let Some(&row) = self.item_row.get(id) {
                 remeasure.insert(row);
             }
         }
@@ -373,19 +384,15 @@ impl ThreadView {
         cx.notify();
     }
 
-    fn sync_markdown(&mut self, item: &Item, cx: &mut Context<Self>) {
-        let text = match &item.body {
-            ItemBody::Assistant { text } | ItemBody::Reasoning { text } => text,
-            _ => return,
-        };
-        match self.markdown.get(&item.id) {
-            // A longer text with the old text as its prefix is parsed
-            // incrementally (only the last block).
+    /// Brings a reply's (or thought's) text view up to date, creating it on
+    /// first use. A longer text with the old text as its prefix is parsed
+    /// incrementally (only the last block).
+    fn sync_markdown(&mut self, id: ItemId, text: &str, cx: &mut Context<Self>) {
+        match self.markdown.get(&id) {
             Some(state) => state.update(cx, |state, cx| state.set_text(text, cx)),
             None => {
-                let text = text.clone();
-                let state = cx.new(|cx| TextViewState::markdown(&text, cx));
-                self.markdown.insert(item.id, state);
+                let state = cx.new(|cx| TextViewState::markdown(text, cx));
+                self.markdown.insert(id, state);
             }
         }
     }
@@ -394,29 +401,48 @@ impl ThreadView {
     /// only the rows that changed are spliced, so heights already measured
     /// and the reader's position are kept.
     fn rebuild(&mut self, full: bool, cx: &mut Context<Self>) {
-        let Some(timeline) = self.app.read(cx).state().timeline(self.id) else { return };
-        let items = timeline.items().to_vec();
+        // Read the timeline in place (no copy of every item per new step);
+        // collect only what needs a mutable context afterwards.
+        let (layout, item_row, marks, texts, live) = {
+            let state = self.app.read(cx).state();
+            let Some(timeline) = state.timeline(self.id) else { return };
+            let items = timeline.items();
+            let busy = state.threads.get(&self.id).is_some_and(|t| t.status.is_busy());
+            let layout = rows::build(items, busy, &self.folds, format::local_day);
+            let mut item_row = HashMap::with_capacity(items.len());
+            let mut marks = Vec::new();
+            for (ix, row) in layout.rows.iter().enumerate() {
+                for id in row.items() {
+                    item_row.insert(id, ix);
+                }
+                if let Row::User(id) = row
+                    && let Some(Item { body: ItemBody::User(m), .. }) = timeline.get(*id)
+                    && !m.steer
+                {
+                    marks.push(Mark { row: ix, item: *id, preview: minimap::preview(&m.text) });
+                }
+            }
+            // Text views to create, or (after a reload) to bring up to date;
+            // streamed updates reach them through `apply_changes`.
+            let texts: Vec<(ItemId, String)> = items
+                .iter()
+                .filter_map(|i| match &i.body {
+                    ItemBody::Assistant { text } | ItemBody::Reasoning { text }
+                        if full || i.status == ItemStatus::Streaming || !self.markdown.contains_key(&i.id) =>
+                    {
+                        Some((i.id, text.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let live: HashSet<ItemId> = items.iter().map(|i| i.id).collect();
+            (layout, item_row, marks, texts, live)
+        };
         self.loaded = true;
-        let busy = self.app.read(cx).state().threads.get(&self.id).is_some_and(|t| t.status.is_busy());
-        let layout = rows::build(&items, busy, &self.folds, format::local_day);
+        for (id, text) in texts {
+            self.sync_markdown(id, &text, cx);
+        }
         let rows = layout.rows;
-        let mut item_row = HashMap::with_capacity(items.len());
-        let mut marks = Vec::new();
-        for (ix, row) in rows.iter().enumerate() {
-            for id in row.items() {
-                item_row.insert(id, ix);
-            }
-            if let Row::User(id) = row
-                && let Some(Item { body: ItemBody::User(m), .. }) = items.iter().find(|i| i.id == *id)
-                && !m.steer
-            {
-                marks.push(Mark { row: ix, item: *id, preview: minimap::preview(&m.text) });
-            }
-        }
-        for item in &items {
-            self.sync_markdown(item, cx);
-        }
-        let live: HashSet<ItemId> = items.iter().map(|i| i.id).collect();
         self.markdown.retain(|id, _| live.contains(id));
         self.folds.retain(|id| live.contains(id));
 
