@@ -16,9 +16,13 @@
 
 pub mod codec;
 pub mod ids;
+pub mod model;
+pub mod wire;
 
 pub use codec::{FRAME_HEADER, FrameError, FrameReader, decode, encode, write_frame};
 pub use ids::*;
+pub use model::*;
+pub use wire::*;
 
 /// Bumped on any incompatible wire change. Clients and servers refuse to talk
 /// across versions instead of misreading frames.
