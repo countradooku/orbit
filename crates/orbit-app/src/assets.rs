@@ -12,7 +12,10 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     Terminal, SquarePen, CircleStop, Clock, Hand, CircleDot, FileDiff, ListChecks, Brain, Wrench,
     ShieldCheck, ShieldAlert, Zap, Pencil, Command, Layers, Gauge, FolderPlus, Archive, Pin,
     GitFork, Hourglass, FilePen, FileSearch, Plug, ListTodo, RotateCcw, GitMerge, Orbit,
-    CirclePause, Sparkle, AppWindow, SearchCode, Trash, Keyboard, Reply, ScanSearch, OctagonX,
+    CirclePause, Sparkle, AppWindow, SearchCode, Trash, Keyboard,
+    // Shell: status glyphs, the deck, tiles, peek.
+    CircleDashed, OctagonAlert, LayoutGrid, Reply, ScanSearch, OctagonX, BellRing, MessageCircleQuestionMark, CheckCheck,
+    Columns2, Maximize2, Minimize2, SquareX, MousePointerClick, ListFilter, BellOff, Volume2,
     MessageSquarePlus,
 ]);
 

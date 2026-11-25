@@ -460,7 +460,7 @@ fn notifications() -> SettingPage {
         SettingGroup::new()
             .title("Notifications")
             .description(
-                "Shown in the window and posted to the system notification center; clicking one opens the thread.                  Nothing is posted for the thread you are looking at.",
+                "A toast while Orbit is in front; the system notification center, and the taskbar or Dock asking for attention, while it is in the background. Clicking one opens the thread. Nothing is shown for threads on screen, and bursts arrive as one notification.",
             )
             .items([
                 SettingItem::new(
@@ -481,6 +481,16 @@ fn notifications() -> SettingPage {
                 )
                 .description("A turn failed, or an agent hit its usage limit.")
                 .keywords(["error", "rate limit", "quota"]),
+                SettingItem::new(
+                    "Play a sound",
+                    SettingField::switch(
+                        |cx| crate::prefs::get(cx).sounds,
+                        |v, cx| crate::prefs::update(cx, |p| p.sounds = v),
+                    )
+                    .default_value(true),
+                )
+                .description("The system alert sound when an agent needs you or fails while Orbit is in the background. Kept on this computer.")
+                .keywords(["sound", "audio", "beep", "bell"]),
             ]),
     )
 }
@@ -496,16 +506,37 @@ fn keyboard() -> SettingPage {
             shortcut("New thread", Box::new(NewThread)),
             shortcut("Inbox", Box::new(GoInbox)),
             shortcut("Fleet", Box::new(GoFleet)),
+            shortcut("Next thread that needs you", Box::new(NextAttention)),
             shortcut("Next thread", Box::new(NextThread)),
             shortcut("Previous thread", Box::new(PreviousThread)),
             shortcut("Add project", Box::new(AddProject)),
             shortcut("Settings", Box::new(OpenSettings)),
+            shortcut("Keyboard shortcuts", Box::new(ShowShortcuts)),
         ]),
         SettingGroup::new().title("Threads").items([
             shortcut("Focus the composer", Box::new(FocusComposer)),
             shortcut("Stop the running turn", Box::new(StopTurn)),
             shortcut("Review changes", Box::new(ToggleReview)),
+            shortcut("Rename", Box::new(RenameThread)),
+            shortcut("Settle", Box::new(SettleThread)),
+            shortcut("Pin or unpin", Box::new(PinThread)),
+            shortcut("Open beside, as a tile", Box::new(OpenBeside)),
         ]),
+        SettingGroup::new()
+            .title("Your bindings")
+            .description(format!(
+                "Rules in {} win over these defaults and take effect when Orbit comes back to the front. Problems in the file are reported; the other rules still apply.",
+                crate::keymap::FILE_NAME
+            ))
+            .item(SettingItem::new(
+                "Bindings file",
+                SettingField::render(|_, _, _| {
+                    Button::new("edit-keybindings")
+                        .small()
+                        .label("Edit…")
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenKeybindings), cx))
+                }),
+            )),
         SettingGroup::new()
             .title("Composer")
             .description("These follow Composer › Send with.")
@@ -824,9 +855,11 @@ fn env_field(key: SharedString, kind: ProviderKind) -> SettingField<SharedString
 }
 
 /// The key an action is bound to, read from the live keymap.
+/// The keys that run `action` now, from the live keymap, so the user's own
+/// bindings show here.
 fn bound_key(action: Box<dyn Action>) -> SettingField<SharedString> {
-    SettingField::render(move |_, window, cx| match Kbd::binding_for_action(action.as_ref(), Some("Workspace"), window) {
-        Some(kbd) => kbd.into_any_element(),
+    SettingField::render(move |_, _, cx| match crate::ui::keycaps(action.as_ref(), cx) {
+        Some(keys) => keys,
         None => muted_value("Not bound".to_owned(), cx).into_any_element(),
     })
 }

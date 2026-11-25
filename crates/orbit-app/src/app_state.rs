@@ -187,4 +187,12 @@ impl AppState {
     pub fn send(&self, command: Command) {
         self.backend.send(command);
     }
+
+    /// Debug builds: edits thread records in place, to show states the
+    /// engine only reaches with a live agent (screenshots, visual checks).
+    #[cfg(debug_assertions)]
+    pub fn debug_edit_threads(&mut self, edit: impl FnOnce(&mut HashMap<ThreadId, Thread>), cx: &mut Context<Self>) {
+        edit(&mut self.state.threads);
+        cx.notify();
+    }
 }

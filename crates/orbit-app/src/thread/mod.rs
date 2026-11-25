@@ -251,6 +251,10 @@ impl ThreadView {
         (a.chat_width, a.ui_scale, a.code_font_size, a.clock)
     }
 
+    pub fn id(&self) -> ThreadId {
+        self.id
+    }
+
     pub fn focus_composer(view: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let composer = view.read(cx).composer.clone();
         Composer::focus(&composer, window, cx);
