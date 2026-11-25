@@ -161,7 +161,7 @@ cx.dispatch_action(&dyn Action);  window.dispatch_action(Box<dyn Action>, cx)
 ```
 - `FocusHandle`: `cx.focus_handle()`, `.focus(&self, window, cx)`, `.is_focused(window)`, `.contains_focused(window, cx)`, `.within_focused(window, cx)`, `.tab_index(isize)`, `.tab_stop(bool)`, `.downgrade()`, `.dispatch_action(&dyn Action, window, cx)`.
 - **`window.focus(&handle, cx)` takes `cx` in this version.** Also `window.blur(cx)`, `window.focused(cx) -> Option<FocusHandle>`, `window.focus_next(cx)` / `focus_prev(cx)`.
-- Keystroke syntax: `"ctrl-k"`, `"cmd-shift-p"`, `"secondary-enter"` (cmd on mac, ctrl elsewhere), chords `"ctrl-k ctrl-s"`.
+- Keystroke syntax: `"ctrl-k"`, `"cmd-shift-p"`, chords `"ctrl-k ctrl-s"`. **`KeyBinding::new` and `Keystroke::parse` reject the `secondary-` alias** (they parse without a host OS and panic/err with `InvalidKeystrokeError`); only `Keystroke::parse_with_os` and keymap files resolve it. Pick `cmd-`/`ctrl-` with `cfg!(target_os = "macos")`.
 ```rust
 actions!(chat, [Send, FocusComposer]);
 cx.bind_keys([KeyBinding::new("ctrl-enter", Send, Some("Chat")), KeyBinding::new("ctrl-l", FocusComposer, None)]);

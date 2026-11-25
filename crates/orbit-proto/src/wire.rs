@@ -4,6 +4,7 @@ use bitcode::{Decode, Encode};
 
 use crate::ids::*;
 use crate::model::*;
+use crate::settings::Settings;
 
 /// Client → engine.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -40,6 +41,8 @@ pub struct Snapshot {
     pub threads: Vec<Thread>,
     pub providers: Vec<ProviderInfo>,
     pub defaults: ThreadConfig,
+    /// Boxed: the snapshot travels inside small enums.
+    pub settings: Box<Settings>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -61,6 +64,8 @@ pub enum Event {
     ItemRemoved { thread: ThreadId, item: ItemId },
     Providers(Vec<ProviderInfo>),
     DefaultsChanged(ThreadConfig),
+    /// The user's settings were replaced (whole record, already sanitized).
+    SettingsChanged(Settings),
     /// The thread's working tree changed on disk. Ephemeral.
     WorkspaceChanged { thread: ThreadId, files: Vec<FileChange> },
     /// Live token and context accounting of a running turn. Ephemeral; the
@@ -192,6 +197,10 @@ pub enum Command {
 
     RefreshProviders,
     SetDefaults { config: ThreadConfig },
+    /// Replace the settings. The engine sanitizes them, persists them,
+    /// applies what affects it (provider binaries and environment, git and
+    /// worktree locations) and broadcasts [`Event::SettingsChanged`].
+    UpdateSettings { settings: Settings },
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -254,6 +263,7 @@ mod tests {
         };
         assert!(!delta.is_durable());
         assert!(Event::ThreadRemoved(ThreadId::new()).is_durable());
+        assert!(Event::SettingsChanged(Settings::default()).is_durable());
     }
 
     #[test]

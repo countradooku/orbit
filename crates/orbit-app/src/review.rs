@@ -32,7 +32,7 @@ const SCOPES: [&str; 3] = ["Last turn", "Whole thread", "Uncommitted"];
 impl ReviewView {
     pub fn new(app: Entity<AppState>, thread: ThreadId, cx: &mut Context<Self>) -> Self {
         let mut view =
-            Self { app, thread, scope: 0, split: false, diff: None, patch: String::new(), files: Vec::new(), error: None, loading: false };
+            Self { app, thread, scope: 0, split: crate::settings::get(cx).review.split, diff: None, patch: String::new(), files: Vec::new(), error: None, loading: false };
         view.load(cx);
         view
     }
@@ -60,7 +60,14 @@ impl ReviewView {
                         this.files = orbit_proto::diff::parse(&patch);
                         let files = DiffFile::parse(&patch).unwrap_or_default();
                         let mode = if this.split { DiffMode::Split } else { DiffMode::Unified };
-                        this.diff = Some(cx.new(|cx| DiffState::new(files, cx).with_mode(mode)));
+                        let collapse = crate::settings::get(cx).review.collapse_files;
+                        this.diff = Some(cx.new(|cx| {
+                            let mut state = DiffState::new(files, cx).with_mode(mode);
+                            if collapse {
+                                state.set_all_files_collapsed(true, cx);
+                            }
+                            state
+                        }));
                         this.patch = patch;
                     }
                     Ok(_) => {}
