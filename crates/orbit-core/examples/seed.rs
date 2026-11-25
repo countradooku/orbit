@@ -23,6 +23,13 @@ fn tool(kind: ToolKind, name: &str, title: &str, output: &str, files: Vec<FileCh
     })
 }
 
+/// An id created at `ms` (Unix), so seeded history can span days.
+fn id_at(ms: u64) -> ItemId {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    ItemId(((ms - 1_704_067_200_000) << 20) + n)
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let dir = args.next().expect("usage: seed <data dir> [<project dir>]");
@@ -77,27 +84,42 @@ fn main() {
     let main = thread("Make the parser stream tokens instead of buffering", &project, 1, &|t| {
         t.status = ThreadStatus::Running;
     });
+    // The waiting thread asks two questions (one multi-select) and an approval.
+    let questions = [
+        ("Which browsers should the checkout tests cover?", vec!["Chromium", "Firefox", "WebKit"], true),
+        ("Run them against the staging API or a local mock?", vec!["Staging API", "Local mock server"], false),
+    ];
+    let question_items: Vec<(ItemId, AgentRequest)> = questions
+        .iter()
+        .enumerate()
+        .map(|(i, (q, options, multi))| {
+            (
+                ItemId::new(),
+                AgentRequest {
+                    id: RequestId::new(),
+                    provider_ref: format!("q#{i}"),
+                    kind: RequestKind::Question {
+                        question: (*q).into(),
+                        options: options.iter().map(|o| (*o).to_owned()).collect(),
+                        multi_select: *multi,
+                    },
+                    resolution: None,
+                },
+            )
+        })
+        .collect();
+    let pending: Vec<PendingRequest> = question_items
+        .iter()
+        .map(|(item, request)| PendingRequest { item: *item, request: request.clone(), created_ms: now })
+        .collect();
     let waiting = thread("Add Playwright tests for checkout", &web, 3, &|t| {
         t.status = ThreadStatus::Waiting;
-        t.pending = vec![PendingRequest {
-            item: ItemId::new(),
-            created_ms: now,
-            request: AgentRequest {
-                id: RequestId::new(),
-                provider_ref: "r1".into(),
-                kind: RequestKind::Command {
-                    command: "pnpm exec playwright install --with-deps chromium".into(),
-                    cwd: "storefront-web".into(),
-                    reason: "Install the browser Playwright needs".into(),
-                },
-                resolution: None,
-            },
-        }];
+        t.pending = pending.clone();
     });
-    thread("Fix flaky websocket reconnect test", &project, 9, &|t| {
+    let failed = thread("Fix flaky websocket reconnect test", &project, 9, &|t| {
         t.status = ThreadStatus::Failed { message: "The agent exited unexpectedly: out of memory".into() };
     });
-    thread("Migrate auth to passkeys", &web, 14, &|t| {
+    let limited = thread("Migrate auth to passkeys", &web, 14, &|t| {
         t.status = ThreadStatus::RateLimited { resets_ms: now + 47 * 60_000 };
     });
     thread("Explain the event-sourcing layer", &project, 22, &|t| t.unread = true);
@@ -107,7 +129,6 @@ fn main() {
     for (i, title) in ["Rename the settings keys", "Spike: SQLite vs append log", "Dark mode contrast pass"].iter().enumerate() {
         thread(title, &project, 600 + i as u64 * 300, &|t| t.settled_ms = Some(now));
     }
-    let _ = waiting;
 
     // A rich timeline on the main thread.
     let items = vec![
@@ -141,8 +162,107 @@ fn main() {
             body: tool(ToolKind::Command, "Bash", "cargo bench --bench tokenize", "Benchmarking tokenize/200MB: Warming up for 3.0000 s", vec![]),
         },
     ];
+    // Turn 1 happened yesterday: re-stamp its items a day back.
+    let yesterday = now - 26 * 3_600_000;
+    let mut items: Vec<Item> = items
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut item)| {
+            if item.turn == 1 {
+                item.id = id_at(yesterday + i as u64 * 20_000);
+            }
+            item
+        })
+        .collect();
+    let streaming = items.pop().unwrap();
+    items.push(Item {
+        id: ItemId::new(),
+        turn: 2,
+        status: ItemStatus::Streaming,
+        body: ItemBody::Tool(ToolCall {
+            call_id: "task-1".into(),
+            kind: ToolKind::Task,
+            name: "Task".into(),
+            title: "Find every caller that relies on buffered input (Explore)".into(),
+            input: r#"{"description":"Find every caller that relies on buffered input","prompt":"Search the workspace for code that assumes the tokenizer holds the whole file:\n- slices kept past the next token\n- calls to `source()`\nReport file and line.","subagent_type":"Explore"}"#.into(),
+            output: "Grep: source()\nRead: src/diagnostics.rs\nRead: src/lsp/hover.rs\nGrep: &self.buf\n".into(),
+            output_blob: None,
+            exit_code: None,
+            files: vec![],
+        }),
+    });
+    items.push(streaming);
     for item in items {
         store.commit(Event::ItemUpserted { thread: main.id, item }).unwrap();
+    }
+
+    // The waiting thread: a turn that asks.
+    let mut waiting_items = vec![
+        item(1, ItemBody::User(UserMessage { text: "Add Playwright tests for the checkout flow: cart, address, payment and the confirmation page.".into(), ..Default::default() })),
+        item(1, tool(ToolKind::Read, "Read", "tests/e2e/cart.spec.ts", "", vec![])),
+        item(1, ItemBody::Assistant { text: "Before I write the specs, two choices change how they run:".into() }),
+    ];
+    for (id, request) in &question_items {
+        waiting_items.push(Item { id: *id, turn: 1, status: ItemStatus::Streaming, body: ItemBody::Request(request.clone()) });
+    }
+    for item in waiting_items {
+        store.commit(Event::ItemUpserted { thread: waiting.id, item }).unwrap();
+    }
+
+    // The failed thread: the first attempt failed, a retry failed again.
+    let mut log = String::new();
+    for i in 0..400 {
+        log.push_str(&format!("test ws::reconnect::case_{i} ... ok\n"));
+    }
+    log.push_str("test ws::reconnect::drops_after_idle ... FAILED\n\nfailures:\n    ws::reconnect::drops_after_idle: timed out after 30 s\n");
+    let failed_items = vec![
+        item(1, ItemBody::User(UserMessage { text: "The websocket reconnect test fails about one run in five. Find out why and fix it.".into(), ..Default::default() })),
+        item(1, ItemBody::Reasoning { text: "Flaky timing: probably the idle timer races the reconnect.".into() }),
+        item(1, ItemBody::Tool(ToolCall {
+            call_id: "c1".into(),
+            kind: ToolKind::Command,
+            name: "Bash".into(),
+            title: "cargo test -p net ws::reconnect -- --test-threads=1".into(),
+            input: r#"{"command":"cargo test -p net ws::reconnect -- --test-threads=1","description":"Run the reconnect tests serially"}"#.into(),
+            output: log,
+            output_blob: None,
+            exit_code: Some(101),
+            files: vec![],
+        })),
+        item(1, ItemBody::TurnEnd(TurnSummary { duration_ms: 48_000, ..Default::default() })),
+        item(1, ItemBody::Notice { level: NoticeLevel::Error, text: "The model is overloaded. Try again in a moment.".into() }),
+        item(1, ItemBody::Reasoning { text: "Retrying: run the single failing case with logging.".into() }),
+        item(1, tool(ToolKind::Command, "Bash", "RUST_LOG=trace cargo test -p net drops_after_idle", "thread 'main' has overflowed its stack", vec![])),
+        item(1, tool(ToolKind::Edit, "Edit", "crates/net/src/ws.rs", "", vec![FileChange { path: "crates/net/src/ws.rs".into(), kind: ChangeKind::Modified, additions: 6, deletions: 2 }])),
+        item(1, ItemBody::TurnEnd(TurnSummary { duration_ms: 95_000, ..Default::default() })),
+        item(1, ItemBody::Notice { level: NoticeLevel::Error, text: "The agent exited unexpectedly: out of memory".into() }),
+    ];
+    for item in failed_items {
+        store.commit(Event::ItemUpserted { thread: failed.id, item }).unwrap();
+    }
+
+    // The rate-limited thread.
+    let limited_items = vec![
+        item(1, ItemBody::User(UserMessage { text: "Replace password sign-in with passkeys, keeping password as a fallback for a release.".into(), ..Default::default() })),
+        item(1, ItemBody::Assistant { text: "I'll start with the WebAuthn registration endpoint.".into() }),
+        item(1, ItemBody::TurnEnd(TurnSummary { duration_ms: 12_000, ..Default::default() })),
+    ];
+    for item in limited_items {
+        store.commit(Event::ItemUpserted { thread: limited.id, item }).unwrap();
+    }
+
+    // `SEED_FOCUS=main|questions|failed|limited` makes that thread the latest, for
+    // `ORBIT_DEBUG_ROUTE=latest`.
+    let focus = match std::env::var("SEED_FOCUS").as_deref() {
+        Ok("main") => Some(main),
+        Ok("questions") => Some(waiting),
+        Ok("failed") => Some(failed),
+        Ok("limited") => Some(limited),
+        _ => None,
+    };
+    if let Some(mut t) = focus {
+        t.updated_ms = now + 86_400_000;
+        store.commit(Event::ThreadUpserted(t)).unwrap();
     }
     store.sync().unwrap();
     println!("seeded {dir}");

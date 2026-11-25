@@ -86,8 +86,13 @@ impl Timeline {
             (ItemBody::Assistant { text } | ItemBody::Reasoning { text }, Delta::Text(d) | Delta::Reasoning(d)) => {
                 text.push_str(d)
             }
-            (ItemBody::Tool(call), Delta::ToolOutput(d)) => call.output.push_str(d),
-            (ItemBody::Tool(call), Delta::ToolInput(d)) => call.input.push_str(d),
+            // The same tail rule as the engine, so both hold the same text.
+            (ItemBody::Tool(call), Delta::ToolOutput(d)) => append_output_tail(&mut call.output, d),
+            (ItemBody::Tool(call), Delta::ToolInput(d)) => {
+                if call.input.len() < INLINE_OUTPUT {
+                    call.input.push_str(d);
+                }
+            }
             _ => return None,
         }
         self.revision += 1;

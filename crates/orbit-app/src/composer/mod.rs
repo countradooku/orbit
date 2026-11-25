@@ -312,6 +312,31 @@ impl Composer {
         input.update(cx, |input, cx| input.focus(window, cx));
     }
 
+    /// Adds `markdown` (a quotation the reader is replying to) to the end of
+    /// the draft, keeps what was already written (mentions stay tokens), and
+    /// puts the caret after it with focus in the box. Used by the timeline's
+    /// Reply and Quote.
+    pub fn append_to_draft(composer: &Entity<Self>, markdown: &str, window: &mut Window, cx: &mut App) {
+        composer.update(cx, |this, cx| {
+            this.input.update(cx, |input, cx| {
+                let draft = input.value();
+                let kept = draft.trim_end().len();
+                let text = if kept == 0 { format!("{markdown}
+
+") } else { format!("
+
+{markdown}
+
+") };
+                // Drop trailing blank space, then append after what stays.
+                input.set_selected_range(kept..draft.len(), cx);
+                input.replace(text, window, cx);
+                input.focus(window, cx);
+            });
+            this.on_text_changed(cx);
+        });
+    }
+
     /// Puts a message back (a failed send): its text and attachments.
     pub fn restore(composer: &Entity<Self>, text: &str, attachments: Vec<Attachment>, window: &mut Window, cx: &mut App) {
         composer.update(cx, |this, cx| {

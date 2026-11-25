@@ -44,8 +44,6 @@ pub enum Internal {
 /// Starts provider sessions. Tests replace it with scripted fakes.
 pub type Launcher = Box<dyn FnMut(ProviderKind, SessionSpec, EventSender) -> SessionHandle + Send>;
 
-/// Bytes of tool output kept inline on an item; the rest goes to a blob.
-const INLINE_OUTPUT: usize = 64 * 1024;
 /// Thread titles taken from the first message are cut to this many chars.
 const TITLE_CHARS: usize = 72;
 /// Streaming items are persisted at most this often.
@@ -377,6 +375,7 @@ impl Orchestrator {
                 self.store.unload_timeline(id);
             }
         }
+        self.rearm_quota_resets();
     }
 
     pub fn store(&self) -> &Store {
@@ -444,11 +443,7 @@ impl Orchestrator {
             (ItemBody::Assistant { text } | ItemBody::Reasoning { text }, Delta::Text(d) | Delta::Reasoning(d)) => {
                 text.push_str(d)
             }
-            (ItemBody::Tool(call), Delta::ToolOutput(d)) => {
-                if call.output.len() < INLINE_OUTPUT {
-                    call.output.push_str(d);
-                }
-            }
+            (ItemBody::Tool(call), Delta::ToolOutput(d)) => append_output_tail(&mut call.output, d),
             (ItemBody::Tool(call), Delta::ToolInput(d)) => {
                 if call.input.len() < INLINE_OUTPUT {
                     call.input.push_str(d);
@@ -576,17 +571,7 @@ impl Orchestrator {
                 }
             }
             Internal::TitleGenerated { thread, seed, title } => self.on_title_generated(thread, seed, title),
-            Internal::QuotaReset(thread) => {
-                let limited = matches!(
-                    self.store.thread(thread).map(|t| &t.status),
-                    Some(ThreadStatus::RateLimited { .. })
-                );
-                if limited {
-                    self.update_thread(thread, |t| t.status = ThreadStatus::Idle);
-                    self.notice(thread, NoticeLevel::Info, "Your quota has reset.".into());
-                    self.start_next_queued(thread);
-                }
-            }
+            Internal::QuotaReset(thread) => self.quota_reset(thread),
         }
     }
 
@@ -601,6 +586,7 @@ impl Orchestrator {
                 Outcome::Deferred(self.search_files(thread, project, query, limit))
             }
             Command::ExportThread { thread } => Outcome::Deferred(self.export_thread(thread)),
+            Command::ReadBlob { hash } => Outcome::Deferred(self.read_blob(hash)),
             Command::GenerateText { thread, task, input } => Outcome::Deferred(self.generate_text(thread, task, input)),
             command @ (Command::Diff { .. }
             | Command::RevertPatch { .. }
@@ -649,6 +635,9 @@ impl Orchestrator {
             Command::EditQueued { thread, item, text } => self.edit_queued(thread, item, text),
             Command::EditAndResend { thread, item, text } => self.edit_and_resend(thread, item, text),
             Command::Interrupt { thread } => self.interrupt(thread),
+            Command::ForceStop { thread } => self.force_stop(thread),
+            Command::Retry { thread } => self.retry(thread),
+            Command::ReadBlob { hash } => futures_block_on(self.read_blob(hash)),
             Command::Resolve { thread, request, decision } => self.resolve(thread, request, decision),
             Command::Search { query, limit } => {
                 // Synchronous callers (tests) get a blocking scan.
@@ -1455,16 +1444,12 @@ impl Orchestrator {
                 let Some(mut item) = self.item(thread_id, id) else { return };
                 if let ItemBody::Tool(call) = &mut item.body {
                     if output.len() > INLINE_OUTPUT {
-                        let mut cut = INLINE_OUTPUT;
-                        while !output.is_char_boundary(cut) {
-                            cut -= 1;
-                        }
                         call.output_blob = self
                             .store
                             .put_blob(format!("{call_id}.txt"), "text/plain".into(), output.as_bytes())
                             .ok()
                             .map(|a| a.hash);
-                        call.output = output[..cut].to_owned();
+                        call.output = output_tail(&output, INLINE_OUTPUT).to_owned();
                     } else if !output.is_empty() {
                         call.output = output;
                     }
