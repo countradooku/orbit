@@ -52,26 +52,26 @@ const STREAM_PERSIST: Duration = Duration::from_secs(2);
 /// session on the next message.
 const IDLE_RELEASE: Duration = Duration::from_secs(15 * 60);
 
-struct ActiveTurn {
-    number: u32,
-    started: Instant,
+pub(crate) struct ActiveTurn {
+    pub(crate) number: u32,
+    pub(crate) started: Instant,
     /// Provider block id → timeline item.
-    blocks: HashMap<String, ItemId>,
+    pub(crate) blocks: HashMap<String, ItemId>,
     /// Provider tool call id → timeline item.
-    tools: HashMap<String, ItemId>,
-    plan: Option<ItemId>,
+    pub(crate) tools: HashMap<String, ItemId>,
+    pub(crate) plan: Option<ItemId>,
     /// Provider request id → (request id, timeline item).
-    requests: HashMap<String, (RequestId, ItemId)>,
-    usage: Usage,
-    cursor: Option<String>,
-    files: Vec<FileChange>,
-    interrupted: bool,
+    pub(crate) requests: HashMap<String, (RequestId, ItemId)>,
+    pub(crate) usage: Usage,
+    pub(crate) cursor: Option<String>,
+    pub(crate) files: Vec<FileChange>,
+    pub(crate) interrupted: bool,
     /// The tree the turn started from.
-    base: Option<String>,
+    pub(crate) base: Option<String>,
 }
 
 impl ActiveTurn {
-    fn new(number: u32) -> Self {
+    pub(crate) fn new(number: u32) -> Self {
         Self {
             base: None,
             number,
@@ -89,37 +89,37 @@ impl ActiveTurn {
 }
 
 #[derive(Default)]
-struct Runtime {
-    session: Option<SessionHandle>,
-    turn: Option<ActiveTurn>,
+pub(crate) struct Runtime {
+    pub(crate) session: Option<SessionHandle>,
+    pub(crate) turn: Option<ActiveTurn>,
     /// Queued user messages, in send order.
-    queue: VecDeque<ItemId>,
+    pub(crate) queue: VecDeque<ItemId>,
     /// The next session must resume at this provider cursor (rollback).
-    resume_at: Option<String>,
+    pub(crate) resume_at: Option<String>,
     /// A prompt held until the baseline snapshot exists.
-    held_prompt: Option<SessionInput>,
+    pub(crate) held_prompt: Option<SessionInput>,
     /// The last turn's snapshot is being taken; queued turns wait for it so
     /// one turn's files never land in another's diff.
-    checkpointing: bool,
+    pub(crate) checkpointing: bool,
     /// Last time the session did anything, for idle release.
-    last_active: Option<Instant>,
+    pub(crate) last_active: Option<Instant>,
 }
 
 pub struct Orchestrator {
-    store: Store,
-    bus: Bus,
-    providers: Vec<ProviderInfo>,
-    runtimes: HashMap<ThreadId, Runtime>,
-    agent_tx: EventSender,
-    internal_tx: MTx<mpsc::List<Internal>>,
-    launcher: Launcher,
+    pub(crate) store: Store,
+    pub(crate) bus: Bus,
+    pub(crate) providers: Vec<ProviderInfo>,
+    pub(crate) runtimes: HashMap<ThreadId, Runtime>,
+    pub(crate) agent_tx: EventSender,
+    pub(crate) internal_tx: MTx<mpsc::List<Internal>>,
+    pub(crate) launcher: Launcher,
     /// Streaming items changed since they were last persisted.
-    dirty: HashSet<(ThreadId, ItemId)>,
-    last_persist: Instant,
+    pub(crate) dirty: HashSet<(ThreadId, ItemId)>,
+    pub(crate) last_persist: Instant,
     /// Threads a client has open; they stay loaded.
-    open: HashSet<ThreadId>,
-    git: Git,
-    terminals: Terminals,
+    pub(crate) open: HashSet<ThreadId>,
+    pub(crate) git: Git,
+    pub(crate) terminals: Terminals,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -170,21 +170,21 @@ impl Orchestrator {
     }
 
     /// The git repository a thread works in, if any.
-    fn repo_of(&self, thread: &Thread) -> Option<PathBuf> {
+    pub(crate) fn repo_of(&self, thread: &Thread) -> Option<PathBuf> {
         if let Some(worktree) = &thread.workspace.worktree {
             return Some(PathBuf::from(worktree));
         }
         thread.project.and_then(|p| self.store.project(p)).map(|p| PathBuf::from(&p.path))
     }
 
-    fn repo_for(&self, thread: ThreadId) -> Result<PathBuf, String> {
+    pub(crate) fn repo_for(&self, thread: ThreadId) -> Result<PathBuf, String> {
         let t = self.store.thread(thread).ok_or("That thread no longer exists.")?;
         self.repo_of(t).ok_or_else(|| "This thread isn’t in a project, so it has no changes to show.".into())
     }
 
     /// The (from, to) trees of a turn; `to` is `None` while it runs (the
     /// working tree).
-    fn turn_range(&mut self, thread: ThreadId, turn: u32) -> Option<(String, Option<String>)> {
+    pub(crate) fn turn_range(&mut self, thread: ThreadId, turn: u32) -> Option<(String, Option<String>)> {
         if let Some(active) = self.runtimes.get(&thread).and_then(|r| r.turn.as_ref())
             && active.number == turn
         {
@@ -198,7 +198,7 @@ impl Orchestrator {
     }
 
     /// The tree the thread's first turn started from.
-    fn thread_base(&mut self, thread: ThreadId) -> Option<String> {
+    pub(crate) fn thread_base(&mut self, thread: ThreadId) -> Option<String> {
         let timeline = self.store.load_timeline(thread).ok()?;
         let from_items = timeline.items().iter().find_map(|i| match &i.body {
             ItemBody::TurnEnd(s) => s.base_checkpoint.clone(),
@@ -208,7 +208,7 @@ impl Orchestrator {
     }
 
     /// The last finished turn's snapshot, the next turn's starting point.
-    fn last_checkpoint(&mut self, thread: ThreadId) -> Option<String> {
+    pub(crate) fn last_checkpoint(&mut self, thread: ThreadId) -> Option<String> {
         let timeline = self.store.load_timeline(thread).ok()?;
         timeline.items().iter().rev().find_map(|i| match &i.body {
             ItemBody::TurnEnd(s) => s.checkpoint.clone(),
@@ -216,7 +216,7 @@ impl Orchestrator {
         })
     }
 
-    fn diff(&mut self, thread: ThreadId, scope: DiffScope) -> Outcome {
+    pub(crate) fn diff(&mut self, thread: ThreadId, scope: DiffScope) -> Outcome {
         let repo = match self.repo_for(thread) {
             Ok(repo) => repo,
             Err(e) => return Outcome::Ready(Err(e)),
@@ -247,7 +247,7 @@ impl Orchestrator {
         }))
     }
 
-    fn git_command(&mut self, command: Command) -> Outcome {
+    pub(crate) fn git_command(&mut self, command: Command) -> Outcome {
         let git = self.git.clone();
         match command {
             Command::Diff { thread, scope } => self.diff(thread, scope),
@@ -298,7 +298,7 @@ impl Orchestrator {
         }
     }
 
-    fn terminal_command(&mut self, command: Command) -> CommandResult {
+    pub(crate) fn terminal_command(&mut self, command: Command) -> CommandResult {
         match command {
             Command::OpenTerminal { cwd, cols, rows } => self
                 .terminals
@@ -394,7 +394,7 @@ impl Orchestrator {
 
     // ── Emission helpers ─────────────────────────────────────────────────
 
-    fn emit(&mut self, event: Event) {
+    pub(crate) fn emit(&mut self, event: Event) {
         if event.is_durable() {
             match self.store.commit(event.clone()) {
                 Ok(env) => self.bus.publish(env),
@@ -408,7 +408,7 @@ impl Orchestrator {
         }
     }
 
-    fn update_thread(&mut self, id: ThreadId, f: impl FnOnce(&mut Thread)) {
+    pub(crate) fn update_thread(&mut self, id: ThreadId, f: impl FnOnce(&mut Thread)) {
         let Some(mut thread) = self.store.thread(id).cloned() else { return };
         let before = thread.clone();
         f(&mut thread);
@@ -418,18 +418,18 @@ impl Orchestrator {
         }
     }
 
-    fn put_item(&mut self, thread: ThreadId, item: Item) {
+    pub(crate) fn put_item(&mut self, thread: ThreadId, item: Item) {
         self.dirty.remove(&(thread, item.id));
         self.emit(Event::ItemUpserted { thread, item });
     }
 
-    fn item(&self, thread: ThreadId, id: ItemId) -> Option<Item> {
+    pub(crate) fn item(&self, thread: ThreadId, id: ItemId) -> Option<Item> {
         self.store.timeline(thread)?.get(id).cloned()
     }
 
     /// Changes a streaming item in memory and broadcasts the delta; the item
     /// is persisted on the next [`Orchestrator::tick`].
-    fn stream_into(&mut self, thread: ThreadId, id: ItemId, delta: Delta) {
+    pub(crate) fn stream_into(&mut self, thread: ThreadId, id: ItemId, delta: Delta) {
         let Some(timeline) = self.store.timeline_mut(thread) else { return };
         let Some(item) = timeline.get_mut(id) else { return };
         match (&mut item.body, &delta) {
@@ -504,7 +504,7 @@ impl Orchestrator {
         }
     }
 
-    fn set_provider(&mut self, mut info: ProviderInfo) {
+    pub(crate) fn set_provider(&mut self, mut info: ProviderInfo) {
         if let Some(slot) = self.providers.iter_mut().find(|p| p.kind == info.kind) {
             if info.quota.is_empty() {
                 info.quota = std::mem::take(&mut slot.quota);
@@ -694,7 +694,7 @@ impl Orchestrator {
         }
     }
 
-    fn add_project(&mut self, path: &str) -> CommandResult {
+    pub(crate) fn add_project(&mut self, path: &str) -> CommandResult {
         let path = Path::new(path);
         let canonical = dunce_canonical(path).map_err(|e| format!("Couldn’t open “{}”: {e}", path.display()))?;
         if !canonical.is_dir() {
@@ -725,7 +725,7 @@ impl Orchestrator {
         Ok(Reply::Project(id))
     }
 
-    fn create_thread(&mut self, project: Option<ProjectId>, config: ThreadConfig, worktree: bool) -> CommandResult {
+    pub(crate) fn create_thread(&mut self, project: Option<ProjectId>, config: ThreadConfig, worktree: bool) -> CommandResult {
         if let Some(project) = project
             && self.store.project(project).is_none()
         {
@@ -758,7 +758,7 @@ impl Orchestrator {
         Ok(Reply::Thread(id))
     }
 
-    fn create_worktree(&mut self, thread: ThreadId, project: Project) {
+    pub(crate) fn create_worktree(&mut self, thread: ThreadId, project: Project) {
         let (git, tx) = (self.git.clone(), self.internal_tx.clone());
         let short = format!("{:x}", thread.0 & 0xff_ffff);
         tokio::spawn(async move {
@@ -797,7 +797,7 @@ impl Orchestrator {
         });
     }
 
-    fn patch_thread(&mut self, id: ThreadId, patch: ThreadPatch) -> CommandResult {
+    pub(crate) fn patch_thread(&mut self, id: ThreadId, patch: ThreadPatch) -> CommandResult {
         if self.store.thread(id).is_none() {
             return Err("That thread no longer exists.".into());
         }
@@ -867,7 +867,7 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn delete_thread(&mut self, id: ThreadId) -> CommandResult {
+    pub(crate) fn delete_thread(&mut self, id: ThreadId) -> CommandResult {
         if let Some(thread) = self.store.thread(id)
             && let Some(path) = thread.workspace.worktree.clone()
         {
@@ -902,7 +902,7 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn fork_thread(&mut self, id: ThreadId, at: ItemId) -> CommandResult {
+    pub(crate) fn fork_thread(&mut self, id: ThreadId, at: ItemId) -> CommandResult {
         let source = self.store.thread(id).cloned().ok_or("That thread no longer exists.")?;
         let items: Vec<Item> = {
             let timeline = self.store.load_timeline(id).map_err(|e| e.to_string())?;
@@ -940,7 +940,7 @@ impl Orchestrator {
         Ok(Reply::Thread(fork_id))
     }
 
-    fn open_thread(&mut self, id: ThreadId) -> CommandResult {
+    pub(crate) fn open_thread(&mut self, id: ThreadId) -> CommandResult {
         if self.store.thread(id).is_none() {
             return Err("That thread no longer exists.".into());
         }
@@ -953,7 +953,7 @@ impl Orchestrator {
         Ok(Reply::Timeline { items, mark })
     }
 
-    fn flush_thread(&mut self, id: ThreadId) {
+    pub(crate) fn flush_thread(&mut self, id: ThreadId) {
         let dirty: Vec<ItemId> = self.dirty.iter().filter(|(t, _)| *t == id).map(|(_, i)| *i).collect();
         for item in dirty {
             if let Some(item) = self.item(id, item) {
@@ -964,7 +964,7 @@ impl Orchestrator {
 
     // ── Turns ────────────────────────────────────────────────────────────
 
-    fn send(&mut self, thread_id: ThreadId, text: String, attachments: Vec<Attachment>, steer: bool) -> CommandResult {
+    pub(crate) fn send(&mut self, thread_id: ThreadId, text: String, attachments: Vec<Attachment>, steer: bool) -> CommandResult {
         let thread = self.store.thread(thread_id).cloned().ok_or("That thread no longer exists.")?;
         if text.trim().is_empty() && attachments.is_empty() {
             return Err("Write a message first.".into());
@@ -1014,7 +1014,7 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn prompt_input(
+    pub(crate) fn prompt_input(
         &self,
         _thread: ThreadId,
         item: ItemId,
@@ -1029,7 +1029,7 @@ impl Orchestrator {
         SessionInput::Prompt { uuid: prompt_uuid(item), text, attachments, steer }
     }
 
-    fn workspace_dir(&self, thread: &Thread) -> PathBuf {
+    pub(crate) fn workspace_dir(&self, thread: &Thread) -> PathBuf {
         if let Some(worktree) = &thread.workspace.worktree {
             return PathBuf::from(worktree);
         }
@@ -1041,7 +1041,7 @@ impl Orchestrator {
         dir
     }
 
-    fn ensure_session(&mut self, thread_id: ThreadId) -> Result<(), String> {
+    pub(crate) fn ensure_session(&mut self, thread_id: ThreadId) -> Result<(), String> {
         if self.runtimes.get(&thread_id).is_some_and(|r| r.session.is_some()) {
             return Ok(());
         }
@@ -1068,7 +1068,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn start_turn(&mut self, thread_id: ThreadId, user_item: ItemId) -> Result<(), String> {
+    pub(crate) fn start_turn(&mut self, thread_id: ThreadId, user_item: ItemId) -> Result<(), String> {
         let thread = self.store.thread(thread_id).cloned().ok_or("That thread no longer exists.")?;
         let number = thread.turns + 1;
         let Some(mut item) = self.item(thread_id, user_item) else {
@@ -1127,7 +1127,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn start_next_queued(&mut self, thread_id: ThreadId) {
+    pub(crate) fn start_next_queued(&mut self, thread_id: ThreadId) {
         if self.runtimes.get(&thread_id).is_some_and(|r| r.checkpointing) {
             return; // resumed when the snapshot lands
         }
@@ -1138,7 +1138,7 @@ impl Orchestrator {
         }
     }
 
-    fn edit_queued(&mut self, thread: ThreadId, item_id: ItemId, text: String) -> CommandResult {
+    pub(crate) fn edit_queued(&mut self, thread: ThreadId, item_id: ItemId, text: String) -> CommandResult {
         let item = self.item(thread, item_id).ok_or("That message no longer exists.")?;
         if item.status != ItemStatus::Queued {
             return Err("That message was already sent.".into());
@@ -1156,7 +1156,7 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn edit_and_resend(&mut self, thread_id: ThreadId, item_id: ItemId, text: String) -> CommandResult {
+    pub(crate) fn edit_and_resend(&mut self, thread_id: ThreadId, item_id: ItemId, text: String) -> CommandResult {
         if self.runtimes.get(&thread_id).is_some_and(|r| r.turn.is_some()) {
             return Err("Stop the current turn before editing an earlier message.".into());
         }
@@ -1195,7 +1195,7 @@ impl Orchestrator {
         self.send(thread_id, text, Vec::new(), false)
     }
 
-    fn interrupt(&mut self, thread: ThreadId) -> CommandResult {
+    pub(crate) fn interrupt(&mut self, thread: ThreadId) -> CommandResult {
         let Some(runtime) = self.runtimes.get_mut(&thread) else { return Ok(Reply::Done) };
         let Some(turn) = runtime.turn.as_mut() else { return Ok(Reply::Done) };
         turn.interrupted = true;
@@ -1214,7 +1214,7 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn resolve(&mut self, thread: ThreadId, request: RequestId, decision: Decision) -> CommandResult {
+    pub(crate) fn resolve(&mut self, thread: ThreadId, request: RequestId, decision: Decision) -> CommandResult {
         let pending = self
             .store
             .thread(thread)
@@ -1233,7 +1233,7 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn settle_request(&mut self, thread: ThreadId, request: RequestId, decision: Decision) {
+    pub(crate) fn settle_request(&mut self, thread: ThreadId, request: RequestId, decision: Decision) {
         let Some(pending) =
             self.store.thread(thread).and_then(|t| t.pending.iter().find(|p| p.request.id == request).cloned())
         else {
@@ -1256,7 +1256,7 @@ impl Orchestrator {
     }
 
     /// Ends a snooze and marks the thread as woken, if it was snoozed.
-    fn wake(&mut self, thread: ThreadId) {
+    pub(crate) fn wake(&mut self, thread: ThreadId) {
         self.update_thread(thread, |t| {
             if t.snoozed_until.take().is_some() {
                 t.woke = true;
@@ -1264,7 +1264,7 @@ impl Orchestrator {
         });
     }
 
-    fn notice(&mut self, thread: ThreadId, level: NoticeLevel, text: String) {
+    pub(crate) fn notice(&mut self, thread: ThreadId, level: NoticeLevel, text: String) {
         if self.store.load_timeline(thread).is_err() {
             return;
         }
@@ -1275,7 +1275,7 @@ impl Orchestrator {
         );
     }
 
-    fn finish_turn(&mut self, thread_id: ThreadId, outcome: TurnOutcome, usage: Usage, duration_ms: u64) {
+    pub(crate) fn finish_turn(&mut self, thread_id: ThreadId, outcome: TurnOutcome, usage: Usage, duration_ms: u64) {
         let Some(runtime) = self.runtimes.get_mut(&thread_id) else { return };
         let Some(turn) = runtime.turn.take() else { return };
         // Settle everything still streaming in this turn.
@@ -1359,7 +1359,7 @@ impl Orchestrator {
         }
     }
 
-    fn schedule_quota_reset(&self, thread: ThreadId, resets_ms: u64) {
+    pub(crate) fn schedule_quota_reset(&self, thread: ThreadId, resets_ms: u64) {
         if resets_ms == 0 {
             return;
         }
@@ -1569,16 +1569,16 @@ impl Orchestrator {
         }
     }
 
-    fn active_turn_number(&self, thread: ThreadId) -> Option<u32> {
+    pub(crate) fn active_turn_number(&self, thread: ThreadId) -> Option<u32> {
         self.runtimes.get(&thread)?.turn.as_ref().map(|t| t.number)
     }
 
-    fn tool_item(&self, thread: ThreadId, call_id: &str) -> Option<ItemId> {
+    pub(crate) fn tool_item(&self, thread: ThreadId, call_id: &str) -> Option<ItemId> {
         self.runtimes.get(&thread)?.turn.as_ref()?.tools.get(call_id).copied()
     }
 
     /// The timeline item for a streamed block, created on first use.
-    fn ensure_block(&mut self, thread: ThreadId, block: &str, kind: BlockKind) -> Option<ItemId> {
+    pub(crate) fn ensure_block(&mut self, thread: ThreadId, block: &str, kind: BlockKind) -> Option<ItemId> {
         let turn = self.runtimes.get_mut(&thread)?.turn.as_mut()?;
         if let Some(id) = turn.blocks.get(block) {
             return Some(*id);
@@ -1599,7 +1599,7 @@ impl Orchestrator {
     /// Full-text search over every thread, newest first. Loaded timelines
     /// are searched in memory; the rest are scanned from their logs on the
     /// blocking pool, so a search never stalls streaming.
-    fn search(&mut self, query: String, limit: usize) -> Deferred {
+    pub(crate) fn search(&mut self, query: String, limit: usize) -> Deferred {
         let needle = query.trim().to_lowercase();
         let mut threads: Vec<(ThreadId, u64)> = self.store.threads().map(|t| (t.id, t.updated_ms)).collect();
         threads.sort_by_key(|(_, updated)| std::cmp::Reverse(*updated));

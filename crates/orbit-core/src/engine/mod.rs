@@ -184,3 +184,7 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
         }
     }
 }
+
+// Feature areas add their engine logic as `impl Orchestrator` blocks in their
+// own modules here (review, sessions, workspaces, forge…), touching
+// orchestrator.rs only to dispatch commands to them.
