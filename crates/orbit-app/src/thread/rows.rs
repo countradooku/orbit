@@ -24,9 +24,6 @@ use super::ThreadView;
 use crate::assets::Lucide;
 use crate::format;
 
-/// Width of the reading column.
-pub const COLUMN: Rems = Rems(52.);
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Row {
     User(ItemId),
@@ -94,9 +91,10 @@ impl Row {
     }
 }
 
-/// A row centered in the reading column.
-fn column(content: impl IntoElement) -> Div {
-    h_flex().w_full().justify_center().px_4().child(div().w_full().max_w(COLUMN).child(content))
+/// A row centered in the reading column, `width` wide at most (Settings ›
+/// Appearance › Chat width).
+fn column(content: impl IntoElement, width: Length) -> Div {
+    h_flex().w_full().justify_center().px_4().child(div().w_full().max_w(width).child(content))
 }
 
 pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut App) -> AnyElement {
@@ -106,6 +104,7 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
     let thread = state.threads.get(&this.id);
     let busy = thread.is_some_and(|t| t.status.is_busy());
     let theme = cx.theme().clone();
+    let width = crate::settings::chat_column(cx);
     let item = |id: ItemId| timeline.get(id);
     let weak = view.downgrade();
 
@@ -327,7 +326,7 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
         Row::Request(id) => {
             let Some(item) = item(*id) else { return div().into_any_element() };
             let ItemBody::Request(request) = &item.body else { return div().into_any_element() };
-            render_request(&this.app, this.id, request, &theme).into_any_element()
+            render_request(&this.app, this.id, request, &theme, width).into_any_element()
         }
         Row::Notice(id) => {
             let Some(item) = item(*id) else { return div().into_any_element() };
@@ -388,7 +387,7 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
                 .into_any_element()
         }
     };
-    column(content).into_any_element()
+    column(content, width).into_any_element()
 }
 
 fn tool_icon(kind: ToolKind) -> Icon {
@@ -493,6 +492,7 @@ fn render_request(
     thread: ThreadId,
     request: &AgentRequest,
     theme: &gpui_kit::component::Theme,
+    width: Length,
 ) -> impl IntoElement {
     let (title, body): (String, Option<String>) = match &request.kind {
         RequestKind::Command { command, cwd, reason } => (
@@ -524,6 +524,7 @@ fn render_request(
                 .child(text)
                 .child("·")
                 .child(div().truncate().child(title)),
+            width,
         );
     }
     let resolve = |decision: Decision| {
@@ -610,6 +611,7 @@ fn render_request(
                 )
             })
             .child(actions),
+        width,
     )
 }
 

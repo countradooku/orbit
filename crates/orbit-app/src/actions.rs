@@ -20,6 +20,11 @@ gpui_kit::actions!(
         PreviousThread,
         FocusComposer,
         Quit,
+        ZoomIn,
+        ZoomOut,
+        ResetZoom,
+        CloseSettings,
+        SendAlternate,
     ]
 );
 
@@ -39,5 +44,17 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-shift-tab", PreviousThread, None),
         KeyBinding::new("ctrl-l", FocusComposer, Some("Workspace")),
         KeyBinding::new("ctrl-q", Quit, None),
+        KeyBinding::new(platform("cmd-=", "ctrl-="), ZoomIn, None),
+        KeyBinding::new(platform("cmd-+", "ctrl-+"), ZoomIn, None),
+        KeyBinding::new(platform("cmd--", "ctrl--"), ZoomOut, None),
+        KeyBinding::new(platform("cmd-0", "ctrl-0"), ResetZoom, None),
+        KeyBinding::new("escape", CloseSettings, Some("SettingsPage")),
+        KeyBinding::new(platform("cmd-shift-enter", "ctrl-shift-enter"), SendAlternate, Some("Composer")),
     ]);
+}
+
+/// The macOS or the other platforms' spelling of a binding. `KeyBinding::new`
+/// parses statically, so it does not accept the `secondary-` alias.
+pub const fn platform(mac: &'static str, other: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") { mac } else { other }
 }

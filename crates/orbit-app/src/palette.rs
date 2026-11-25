@@ -33,7 +33,7 @@ pub fn open(workspace: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         ("Fleet", IconName::LayoutDashboard.into(), Target::Route(Route::Fleet)),
         ("Add project…", Lucide::FolderPlus.into(), Target::AddProject),
         ("Toggle sidebar", IconName::PanelLeft.into(), Target::ToggleSidebar),
-        ("Settings…", IconName::Settings.into(), Target::Settings),
+        ("Settings", IconName::Settings.into(), Target::Settings),
     ];
     let mut threads: Vec<&Thread> = snapshot.threads.values().collect();
     threads.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
@@ -103,7 +103,7 @@ pub fn open(workspace: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             }
                             Target::AddProject => ws.add_project(&crate::actions::AddProject, window, cx),
                             Target::ToggleSidebar => window.dispatch_action(Box::new(crate::actions::ToggleSidebar), cx),
-                            Target::Settings => crate::settings::open(ws.app().clone(), window, cx),
+                            Target::Settings => ws.navigate(Route::Settings, window, cx),
                         });
                     }),
             )

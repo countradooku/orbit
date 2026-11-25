@@ -169,6 +169,7 @@ impl Sidebar {
                     let attention = Attention::of(thread);
                     let title = display_title(thread).to_owned();
                     let pinned = thread.pinned;
+                    let confirm_delete = crate::settings::get(cx).general.confirm_delete;
                     let app = self.app.clone();
                     h_flex()
                         .id(("thread-row", id.0))
@@ -212,9 +213,9 @@ impl Sidebar {
                                 })
                             }))
                             .separator()
-                            .item(PopupMenuItem::new("Delete").icon(Lucide::Trash).on_click(move |_, window, cx| {
-                                delete_app.update(cx, |app, cx| app.run(Command::DeleteThread { id }, window, cx))
-                            }))
+                            .item(PopupMenuItem::new(if confirm_delete { "Delete…" } else { "Delete" }).icon(Lucide::Trash).on_click(
+                                move |_, window, cx| crate::thread::delete_thread(delete_app.clone(), id, window, cx),
+                            ))
                         })
                         .child(StatusGlyph::attention(("glyph", id.0), attention))
                         .child(div().flex_1().min_w_0().truncate().child(title))

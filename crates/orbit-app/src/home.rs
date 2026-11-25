@@ -30,7 +30,7 @@ pub struct HomeView {
 
 impl HomeView {
     pub fn new(app: Entity<AppState>, workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let defaults = app.read(cx).state().defaults.clone();
+        let defaults = new_thread_config(&app, cx);
         let composer = cx.new(|cx| Composer::new(app.clone(), defaults, window, cx));
         let subs = vec![
             cx.subscribe_in(&composer, window, |this, _, event: &ComposerEvent, window, cx| match event {
@@ -45,7 +45,7 @@ impl HomeView {
             cx.observe(&app, |this, app, cx| {
                 // Adopt the last used settings until the user changes them here.
                 if !this.config_touched {
-                    let defaults = app.read(cx).state().defaults.clone();
+                    let defaults = new_thread_config(&app, cx);
                     this.composer.update(cx, |c, cx| c.set_config(defaults, cx));
                 }
                 cx.notify();
@@ -87,7 +87,8 @@ impl HomeView {
         let project = self.project(cx);
         let config = self.composer.read(cx).config().clone();
         let app = self.app.clone();
-        let create = app.update(cx, |app, cx| app.call(Command::CreateThread { project, config, worktree: false }, cx));
+        let worktree = project.is_some() && crate::settings::get(cx).workspace.worktree_by_default;
+        let create = app.update(cx, |app, cx| app.call(Command::CreateThread { project, config, worktree }, cx));
         cx.spawn_in(window, async move |this, cx| {
             let result = create.await;
             let thread = match result {
@@ -117,6 +118,14 @@ impl HomeView {
     }
 }
 
+/// The last used model and options, with the access level from settings: a
+/// new thread starts at the chosen default, never at full access.
+fn new_thread_config(app: &Entity<AppState>, cx: &App) -> ThreadConfig {
+    let mut config = app.read(cx).state().defaults.clone();
+    config.access = crate::settings::get(cx).agents.default_access.for_new_thread();
+    config
+}
+
 impl Render for HomeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -127,6 +136,7 @@ impl Render for HomeView {
             .map(|p| p.name.clone())
             .unwrap_or_else(|| "No project".into());
         let projects: Vec<(ProjectId, String)> = state.projects.iter().map(|p| (p.id, p.name.clone())).collect();
+        let on_worktree = project_id.is_some() && crate::settings::get(cx).workspace.worktree_by_default;
         let mut recent: Vec<&Thread> = state.threads.values().filter(|t| !t.archived).collect();
         recent.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
         let recent: Vec<Thread> = recent.into_iter().take(5).cloned().collect();
@@ -174,7 +184,7 @@ impl Render for HomeView {
             .child(
                 v_flex()
                     .w_full()
-                    .max_w(crate::thread::COLUMN)
+                    .max_w(crate::settings::chat_column(cx))
                     .px_4()
                     .pt(relative(0.16))
                     .pb_8()
@@ -191,7 +201,8 @@ impl Render for HomeView {
                                     .text_sm()
                                     .text_color(theme.muted_foreground)
                                     .child("Working in")
-                                    .child(picker),
+                                    .child(picker)
+                                    .when(on_worktree, |el| el.child("on a new worktree")),
                             ),
                     )
                     .child(self.composer.clone())

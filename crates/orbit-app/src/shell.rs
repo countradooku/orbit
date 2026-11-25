@@ -3,6 +3,10 @@
 //! Every command is an Action handled here, so a button, a menu item, the
 //! palette and a key binding all run the same code.
 
+use std::collections::HashMap;
+
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, TitleBar, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -26,6 +30,9 @@ pub enum Route {
     Thread(ThreadId),
     Inbox,
     Fleet,
+    /// Full-window settings, with their own navigation in place of the
+    /// sidebar.
+    Settings,
 }
 
 /// Threads whose views stay alive for instant switching. Older views are
@@ -44,6 +51,11 @@ pub struct Workspace {
     fleet: Entity<FleetView>,
     threads: Vec<(ThreadId, Entity<ThreadView>)>,
     focus: FocusHandle,
+    /// Where closing settings returns to.
+    before_settings: Route,
+    settings_focus: FocusHandle,
+    /// Last seen attention state per thread, to notice transitions.
+    attention: HashMap<ThreadId, Attention>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -57,10 +69,13 @@ impl Workspace {
         let split = cx.new(|_| ResizableState::default());
         let subs = vec![
             cx.observe_window_appearance(window, |_, window, cx| {
-                if settings::appearance(cx) == crate::theme::Appearance::System {
-                    crate::theme::apply(crate::theme::Appearance::System, window, cx);
+                if settings::get(cx).appearance.mode == ColorMode::System {
+                    settings::reapply_appearance(window, cx);
                 }
             }),
+            // Field values, chat width and the page itself follow the model.
+            cx.observe_global::<settings::SettingsModel>(|_, cx| cx.notify()),
+            cx.observe_in(&app, window, |this, _, window, cx| this.notify_attention(window, cx)),
             // Follow deletions: never leave the user on a thread that is gone.
             cx.observe(&app, |this, app, cx| {
                 if let Route::Thread(id) = this.route
@@ -85,6 +100,9 @@ impl Workspace {
             fleet,
             threads: Vec::new(),
             focus: cx.focus_handle(),
+            before_settings: Route::Home,
+            settings_focus: cx.focus_handle(),
+            attention: HashMap::new(),
             _subscriptions: subs,
         }
     }
@@ -106,6 +124,13 @@ impl Workspace {
                 let view = view.clone();
                 window.defer(cx, move |window, cx| ThreadView::focus_composer(&view, window, cx));
             }
+        }
+        if route == Route::Settings && self.route != Route::Settings {
+            self.before_settings = self.route.clone();
+            settings::measure_storage(cx);
+            self.settings_focus.focus(window, cx);
+        } else if route != Route::Settings && self.route == Route::Settings {
+            self.focus.focus(window, cx);
         }
         if route == Route::Home {
             let home = self.home.clone();
@@ -179,7 +204,81 @@ impl Workspace {
     }
 
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
-        settings::open(self.app.clone(), window, cx);
+        self.navigate(Route::Settings, window, cx);
+    }
+
+    fn close_settings(&mut self, _: &CloseSettings, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route == Route::Settings {
+            let back = self.before_settings.clone();
+            self.navigate(back, window, cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn zoom_in(&mut self, _: &ZoomIn, _: &mut Window, cx: &mut Context<Self>) {
+        settings::zoom(1, cx);
+    }
+
+    fn zoom_out(&mut self, _: &ZoomOut, _: &mut Window, cx: &mut Context<Self>) {
+        settings::zoom(-1, cx);
+    }
+
+    fn reset_zoom(&mut self, _: &ResetZoom, _: &mut Window, cx: &mut Context<Self>) {
+        settings::zoom(0, cx);
+    }
+
+    // ── Notifications ────────────────────────────────────────────────────
+
+    /// Posts a system notification when a thread starts needing the user,
+    /// finishes or fails while the window is in the background.
+    fn notify_attention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prefs = settings::get(cx).notifications.clone();
+        let state = self.app.read(cx).state();
+        let mut posts = Vec::new();
+        let first = self.attention.is_empty();
+        let mut seen = HashMap::with_capacity(state.threads.len());
+        for thread in state.threads.values() {
+            let now = Attention::of(thread);
+            let before = self.attention.get(&thread.id).copied();
+            seen.insert(thread.id, now);
+            // A thread seen for the first time (startup, another client) is
+            // not news.
+            if first || before.is_none() || before == Some(now) {
+                continue;
+            }
+            let title = crate::thread::display_title(thread).to_owned();
+            let post = match now {
+                Attention::Waiting if prefs.requests => Some(("Needs you", thread.pending.first().map(|r| crate::inbox::request_summary(&r.request.kind).1))),
+                Attention::Unread if prefs.finished => Some(("Finished", None)),
+                Attention::Failed if prefs.failed => match &thread.status {
+                    ThreadStatus::Failed { message } => Some(("Failed", Some(message.clone()))),
+                    _ => Some(("Failed", None)),
+                },
+                Attention::RateLimited if prefs.failed => Some(("Hit its usage limit", None)),
+                _ => None,
+            };
+            if let Some((what, detail)) = post {
+                posts.push((thread.id, format!("{title}: {what}"), detail));
+            }
+        }
+        self.attention = seen;
+        if posts.is_empty() || window.is_window_active() {
+            return;
+        }
+        let workspace = cx.weak_entity();
+        for (id, title, detail) in posts {
+            let workspace = workspace.clone();
+            let note = Notification::new()
+                .id1::<AttentionNote>(id.0 as usize)
+                .title(title)
+                .message(detail.unwrap_or_else(|| "Open Orbit to see the thread.".into()))
+                .system()
+                .on_click(move |_, window, cx| {
+                    let _ = workspace.update(cx, |ws, cx| ws.navigate(Route::Thread(id), window, cx));
+                });
+            window.push_notification(note, cx);
+        }
     }
 
     pub fn add_project(&mut self, _: &AddProject, window: &mut Window, cx: &mut Context<Self>) {
@@ -259,6 +358,7 @@ impl Workspace {
     // ── Rendering ────────────────────────────────────────────────────────
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let in_settings = self.route == Route::Settings;
         let theme = cx.theme().clone();
         let state = self.app.read(cx).state();
         let needs_you = state
@@ -286,6 +386,17 @@ impl Workspace {
                         .child(Icon::new(Lucide::Orbit).small().text_color(theme.primary))
                         .child("Orbit"),
                 )
+                .when(in_settings, |el| {
+                    el.child(
+                        Button::new("close-settings")
+                            .ghost()
+                            .small()
+                            .icon(IconName::ArrowLeft)
+                            .label("Back")
+                            .tooltip("Close settings (Esc)")
+                            .on_click(|_, window, cx| window.dispatch_action(Box::new(CloseSettings), cx)),
+                    )
+                })
                 .child(div().flex_1())
                 .when(working > 0, |el| {
                     el.child(
@@ -331,6 +442,7 @@ impl Workspace {
             Route::Home => self.home.clone().into_any_element(),
             Route::Inbox => self.inbox.clone().into_any_element(),
             Route::Fleet => self.fleet.clone().into_any_element(),
+            Route::Settings => div().into_any_element(),
             Route::Thread(_) => match self.current_thread_view() {
                 Some(view) => view.clone().into_any_element(),
                 None => crate::ui::empty_state(
@@ -361,10 +473,43 @@ impl Focusable for Workspace {
     }
 }
 
+/// Keys a system notification per thread, so a newer one replaces it.
+struct AttentionNote;
+
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let main = self.render_main(cx);
+        let body = if self.route == Route::Settings {
+            div()
+                .flex_1()
+                .min_h_0()
+                .key_context("SettingsPage")
+                .track_focus(&self.settings_focus)
+                // The search field hands back an Escape it has no use for.
+                .on_action(|_: &gpui_kit::component::input::Escape, window, cx| {
+                    window.dispatch_action(Box::new(CloseSettings), cx)
+                })
+                .child(settings::page(self.app.clone(), window, cx))
+                .into_any_element()
+        } else {
+            let main = self.render_main(cx);
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    h_resizable("shell")
+                        .with_state(&self.split)
+                        .child(
+                            resizable_panel()
+                                .size(px(272.))
+                                .size_range(px(208.)..px(440.))
+                                .visible(self.sidebar_open)
+                                .child(self.sidebar.clone()),
+                        )
+                        .child(resizable_panel().child(div().size_full().min_w_0().child(main))),
+                )
+                .into_any_element()
+        };
         v_flex()
             .size_full()
             .key_context("Workspace")
@@ -380,6 +525,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_review))
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::close_settings))
+            .on_action(cx.listener(Self::zoom_in))
+            .on_action(cx.listener(Self::zoom_out))
+            .on_action(cx.listener(Self::reset_zoom))
             .on_action(cx.listener(Self::add_project))
             .on_action(cx.listener(Self::stop_turn))
             .on_action(cx.listener(Self::focus_composer))
@@ -387,19 +536,6 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::previous_thread))
             .on_action(cx.listener(Self::quit))
             .child(self.render_title_bar(cx))
-            .child(
-                div().flex_1().min_h_0().child(
-                h_resizable("shell")
-                    .with_state(&self.split)
-                    .child(
-                        resizable_panel()
-                            .size(px(272.))
-                            .size_range(px(208.)..px(440.))
-                            .visible(self.sidebar_open)
-                            .child(self.sidebar.clone()),
-                    )
-                    .child(resizable_panel().child(div().size_full().min_w_0().child(main))),
-                ),
-            )
+            .child(body)
     }
 }

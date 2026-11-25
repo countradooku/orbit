@@ -12,7 +12,7 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     Terminal, SquarePen, CircleStop, Clock, Hand, CircleDot, FileDiff, ListChecks, Brain, Wrench,
     ShieldCheck, ShieldAlert, Zap, Pencil, Command, Layers, Gauge, FolderPlus, Archive, Pin,
     GitFork, Hourglass, FilePen, FileSearch, Plug, ListTodo, RotateCcw, GitMerge, Orbit,
-    CirclePause, Sparkle, AppWindow, SearchCode, Trash,
+    CirclePause, Sparkle, AppWindow, SearchCode, Trash, Keyboard,
 ]);
 
 /// Orbit's icons first, then GPUI Kit's defaults.

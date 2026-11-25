@@ -28,7 +28,7 @@ use crate::assets::Lucide;
 use crate::composer::{Composer, ComposerEvent};
 use crate::{format, ui};
 
-pub use rows::{COLUMN, Row};
+pub use rows::Row;
 
 pub struct ThreadView {
     id: ThreadId,
@@ -42,6 +42,8 @@ pub struct ThreadView {
     composer: Entity<Composer>,
     focus: FocusHandle,
     loaded: bool,
+    /// Settings that change row heights; rows are re-measured when they do.
+    layout: (ChatWidth, u16, u16),
     _subscriptions: Vec<Subscription>,
 }
 
@@ -51,6 +53,29 @@ pub enum ThreadViewEvent {
 }
 
 impl EventEmitter<ThreadViewEvent> for ThreadView {}
+
+/// Deletes a thread, asking first unless Settings › General turned the
+/// confirmation off.
+pub fn delete_thread(app: Entity<AppState>, id: ThreadId, window: &mut Window, cx: &mut App) {
+    if !crate::settings::get(cx).general.confirm_delete {
+        app.update(cx, |app, cx| app.run(Command::DeleteThread { id }, window, cx));
+        return;
+    }
+    let title = app.read(cx).state().threads.get(&id).map(|t| display_title(t).to_owned()).unwrap_or_default();
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let app = app.clone();
+        alert
+            .title(format!("Delete “{title}”?"))
+            .description("Its messages, attachments, checkpoints and worktree are removed. This can’t be undone.")
+            .confirm()
+            .ok_text("Delete")
+            .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
+            .on_ok(move |_, window, cx| {
+                app.update(cx, |app, cx| app.run(Command::DeleteThread { id }, window, cx));
+                true
+            })
+    });
+}
 
 impl ThreadView {
     pub fn new(id: ThreadId, app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -64,6 +89,14 @@ impl ThreadView {
                 this.on_composer(event, window, cx)
             }),
         ];
+        subscriptions.push(cx.observe_global::<crate::settings::SettingsModel>(|this, cx| {
+            let layout = Self::layout_key(cx);
+            if layout != this.layout {
+                this.layout = layout;
+                this.scroller.update(cx, |scroller, cx| scroller.remeasure(cx));
+                cx.notify();
+            }
+        }));
         subscriptions.push(cx.on_release(|this, cx| {
             let id = this.id;
             this.app.update(cx, |app, _| app.release_timeline(id));
@@ -80,11 +113,17 @@ impl ThreadView {
             composer,
             focus: cx.focus_handle(),
             loaded: false,
+            layout: Self::layout_key(cx),
             _subscriptions: subscriptions,
         };
         view.rebuild(true, cx);
         view.sync_thread_record(cx);
         view
+    }
+
+    fn layout_key(cx: &App) -> (ChatWidth, u16, u16) {
+        let a = &crate::settings::get(cx).appearance;
+        (a.chat_width, a.ui_scale, a.code_font_size)
     }
 
     pub fn id(&self) -> ThreadId {
@@ -295,22 +334,7 @@ impl ThreadView {
     }
 
     fn confirm_delete(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let title = self.thread(cx).map(|t| display_title(t).to_owned()).unwrap_or_default();
-        let app = self.app.clone();
-        let id = self.id;
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let app = app.clone();
-            alert
-                .title(format!("Delete “{title}”?"))
-                .description("Its messages, attachments and checkpoints are removed from this computer.")
-                .confirm()
-                .ok_text("Delete")
-                .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
-                .on_ok(move |_, window, cx| {
-                    app.update(cx, |app, cx| app.run(Command::DeleteThread { id }, window, cx));
-                    true
-                })
-        });
+        delete_thread(self.app.clone(), self.id, window, cx);
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -321,6 +345,7 @@ impl ThreadView {
         let usage = state.usage(self.id);
         let model = ui::model_label(&thread.config, &state.providers);
         let view = cx.weak_entity();
+        let delete_label = if crate::settings::get(cx).general.confirm_delete { "Delete…" } else { "Delete" };
         let archived = thread.archived;
         let pinned = thread.pinned;
         let id = self.id;
@@ -402,7 +427,7 @@ impl ThreadView {
                         },
                     ))
                     .separator()
-                    .item(PopupMenuItem::new("Delete…").icon(Lucide::Trash).on_click(move |_, window, cx| {
+                    .item(PopupMenuItem::new(delete_label).icon(Lucide::Trash).on_click(move |_, window, cx| {
                         let _ = delete.update(cx, |this, cx| this.confirm_delete(window, cx));
                     }))
                 }),
@@ -511,7 +536,7 @@ impl Render for ThreadView {
                     .child(
                         v_flex()
                             .w_full()
-                            .max_w(rows::COLUMN)
+                            .max_w(crate::settings::chat_column(cx))
                             .children(self.render_queue(cx))
                             .child(self.composer.clone()),
                     ),
