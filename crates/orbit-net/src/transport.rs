@@ -3,11 +3,13 @@
 //! frames as on the WebSocket link, each prefixed by its length (`u32`
 //! little endian).
 //!
-//! Why not loopback WebSockets: a named pipe's round trip is a fifth of a
-//! loopback TCP one on Windows (4 µs against 19 µs at the median for a
+//! Why not loopback WebSockets: a named pipe's round trip is about half a
+//! loopback TCP one on Windows (10.4 µs against 18.2 µs at the median for a
 //! small frame, `examples/transport_rtt.rs`), there is no port to allocate
-//! or guard, and no HTTP upgrade or masking. The WebSocket endpoint stays
-//! for the `orbit` CLI and remote clients.
+//! or guard, and no HTTP upgrade or masking. A whole Orbit call (client
+//! thread, host, engine thread and back) is 30.5 µs against 35 µs over the
+//! WebSocket (`orbit-bench`). The WebSocket endpoint stays for the `orbit`
+//! CLI and remote clients.
 //!
 //! Addresses are written `pipe:\\.\pipe\orbit-…` or `unix:/path/to/sock`.
 //! The name carries 64 random bits and the first frame must still carry
