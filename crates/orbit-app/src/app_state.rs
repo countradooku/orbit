@@ -70,6 +70,11 @@ impl AppState {
         if changes.settings || changes.reset {
             crate::settings::receive(self.state.settings.clone(), cx);
         }
+        if changes.bots || changes.guard || changes.reset {
+            let bots = changes.bots.then(|| self.state.bots.clone()).flatten();
+            let guard = changes.guard.then(|| self.state.guard.clone()).flatten();
+            crate::bots::receive(bots, guard, changes.reset, cx);
+        }
         if changes.reset {
             // Everything was replaced: reload every timeline a view shows.
             let open: Vec<ThreadId> = self.open.keys().copied().collect();

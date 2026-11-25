@@ -9,6 +9,7 @@
 mod actions;
 mod app_state;
 mod assets;
+mod bots;
 mod composer;
 #[cfg(debug_assertions)]
 mod demo;
@@ -95,6 +96,14 @@ fn main() {
     };
     let shutdown = backend.clone();
     let endpoint = control_endpoint(&backend, &startup.data_dir);
+    // Chat bots run beside the engine they drive: only with a local one.
+    let chat_bots = match &backend {
+        Backend::Local(engine) => orbit_bots::Bots::start(engine.clone(), &startup.data_dir)
+            .inspect_err(|err| log::warn!("no chat bots: {err}"))
+            .ok(),
+        Backend::Remote(_) => None,
+    };
+    let chat_bots = std::sync::Mutex::new(chat_bots);
     let quit_data_dir = startup.data_dir.clone();
 
     // The preview browser's WebKitGTK embeds only into X11 windows
@@ -132,6 +141,9 @@ fn main() {
         cx.set_menus([Menu::new("Orbit").items([MenuItem::action("Quit Orbit", actions::Quit)])]);
         cx.on_app_quit(move |cx| {
             endpoint.iter().for_each(orbit_net::endpoint::LocalEndpoint::close);
+            if let Some(bots) = chat_bots.lock().ok().and_then(|mut b| b.take()) {
+                bots.stop();
+            }
             instance::remove_endpoint_file(&quit_data_dir);
             settings::flush(cx);
             let backend = shutdown.clone();
@@ -142,6 +154,7 @@ fn main() {
         let app = cx.new(|cx| app_state::AppState::new(backend, cx));
         settings::init(app.clone(), startup, cx);
         forge::init(app.clone(), cx);
+        bots::init(app.clone(), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(820.)), cx))),
             window_min_size: Some(size(px(720.), px(480.))),

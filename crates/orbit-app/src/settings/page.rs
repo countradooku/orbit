@@ -35,6 +35,7 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         agents(&app, cx),
         workspace(cx),
         integrations(),
+        bots(&app, cx),
         notifications(),
         keyboard(),
         remote(&app, cx),
@@ -367,6 +368,11 @@ fn integrations() -> SettingPage {
             .keywords(["jira", "token", "pat"]),
         ]),
     ])
+}
+
+/// Chat bots and the guard list; see [`crate::bots::page`].
+fn bots(app: &Entity<AppState>, cx: &mut App) -> SettingPage {
+    crate::bots::page::page(app, cx)
 }
 
 fn workspace(cx: &App) -> SettingPage {
