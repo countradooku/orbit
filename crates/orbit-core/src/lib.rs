@@ -5,6 +5,7 @@ pub mod forge;
 pub mod fuzzy;
 pub mod git;
 pub mod provider;
+pub mod status;
 pub mod store;
 pub mod terminal;
 

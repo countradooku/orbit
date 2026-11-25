@@ -44,8 +44,9 @@ impl Pipe {
 
         let (line_tx, lines) = mpsc::channel(LINE_BUFFER);
         let label = name.to_owned();
+        let exit = process.exit_watch();
         tokio::spawn(async move {
-            let mut reader = JsonlReader::new(stdout);
+            let mut reader = JsonlReader::new(stdout).until_exit(exit);
             loop {
                 match reader.next_line().await {
                     Ok(Some(line)) => {

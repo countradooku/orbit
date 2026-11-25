@@ -113,6 +113,19 @@ pub fn thread(state: &ClientState, t: &Thread) -> Value {
         "created_ms": t.created_ms,
         "updated_ms": t.updated_ms,
     });
+    // The status engine's evidence while a turn runs: quiet (no output
+    // for a while) or unverified (the agent can't be observed).
+    if let Some(live) = state.live.get(&t.id) {
+        match &live.liveness {
+            Liveness::Live => {}
+            Liveness::Quiet { since_ms, tool } => {
+                v["liveness"] = json!({"state": "quiet", "since_ms": since_ms, "tool": tool});
+            }
+            Liveness::Unverified { since_ms, reason } => {
+                v["liveness"] = json!({"state": "unverified", "since_ms": since_ms, "reason": reason});
+            }
+        }
+    }
     match &t.status {
         ThreadStatus::Failed { message } => v["error"] = json!(message),
         ThreadStatus::RateLimited { resets_ms } if *resets_ms > 0 => v["resets_ms"] = json!(resets_ms),

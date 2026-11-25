@@ -361,6 +361,7 @@ impl Store {
             defaults: self.defaults.clone(),
             drafts: self.drafts.iter().map(|(k, v)| (*k, v.clone())).collect(),
             settings: Box::new(self.settings.clone()),
+            live: Vec::new(),
         }
     }
 
