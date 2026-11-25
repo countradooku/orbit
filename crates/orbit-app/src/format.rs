@@ -63,11 +63,17 @@ fn trim(s: String) -> String {
 
 // ── Times of day ─────────────────────────────────────────────────────────
 
-/// Whether clock times read `14:05` or `2:05 PM`. 24-hour unless the
-/// environment asks for 12 (`ORBIT_CLOCK=12`); settings can take this over.
+/// Whether clock times read `14:05` or `2:05 PM` (Settings › Appearance ›
+/// Clock). A process-wide flag, so formatting needs no context.
+static CLOCK_12H: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn clock_24h() -> bool {
-    static H24: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *H24.get_or_init(|| std::env::var("ORBIT_CLOCK").map(|v| v.trim() != "12").unwrap_or(true))
+    !CLOCK_12H.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Follows the clock setting; called whenever settings change.
+pub fn set_clock(clock: orbit_proto::ClockFormat) {
+    CLOCK_12H.store(clock == orbit_proto::ClockFormat::H12, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn local(ms: u64) -> chrono::DateTime<chrono::Local> {

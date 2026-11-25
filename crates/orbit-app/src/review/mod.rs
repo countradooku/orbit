@@ -140,6 +140,8 @@ pub struct ReviewView {
     /// Indexes into `data.files` shown after filtering, in order.
     visible: Vec<usize>,
     hide_tests: bool,
+    /// The colour-blind palette is in use (follows the saved setting).
+    colorblind: bool,
     selected: Option<SharedString>,
     hovered: Rc<RefCell<Option<(DiffLinePosition, Instant)>>>,
 
@@ -210,11 +212,7 @@ impl ReviewView {
         ];
         subs.push(cx.observe(&app, |this, _, cx| this.thread_changed(cx)));
         // Settings → Review can change while the sheet is open.
-        subs.push(cx.observe_global::<crate::settings::SettingsModel>(|this, cx| {
-            let mode = if crate::settings::get(cx).review.split { DiffMode::Split } else { DiffMode::Unified };
-            this.diff.update(cx, |d, cx| d.set_mode(mode, cx));
-            cx.notify();
-        }));
+        subs.push(cx.observe_global::<crate::settings::SettingsModel>(|this, cx| this.sync_saved_prefs(cx)));
 
         let (reviewed, comments) =
             ReviewMarks::read(cx, thread, |m| (Rc::new(m.reviewed.clone()), Rc::new(m.comments.clone())));
@@ -247,6 +245,7 @@ impl ReviewView {
             split: panes,
             visible: Vec::new(),
             hide_tests: p.hide_tests,
+            colorblind: p.colorblind,
             selected: None,
             hovered: Rc::default(),
             reviewed,
@@ -882,15 +881,30 @@ impl ReviewView {
 
     fn set_colorblind(&mut self, on: bool, cx: &mut Context<Self>) {
         update_prefs(cx, |p| p.colorblind = on);
-        self.palette = None;
-        self.diff.update(cx, |d, cx| d.set_inline_unit((!on).then_some(DiffInlineUnit::Word), cx));
-        cx.notify();
+        self.sync_saved_prefs(cx);
     }
 
     fn set_hide_tests(&mut self, hide: bool, cx: &mut Context<Self>) {
         update_prefs(cx, |p| p.hide_tests = hide);
-        self.hide_tests = hide;
-        self.apply_filter(cx);
+        self.sync_saved_prefs(cx);
+    }
+
+    /// Follows Settings › Review, whether changed here or on the settings
+    /// page (or by another client of the host).
+    fn sync_saved_prefs(&mut self, cx: &mut Context<Self>) {
+        let saved = crate::settings::get(cx).review.clone();
+        let mode = if saved.split { DiffMode::Split } else { DiffMode::Unified };
+        self.diff.update(cx, |d, cx| d.set_mode(mode, cx));
+        if self.colorblind != saved.colorblind {
+            self.colorblind = saved.colorblind;
+            self.palette = None;
+            self.diff.update(cx, |d, cx| d.set_inline_unit((!saved.colorblind).then_some(DiffInlineUnit::Word), cx));
+        }
+        if self.hide_tests != saved.hide_tests {
+            self.hide_tests = saved.hide_tests;
+            self.apply_filter(cx);
+        }
+        cx.notify();
     }
 }
 

@@ -33,7 +33,7 @@ pub use wire::*;
 
 /// Bumped on any incompatible wire change. Clients and servers refuse to talk
 /// across versions instead of misreading frames.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

@@ -151,6 +151,7 @@ pub fn receive(engine: Settings, cx: &mut App) {
 
 fn apply_effects(old: &Settings, new: &Settings, cx: &mut App) {
     let (a, b) = (&old.appearance, &new.appearance);
+    crate::format::set_clock(b.clock);
     let theme_changed = (a.mode, &a.light_theme, &a.dark_theme, a.ui_scale, a.code_font_size)
         != (b.mode, &b.light_theme, &b.dark_theme, b.ui_scale, b.code_font_size);
     if theme_changed {

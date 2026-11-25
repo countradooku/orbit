@@ -33,6 +33,28 @@ pub enum TimelineRecord {
     Remove(ItemId),
 }
 
+/// A timeline record as schema versions up to 3 wrote it (items as
+/// [`legacy::v3::Item`]). Those timeline logs have no version header.
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
+enum TimelineRecordV3 {
+    Upsert(legacy::v3::Item),
+    Remove(ItemId),
+}
+
+impl From<TimelineRecordV3> for TimelineRecord {
+    fn from(record: TimelineRecordV3) -> Self {
+        match record {
+            TimelineRecordV3::Upsert(item) => TimelineRecord::Upsert(item.into()),
+            TimelineRecordV3::Remove(id) => TimelineRecord::Remove(id),
+        }
+    }
+}
+
+/// Decodes one timeline record written at schema `version`.
+fn decode_timeline(version: u32, payload: &[u8]) -> Result<TimelineRecord, FrameError> {
+    if version <= 3 { decode::<TimelineRecordV3>(payload).map(Into::into) } else { decode::<TimelineRecord>(payload) }
+}
+
 /// Append-only file of CRC-framed records with crash recovery.
 struct Log {
     path: PathBuf,
@@ -59,6 +81,29 @@ fn meta_header() -> Vec<u8> {
     let mut header = META_MAGIC.to_vec();
     header.extend_from_slice(&legacy::META_VERSION.to_le_bytes());
     header
+}
+
+/// Marks a thread's timeline log; followed by the schema version, which
+/// it shares with the meta log. Timeline logs from before version 4 have
+/// no such frame.
+const TIMELINE_MAGIC: &[u8] = b"orbit/thread\0";
+
+fn timeline_header() -> Vec<u8> {
+    let mut header = TIMELINE_MAGIC.to_vec();
+    header.extend_from_slice(&legacy::META_VERSION.to_le_bytes());
+    header
+}
+
+/// A timeline log's schema version and its records, from its bytes.
+fn read_timeline(bytes: &[u8]) -> (u32, FrameReader<'_>) {
+    let mut peek = FrameReader::new(bytes);
+    if let Ok(first) = peek.next_payload()
+        && first.len() == TIMELINE_MAGIC.len() + 4
+        && first.starts_with(TIMELINE_MAGIC)
+    {
+        return (header_version(first), peek);
+    }
+    (1, FrameReader::new(bytes))
 }
 
 impl Log {
@@ -446,11 +491,22 @@ impl Store {
     /// Loads a thread's timeline into memory (no-op when already loaded).
     pub fn load_timeline(&mut self, id: ThreadId) -> io::Result<&Timeline> {
         if !self.open.contains_key(&id) {
-            let (log, records, _) =
-                Log::open(&self.timeline_path(id), None, |_, payload| decode::<TimelineRecord>(payload))?;
+            let (mut log, records, version) = Log::open(&self.timeline_path(id), Some(timeline_header()), decode_timeline)?;
+            if version > legacy::META_VERSION {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "This thread was written by a newer version of Orbit; update Orbit to open it.",
+                ));
+            }
             let mut timeline = Timeline::default();
             for record in records {
                 timeline.apply(record);
+            }
+            if version < legacy::META_VERSION {
+                // Written by an older Orbit: rewrite it in the current layout
+                // once, so appends never mix layouts.
+                let records: Vec<TimelineRecord> = timeline.items.iter().cloned().map(TimelineRecord::Upsert).collect();
+                log.rewrite(records.iter())?;
             }
             // A thread that is not running cannot have streaming items: they
             // are leftovers of a turn cut off by a crash or a forced quit.
@@ -481,9 +537,9 @@ impl Store {
     pub fn scan_timeline(dir: &Path, id: ThreadId) -> Vec<Item> {
         let path = dir.join("threads").join(format!("{id}.log"));
         let Ok(bytes) = fs::read(&path) else { return Vec::new() };
-        let mut reader = FrameReader::new(&bytes);
+        let (version, mut reader) = read_timeline(&bytes);
         let mut timeline = Timeline::default();
-        while let Ok(record) = reader.read::<TimelineRecord>() {
+        while let Ok(record) = reader.next_payload().and_then(|payload| decode_timeline(version, payload)) {
             timeline.apply(record);
         }
         timeline.items
@@ -861,6 +917,104 @@ mod tests {
         let store = Store::open(dir.path()).unwrap();
         assert_eq!(store.draft(DraftTarget::Thread(id)).unwrap().text, "Then the rollback");
         assert_eq!(store.thread(id).unwrap().config.instance_id(), "codex-work");
+    }
+
+    #[test]
+    fn a_version_3_data_folder_keeps_its_questions_and_gains_option_descriptions() {
+        use legacy::v3;
+        // Written the way the schema-3 Store wrote it: a versioned meta log,
+        // and a timeline log without a header.
+        let dir = tempfile::tempdir().unwrap();
+        let id = ThreadId(0x6666);
+        let question = v3::AgentRequest {
+            id: RequestId(0x77),
+            provider_ref: "toolu_q".into(),
+            kind: v3::RequestKind::Question {
+                question: "Which database?".into(),
+                options: vec!["Postgres".into(), "SQLite".into()],
+                multi_select: true,
+            },
+            resolution: None,
+        };
+        let t = Thread::default();
+        let thread = v3::Thread {
+            id,
+            project: None,
+            title: "Pick a database".into(),
+            config: t.config,
+            workspace: t.workspace,
+            status: ThreadStatus::Waiting,
+            created_ms: 1,
+            updated_ms: 2,
+            session: Some("s".into()),
+            parent: None,
+            archived: false,
+            pinned: false,
+            unread: false,
+            usage: t.usage,
+            turns: 1,
+            queued: 0,
+            pending: vec![v3::PendingRequest { item: ItemId(0x88), request: question.clone(), created_ms: 3 }],
+            settled_ms: None,
+            snoozed_until: None,
+            woke: false,
+        };
+        let mut meta = Vec::new();
+        let mut header = META_MAGIC.to_vec();
+        header.extend_from_slice(&3u32.to_le_bytes());
+        write_raw_frame(&header, &mut meta);
+        write_frame(&v3::Envelope { seq: 1, event: v3::Event::ThreadUpserted(thread) }, &mut meta);
+        fs::write(dir.path().join("meta.log"), &meta).unwrap();
+        fs::create_dir_all(dir.path().join("threads")).unwrap();
+        let mut timeline = Vec::new();
+        let user = v3::Item {
+            id: ItemId(0x87),
+            turn: 1,
+            status: ItemStatus::Done,
+            body: v3::ItemBody::User(UserMessage { text: "Set up storage".into(), ..Default::default() }),
+        };
+        write_frame(&TimelineRecordV3::Upsert(user), &mut timeline);
+        let asked = v3::Item { id: ItemId(0x88), turn: 1, status: ItemStatus::Done, body: v3::ItemBody::Request(question) };
+        write_frame(&TimelineRecordV3::Upsert(asked), &mut timeline);
+        let log = dir.path().join("threads").join(format!("{id}.log"));
+        fs::write(&log, &timeline).unwrap();
+
+        let labels = |kind: &RequestKind| match kind {
+            RequestKind::Question { options, multi_select: true, .. } => {
+                options.iter().map(|o| (o.label.clone(), o.description.clone())).collect::<Vec<_>>()
+            }
+            other => panic!("{other:?}"),
+        };
+        let expected = vec![("Postgres".to_owned(), String::new()), ("SQLite".to_owned(), String::new())];
+        // Search reads the old log without loading it.
+        let scanned = Store::scan_timeline(dir.path(), id);
+        assert!(matches!(&scanned[1].body, ItemBody::Request(r) if labels(&r.kind) == expected));
+        {
+            let mut store = Store::open(dir.path()).unwrap();
+            assert_eq!(labels(&store.thread(id).unwrap().pending[0].request.kind), expected);
+            let items = store.load_timeline(id).unwrap().items().to_vec();
+            assert_eq!(items.len(), 2);
+            assert!(matches!(&items[1].body, ItemBody::Request(r) if labels(&r.kind) == expected));
+            // A new item with a described option lands in the migrated log.
+            let kind = RequestKind::Question {
+                question: "Which cache?".into(),
+                options: vec![QuestionOption::new("Redis", "In memory, shared across workers")],
+                multi_select: true,
+            };
+            let request = AgentRequest { id: RequestId(0x99), provider_ref: "toolu_r".into(), kind, resolution: None };
+            let item = Item { id: ItemId(0x89), turn: 1, status: ItemStatus::Done, body: ItemBody::Request(request) };
+            store.commit(Event::ItemUpserted { thread: id, item }).unwrap();
+        }
+        let bytes = fs::read(&log).unwrap();
+        assert_eq!(read_timeline(&bytes).0, legacy::META_VERSION, "the timeline log is migrated and versioned");
+        let bytes = fs::read(dir.path().join("meta.log")).unwrap();
+        assert_eq!(header_version(FrameReader::new(&bytes).next_payload().unwrap()), legacy::META_VERSION);
+        let mut store = Store::open(dir.path()).unwrap();
+        assert_eq!(labels(&store.thread(id).unwrap().pending[0].request.kind), expected);
+        let items = store.load_timeline(id).unwrap().items().to_vec();
+        assert_eq!(items.len(), 3);
+        assert!(matches!(&items[2].body, ItemBody::Request(r) if labels(&r.kind) == vec![("Redis".to_owned(), "In memory, shared across workers".to_owned())]));
+        assert_eq!(Store::scan_timeline(dir.path(), id).len(), 3);
     }
 
     #[test]

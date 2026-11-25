@@ -5,6 +5,7 @@
 //!   all at once (the agent waits for the whole set).
 //! * Choices take a number key (1–9); a single choice confirms itself and
 //!   moves on; several choices are checkboxes when the agent allows it.
+//!   The agent's explanation of a choice is shown under its label.
 //! * Every question also takes your own words, so a reply is never limited
 //!   to the agent's guesses.
 //! * Skip tells the agent you chose not to answer, instead of leaving it
@@ -25,7 +26,7 @@ use crate::assets::Lucide;
 pub struct Question {
     pub request: RequestId,
     pub text: String,
-    pub options: Vec<String>,
+    pub options: Vec<QuestionOption>,
     pub multi: bool,
 }
 
@@ -36,17 +37,18 @@ impl Question {
 }
 
 /// The thread's unanswered questions, oldest first, with blank and repeated
-/// options dropped.
+/// options dropped (by label; the first one's description is kept).
 pub fn pending(thread: &Thread) -> Vec<Question> {
     thread
         .pending
         .iter()
         .filter_map(|p| match &p.request.kind {
             RequestKind::Question { question, options, multi_select } => {
-                let mut unique: Vec<String> = Vec::with_capacity(options.len());
+                let mut unique: Vec<QuestionOption> = Vec::with_capacity(options.len());
                 for option in options {
-                    if !option.trim().is_empty() && !unique.contains(option) {
-                        unique.push(option.clone());
+                    let label = option.label.trim();
+                    if !label.is_empty() && !unique.iter().any(|o| o.label == label) {
+                        unique.push(QuestionOption::new(label, option.description.trim()));
                     }
                 }
                 Some(Question { request: p.request.id, text: question.clone(), options: unique, multi: *multi_select })
@@ -82,7 +84,10 @@ impl Questions {
                 QuestionnaireItemDefinition::new(q.name(), q.text.clone())
                     .with_required(true)
                     .with_multiple(q.multi)
-                    .with_choices(q.options.iter().map(|o| QuestionnaireChoiceDefinition::new(o.clone(), o.clone())))
+                    .with_choices(q.options.iter().map(|o| {
+                        let choice = QuestionnaireChoiceDefinition::new(o.label.clone(), o.label.clone());
+                        if o.description.is_empty() { choice } else { choice.with_description(o.description.clone()) }
+                    }))
                     .with_input(QuestionnaireInputDefinition::new(input, "Your own answer"))
             })
             .collect();
@@ -151,7 +156,8 @@ impl Questions {
                 QuestionnaireItem::new(state, name.clone())
                     .child(QuestionnaireTitle::new(state, name.clone()))
                     .child(QuestionnaireChoices::new(state, name.clone()).children(
-                        q.options.iter().map(|o| QuestionnaireChoice::new(state, name.clone(), o.clone()).child(o.clone())),
+                        // Label and description come from the definition.
+                        q.options.iter().map(|o| QuestionnaireChoice::new(state, name.clone(), o.label.clone())),
                     ))
                     .child(QuestionnaireInput::new(state, name.clone()))
                     .child(QuestionnaireError::new(state, name)),
@@ -205,7 +211,12 @@ mod tests {
                 request(RequestKind::Command { command: "ls".into(), cwd: String::new(), reason: String::new() }),
                 request(RequestKind::Question {
                     question: "Which?".into(),
-                    options: vec!["A".into(), " ".into(), "A".into(), "B".into()],
+                    options: vec![
+                        QuestionOption::new("A", " The first "),
+                        " ".into(),
+                        QuestionOption::new("A", "A repeat"),
+                        "B".into(),
+                    ],
                     multi_select: true,
                 }),
             ],
@@ -213,7 +224,7 @@ mod tests {
         };
         let questions = pending(&thread);
         assert_eq!(questions.len(), 1);
-        assert_eq!(questions[0].options, vec!["A", "B"]);
+        assert_eq!(questions[0].options, vec![QuestionOption::new("A", "The first"), QuestionOption::new("B", "")]);
         assert!(questions[0].multi);
     }
 }

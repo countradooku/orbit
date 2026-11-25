@@ -400,7 +400,7 @@ impl Sidebar {
                         .when(selected, |el| el.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
                         .when(!selected, |el| el.hover(|s| s.bg(theme.sidebar_accent.opacity(0.55))))
                         .on_click(cx.listener(move |this, _, window, cx| this.navigate(Route::Thread(id), window, cx)))
-                        .context_menu(move |menu, _, _| thread_menu::build(menu, &app, &menu_thread, project_path.clone()));
+                        .context_menu(move |menu, _, cx| thread_menu::build(menu, &app, &menu_thread, project_path.clone(), cx));
                     let row = if compact {
                         base.text_sm()
                             .when(!selected, |el| el.text_color(theme.muted_foreground))

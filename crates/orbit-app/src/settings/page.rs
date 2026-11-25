@@ -136,6 +136,19 @@ fn appearance(cx: &App) -> SettingPage {
             .description("Width of the conversation, the inbox and the start page.")
             .keywords(["column", "reading width"]),
         ),
+        SettingGroup::new().title("Time").item(
+            SettingItem::new(
+                "Clock",
+                choice(
+                    vec![(ClockFormat::H24, "24-hour (14:05)".into()), (ClockFormat::H12, "12-hour (2:05 PM)".into())],
+                    |s| s.appearance.clock,
+                    |s, v| s.appearance.clock = v,
+                    ClockFormat::H24,
+                ),
+            )
+            .description("How times of day are written in the timeline, the inbox and usage-limit resets.")
+            .keywords(["time format", "am pm", "12 hour", "24 hour"]),
+        ),
         SettingGroup::new().title("Motion").item(
             SettingItem::new(
                 "Reduce motion",
@@ -315,6 +328,18 @@ fn workspace(cx: &App) -> SettingPage {
                 switch(|s| s.review.collapse_files, |s, v| s.review.collapse_files = v, false),
             )
             .description("Start with every file folded to its header, to scan a large change first."),
+            SettingItem::new("Wrap long lines", switch(|s| s.review.wrap, |s, v| s.review.wrap = v, false))
+                .description("Fold lines wider than the diff instead of scrolling sideways.")
+                .keywords(["soft wrap", "word wrap"]),
+            SettingItem::new(
+                "Colour-blind palette",
+                switch(|s| s.review.colorblind, |s, v| s.review.colorblind = v, false),
+            )
+            .description("Show additions in blue and removals in orange instead of green and red.")
+            .keywords(["color blind", "accessibility", "deuteranopia"]),
+            SettingItem::new("Hide test files", switch(|s| s.review.hide_tests, |s, v| s.review.hide_tests = v, false))
+                .description("Leave tests, specs and fixtures out of the file list.")
+                .keywords(["tests", "filter"]),
         ]),
         SettingGroup::new().title("Git").items([
             SettingItem::new(

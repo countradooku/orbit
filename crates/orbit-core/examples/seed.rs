@@ -86,8 +86,23 @@ fn main() {
     });
     // The waiting thread asks two questions (one multi-select) and an approval.
     let questions = [
-        ("Which browsers should the checkout tests cover?", vec!["Chromium", "Firefox", "WebKit"], true),
-        ("Run them against the staging API or a local mock?", vec!["Staging API", "Local mock server"], false),
+        (
+            "Which browsers should the checkout tests cover?",
+            vec![
+                ("Chromium", "Chrome and Edge; most of the traffic"),
+                ("Firefox", "Catches Gecko-only layout bugs"),
+                ("WebKit", "Safari; slowest to run on Windows"),
+            ],
+            true,
+        ),
+        (
+            "Run them against the staging API or a local mock?",
+            vec![
+                ("Staging API", "Real data; needs the VPN and can be flaky"),
+                ("Local mock server", "Fast and deterministic (Recommended)"),
+            ],
+            false,
+        ),
     ];
     let question_items: Vec<(ItemId, AgentRequest)> = questions
         .iter()
@@ -100,7 +115,7 @@ fn main() {
                     provider_ref: format!("q#{i}"),
                     kind: RequestKind::Question {
                         question: (*q).into(),
-                        options: options.iter().map(|o| (*o).to_owned()).collect(),
+                        options: options.iter().map(|(label, description)| QuestionOption::new(*label, *description)).collect(),
                         multi_select: *multi,
                     },
                     resolution: None,

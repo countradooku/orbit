@@ -107,11 +107,14 @@ pub fn confirm_delete(app: Entity<AppState>, thread: &Thread, window: &mut Windo
     });
 }
 
+/// What a menu entry does when chosen.
+type MenuAction = Box<dyn Fn(&mut Window, &mut App)>;
+
 /// Builds the thread's menu into `menu`.
-pub fn build(menu: PopupMenu, app: &Entity<AppState>, thread: &Thread, project_path: Option<String>) -> PopupMenu {
+pub fn build(menu: PopupMenu, app: &Entity<AppState>, thread: &Thread, project_path: Option<String>, cx: &App) -> PopupMenu {
     let id = thread.id;
     let t = thread.clone();
-    let item = |label: &'static str, icon: Lucide, f: Box<dyn Fn(&mut Window, &mut App)>| {
+    let item = |label: &'static str, icon: Lucide, f: MenuAction| {
         PopupMenuItem::new(label).icon(icon).on_click(move |_, window, cx| f(window, cx))
     };
     let a = app.clone();
@@ -190,5 +193,7 @@ pub fn build(menu: PopupMenu, app: &Entity<AppState>, thread: &Thread, project_p
         Box::new(move |window, cx| patch(&a, id, ThreadPatch { archived: Some(!archived), ..Default::default() }, window, cx)),
     ));
     let a = app.clone();
-    menu.item(item("Delete…", Lucide::Trash, Box::new(move |window, cx| confirm_delete(a.clone(), &t, window, cx))))
+    // The ellipsis promises a confirmation; without one, Delete acts at once.
+    let label = if crate::settings::get(cx).general.confirm_delete { "Delete…" } else { "Delete" };
+    menu.item(item(label, Lucide::Trash, Box::new(move |window, cx| confirm_delete(a.clone(), &t, window, cx))))
 }

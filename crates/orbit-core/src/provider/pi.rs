@@ -504,7 +504,7 @@ impl Session {
             "confirm" => RequestKind::Tool { name: if title.is_empty() { "Pi asks".into() } else { title.clone() }, input: body },
             "select" => RequestKind::Question {
                 question: text,
-                options: array(message, "options").filter_map(|o| o.as_str().map(str::to_owned).or_else(|| str_of(o, "label"))).collect(),
+                options: array(message, "options").filter_map(|o| o.as_str().map(str::to_owned).or_else(|| str_of(o, "label"))).map(QuestionOption::from).collect(),
                 multi_select: false,
             },
             _ => RequestKind::Question { question: text, options: Vec::new(), multi_select: false },

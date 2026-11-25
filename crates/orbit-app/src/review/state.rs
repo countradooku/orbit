@@ -8,9 +8,10 @@ use orbit_proto::ThreadId;
 
 use super::model::Comment;
 
-/// How the review sheet shows diffs, beyond the saved settings (side by
-/// side and collapsed files live in Settings → Review). Kept for the
-/// session; the next sheet starts the way the last one was left.
+/// How the review sheet shows diffs. Wrap, the colour-blind palette and
+/// hidden test files are saved settings (Settings › Workspace › Review, with
+/// side by side and collapsed files); the file tree's visibility is kept for
+/// the session. The next sheet starts the way the last one was left.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewPrefs {
     pub wrap: bool,
@@ -20,13 +21,11 @@ pub struct ReviewPrefs {
     pub hide_tests: bool,
 }
 
-impl Default for ReviewPrefs {
-    fn default() -> Self {
-        Self { wrap: false, colorblind: false, tree: true, hide_tests: false }
-    }
-}
+/// Whether the file tree is hidden, for the session.
+#[derive(Default)]
+struct TreeHidden(bool);
 
-impl Global for ReviewPrefs {}
+impl Global for TreeHidden {}
 
 /// What the user has done in review, per thread, for this session.
 #[derive(Default)]
@@ -63,9 +62,22 @@ impl ReviewMarks {
 }
 
 pub fn prefs(cx: &App) -> ReviewPrefs {
-    cx.try_global::<ReviewPrefs>().cloned().unwrap_or_default()
+    let saved = &crate::settings::get(cx).review;
+    ReviewPrefs {
+        wrap: saved.wrap,
+        colorblind: saved.colorblind,
+        tree: !cx.try_global::<TreeHidden>().is_some_and(|h| h.0),
+        hide_tests: saved.hide_tests,
+    }
 }
 
 pub fn update_prefs(cx: &mut App, f: impl FnOnce(&mut ReviewPrefs)) {
-    f(cx.default_global::<ReviewPrefs>());
+    let mut prefs = prefs(cx);
+    f(&mut prefs);
+    cx.set_global(TreeHidden(!prefs.tree));
+    crate::settings::update(cx, |s| {
+        s.review.wrap = prefs.wrap;
+        s.review.colorblind = prefs.colorblind;
+        s.review.hide_tests = prefs.hide_tests;
+    });
 }

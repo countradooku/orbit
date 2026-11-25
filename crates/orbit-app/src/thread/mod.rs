@@ -102,8 +102,9 @@ pub struct ThreadView {
     questions: Option<Questions>,
     focus: FocusHandle,
     loaded: bool,
-    /// Settings that change row heights; rows are re-measured when they do.
-    layout: (ChatWidth, u16, u16),
+    /// Settings that change rows (heights, clock times); rows are
+    /// re-measured when they do.
+    layout: (ChatWidth, u16, u16, ClockFormat),
     terminal: Option<Entity<TerminalPanel>>,
     split: Entity<ResizableState>,
     /// When the running turn started (as seen here), for the elapsed time.
@@ -190,9 +191,9 @@ impl ThreadView {
         view
     }
 
-    fn layout_key(cx: &App) -> (ChatWidth, u16, u16) {
+    fn layout_key(cx: &App) -> (ChatWidth, u16, u16, ClockFormat) {
         let a = &crate::settings::get(cx).appearance;
-        (a.chat_width, a.ui_scale, a.code_font_size)
+        (a.chat_width, a.ui_scale, a.code_font_size, a.clock)
     }
 
     pub fn id(&self) -> ThreadId {
@@ -955,9 +956,9 @@ impl ThreadView {
             .child({
                 let (app, menu_thread) = (self.app.clone(), thread.clone());
                 let path = project.map(|p| p.path.clone());
-                Button::new("thread-menu").ghost().small().icon(IconName::Ellipsis).dropdown_menu(move |menu, _, _| {
+                Button::new("thread-menu").ghost().small().icon(IconName::Ellipsis).dropdown_menu(move |menu, _, cx| {
                     let view = view.clone();
-                    crate::thread_menu::build(menu, &app, &menu_thread, path.clone()).separator().item(
+                    crate::thread_menu::build(menu, &app, &menu_thread, path.clone(), cx).separator().item(
                         PopupMenuItem::new("Copy thread as Markdown").on_click(move |_, window, cx| {
                             let _ = view.update(cx, |this, cx| this.copy_markdown(window, cx));
                         }),

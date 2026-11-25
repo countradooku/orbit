@@ -736,7 +736,9 @@ impl Session {
         let Some(id) = str_of(props, "id") else { return };
         let Some(first) = array(props, "questions").next() else { return };
         let question = [str_of(first, "header"), str_of(first, "question")].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
-        let options = array(first, "options").filter_map(|o| str_of(o, "label")).collect();
+        let options = array(first, "options")
+            .filter_map(|o| Some(QuestionOption::new(str_of(o, "label")?, str_of(o, "description").unwrap_or_default())))
+            .collect();
         let multi_select = first.get("multiple").and_then(|m| m.as_bool()).unwrap_or(false);
         let provider_ref = format!("oc-{id}");
         self.asks.insert(provider_ref.clone(), (id, true));
