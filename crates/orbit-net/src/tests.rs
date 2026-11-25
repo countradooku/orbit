@@ -1,0 +1,122 @@
+//! Loopback tests: a real orbitd server and remote client over TCP.
+
+use std::time::{Duration, Instant};
+
+use crossfire::mpsc;
+use orbit_core::provider::SessionHandle;
+use orbit_core::{EngineHandle, EngineOptions};
+use orbit_proto::*;
+
+use crate::{Backend, ConnectionStatus, RemoteClient, Update};
+
+fn engine(dir: &std::path::Path) -> EngineHandle {
+    EngineHandle::start_with(
+        EngineOptions { data_dir: dir.to_owned(), probe_providers: false },
+        Box::new(|_, _, _| {
+            let (input, _rx) = mpsc::bounded_blocking(1);
+            SessionHandle { input }
+        }),
+    )
+    .unwrap()
+}
+
+/// Starts a server on an ephemeral port and returns its URL.
+fn server(engine: EngineHandle, token: &str) -> String {
+    let token = token.to_owned();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            tx.send(listener.local_addr().unwrap()).unwrap();
+            crate::server::serve_on(engine, listener, token).await.unwrap();
+        });
+    });
+    format!("ws://{}/", rx.recv().unwrap())
+}
+
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+}
+
+/// Collects updates until `done` holds.
+fn collect(feed: &mut crate::Feed, done: impl Fn(&[Update]) -> bool) -> Vec<Update> {
+    block_on(async {
+        let mut all = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done(&all) {
+            assert!(Instant::now() < deadline, "timed out; got {all:?}");
+            match tokio::time::timeout(Duration::from_secs(5), feed.next_batch()).await {
+                Ok(Some(batch)) => all.extend(batch),
+                _ => panic!("feed ended; got {all:?}"),
+            }
+        }
+        all
+    })
+}
+
+fn has_thread(updates: &[Update], title: &str) -> bool {
+    updates.iter().any(|u| match u {
+        Update::Events(envs) => envs.iter().any(|e| matches!(&e.event, Event::ThreadUpserted(t) if t.title == title)),
+        Update::Reset(s) => s.threads.iter().any(|t| t.title == title),
+        _ => false,
+    })
+}
+
+#[test]
+fn remote_client_sees_snapshot_events_and_replies() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = server(engine(dir.path()), "secret");
+    let backend = Backend::Remote(RemoteClient::connect(url, "secret".into()).unwrap());
+    let mut feed = backend.feed();
+    collect(&mut feed, |u| u.iter().any(|u| matches!(u, Update::Status(ConnectionStatus::Connected))));
+
+    let reply = block_on(backend.call(Command::CreateThread { project: None, config: ThreadConfig::default(), worktree: false }))
+        .unwrap()
+        .unwrap();
+    let Reply::Thread(id) = reply else { panic!("{reply:?}") };
+    block_on(backend.call(Command::UpdateThread {
+        id,
+        patch: ThreadPatch { title: Some("Over the wire".into()), ..Default::default() },
+    }))
+    .unwrap()
+    .unwrap();
+    collect(&mut feed, |u| has_thread(u, "Over the wire"));
+}
+
+#[test]
+fn wrong_token_is_refused_with_a_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = server(engine(dir.path()), "secret");
+    let backend = Backend::Remote(RemoteClient::connect(url, "guess".into()).unwrap());
+    let mut feed = backend.feed();
+    let updates = collect(&mut feed, |u| {
+        u.iter().any(|u| matches!(u, Update::Status(ConnectionStatus::Disconnected { .. })))
+    });
+    assert!(updates.iter().any(|u| matches!(
+        u,
+        Update::Status(ConnectionStatus::Disconnected { reason }) if reason == "The access token is wrong."
+    )));
+    assert!(!updates.iter().any(|u| matches!(u, Update::Reset(_))), "no data before authentication");
+}
+
+#[test]
+fn local_backend_feed_starts_with_a_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::Local(engine(dir.path()));
+    let mut feed = backend.feed();
+    collect(&mut feed, |u| u.iter().any(|u| matches!(u, Update::Reset(_))));
+    let Reply::Thread(id) = block_on(backend.call(Command::CreateThread {
+        project: None,
+        config: ThreadConfig::default(),
+        worktree: false,
+    }))
+    .unwrap()
+    .unwrap() else {
+        panic!()
+    };
+    block_on(backend.call(Command::UpdateThread { id, patch: ThreadPatch { title: Some("Local".into()), ..Default::default() } }))
+        .unwrap()
+        .unwrap();
+    collect(&mut feed, |u| has_thread(u, "Local"));
+}

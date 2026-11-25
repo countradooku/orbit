@@ -1,0 +1,19 @@
+[package]
+name = "orbit-net"
+description = "Orbit protocol over WebSockets (sockudo-ws): the orbitd server, the remote client, and a backend-agnostic feed for UIs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+orbit-proto = { workspace = true }
+orbit-core = { workspace = true }
+crossfire = { workspace = true }
+tokio = { workspace = true }
+sockudo-ws = { workspace = true }
+log = { workspace = true }
+bytes = "1"
+
+[dev-dependencies]
+tempfile = "3"

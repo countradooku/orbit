@@ -19,7 +19,9 @@ pub enum ClientMsg {
 /// Engine → client.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub enum ServerMsg {
-    Welcome { version: u16, snapshot: Snapshot },
+    /// Reply to `Hello`. `snapshot` is `None` when the client's `since` was
+    /// replayable; the missed events follow in `Events`.
+    Welcome { version: u16, snapshot: Option<Snapshot> },
     /// Events in order. Ephemeral events have `seq == 0`.
     Events(Vec<Envelope>),
     Reply { id: u32, result: Result<Reply, String> },
