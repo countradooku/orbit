@@ -6043,6 +6043,7 @@ dependencies = [
  "blake3",
  "crossfire",
  "dirs 6.0.0",
+ "ignore",
  "log",
  "memchr",
  "notify 9.0.0",

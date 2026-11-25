@@ -23,6 +23,7 @@ similar = { workspace = true }
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 parking_lot = { workspace = true }
+ignore = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

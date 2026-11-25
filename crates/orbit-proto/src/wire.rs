@@ -41,6 +41,8 @@ pub struct Snapshot {
     pub threads: Vec<Thread>,
     pub providers: Vec<ProviderInfo>,
     pub defaults: ThreadConfig,
+    /// Unsent messages, per composer.
+    pub drafts: Vec<(DraftTarget, Draft)>,
     /// Boxed: the snapshot travels inside small enums.
     pub settings: Box<Settings>,
 }
@@ -80,6 +82,8 @@ pub enum Event {
     /// Ephemeral.
     TimelineMark { thread: ThreadId, mark: u64 },
     TerminalExited { term: TermId, code: Option<i32> },
+    /// A composer's unsent message changed; an empty draft means none.
+    DraftSaved { target: DraftTarget, draft: Draft },
 }
 
 impl Event {
@@ -206,6 +210,20 @@ pub enum Command {
 
     RefreshProviders,
     SetDefaults { config: ThreadConfig },
+
+    /// Keep a composer's unsent message; an empty draft removes it.
+    SaveDraft { target: DraftTarget, draft: Draft },
+    /// Fuzzy-find files and folders in a thread's workspace (or a project's
+    /// folder when `thread` is `None`); returns [`Reply::Files`].
+    SearchFiles { thread: Option<ThreadId>, project: Option<ProjectId>, query: String, limit: u32 },
+    /// A readable digest of a thread (its messages and replies) stored as a
+    /// blob, so another thread's agent can read it; returns [`Reply::Blob`].
+    ExportThread { thread: ThreadId },
+    /// Move a queued message to position `to` of the queue (0 = next).
+    MoveQueued { thread: ThreadId, item: ItemId, to: u32 },
+    /// Send a queued message now: into the running turn, or as the next
+    /// turn when nothing runs.
+    SteerQueued { thread: ThreadId, item: ItemId },
     /// Replace the settings. The engine sanitizes them, persists them,
     /// applies what affects it (provider binaries and environment, git and
     /// worktree locations) and broadcasts [`Event::SettingsChanged`].
@@ -248,6 +266,7 @@ pub enum Reply {
     Terminal(TermId),
     PullRequest { url: String },
     Merge(MergeInfo),
+    Files(Vec<FileMatch>),
     Text(String),
 }
 

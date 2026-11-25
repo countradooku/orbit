@@ -125,6 +125,7 @@ pub struct Orchestrator {
     pub(crate) git: Git,
     pub(crate) terminals: Terminals,
     pub(crate) review: super::review::ReviewState,
+    pub(crate) files: super::files::FileIndex,
     /// How one-shot text is generated.
     pub(crate) generator: super::textgen::Generator,
     pub(crate) seeded_titles: super::textgen::SeededTitles,
@@ -172,6 +173,7 @@ impl Orchestrator {
             git,
             terminals: Terminals::new(terminal_output, terminal_exits),
             review: Default::default(),
+            files: Default::default(),
             generator: super::textgen::Generator::Native,
             seeded_titles: Default::default(),
         }
@@ -593,6 +595,10 @@ impl Orchestrator {
     pub fn handle(&mut self, command: Command) -> Outcome {
         match command {
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
+            Command::SearchFiles { thread, project, query, limit } => {
+                Outcome::Deferred(self.search_files(thread, project, query, limit))
+            }
+            Command::ExportThread { thread } => Outcome::Deferred(self.export_thread(thread)),
             Command::ReadBlob { hash } => Outcome::Deferred(self.read_blob(hash)),
             Command::GenerateText { thread, task, input } => Outcome::Deferred(self.generate_text(thread, task, input)),
             command @ (Command::Diff { .. }
@@ -667,6 +673,13 @@ impl Orchestrator {
                 self.emit(Event::DefaultsChanged(config));
                 Ok(Reply::Done)
             }
+            Command::SaveDraft { target, draft } => self.save_draft(target, draft),
+            Command::MoveQueued { thread, item, to } => self.move_queued(thread, item, to),
+            Command::SteerQueued { thread, item } => self.steer_queued(thread, item),
+            Command::SearchFiles { thread, project, query, limit } => {
+                futures_block_on(self.search_files(thread, project, query, limit))
+            }
+            Command::ExportThread { thread } => futures_block_on(self.export_thread(thread)),
             Command::UpdateSettings { settings } => self.update_settings(settings),
             Command::NewSession { thread } => self.new_session(thread),
             // Needs the engine's runtime free; only `handle` runs it.
@@ -951,6 +964,7 @@ impl Orchestrator {
         if text.trim().is_empty() && attachments.is_empty() {
             return Err("Write a message first.".into());
         }
+        validate_message(&text, &attachments)?;
         if thread.archived {
             return Err("This thread is archived. Unarchive it to continue.".into());
         }

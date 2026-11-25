@@ -134,7 +134,7 @@ impl EventEmitter<ThreadViewEvent> for ThreadView {}
 impl ThreadView {
     pub fn new(id: ThreadId, app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let config = app.read(cx).state().threads.get(&id).map(|t| t.config.clone()).unwrap_or_default();
-        let composer = cx.new(|cx| Composer::new(app.clone(), config, window, cx));
+        let composer = cx.new(|cx| Composer::for_thread(id, app.clone(), config, window, cx));
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         let minimap = cx.new(|cx| Minimap::new(scroller.clone(), cx));
         let mut subscriptions = vec![
@@ -966,53 +966,6 @@ impl ThreadView {
             })
     }
 
-    fn render_queue(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let timeline = self.app.read(cx).state().timeline(self.id)?;
-        let queued: Vec<(ItemId, String)> = timeline
-            .items()
-            .iter()
-            .filter(|i| i.status == ItemStatus::Queued)
-            .filter_map(|i| match &i.body {
-                ItemBody::User(m) => Some((i.id, m.text.clone())),
-                _ => None,
-            })
-            .collect();
-        if queued.is_empty() {
-            return None;
-        }
-        let theme = cx.theme().clone();
-        let mut list = v_flex().gap_1().mb_2();
-        for (item, text) in queued {
-            let app = self.app.clone();
-            let thread = self.id;
-            list = list.child(
-                h_flex()
-                    .gap_2()
-                    .px_3()
-                    .py_1p5()
-                    .rounded(theme.radius)
-                    .bg(theme.muted)
-                    .text_sm()
-                    .child(Icon::new(Lucide::Clock).xsmall().text_color(theme.muted_foreground))
-                    .child(div().text_xs().text_color(theme.muted_foreground).child("Queued"))
-                    .child(div().flex_1().min_w_0().truncate().child(text))
-                    .child(
-                        Button::new(("unqueue", item.0))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Close)
-                            .tooltip("Remove from queue")
-                            .on_click(move |_, window, cx| {
-                                app.update(cx, |app, cx| {
-                                    app.run(Command::EditQueued { thread, item, text: String::new() }, window, cx)
-                                })
-                            }),
-                    ),
-            );
-        }
-        Some(list)
-    }
-
     fn render_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let status = self.thread(cx)?.status.clone();
         let banner = banners::banner(&status, self.stop_requested.map(|at| at.elapsed()))?;
@@ -1096,7 +1049,7 @@ impl Render for ThreadView {
                             .max_w(column)
                             .children(self.questions.as_ref().map(|q| q.render(cx)))
                             .children(self.render_banner(cx))
-                            .children(self.render_queue(cx))
+                            .child(crate::composer::QueuePanel::new(self.id, &self.composer))
                             .child(self.composer.clone()),
                     ),
             );
