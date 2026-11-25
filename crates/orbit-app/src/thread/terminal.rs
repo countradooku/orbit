@@ -41,6 +41,8 @@ pub struct TerminalPanel {
     exited: Option<Option<i32>>,
     title: Option<String>,
     error: Option<String>,
+    /// Draws its own header; off inside the dock's tab bar.
+    chrome: bool,
     urls: super::browser::OutputScanner,
     _subscriptions: Vec<Subscription>,
 }
@@ -62,6 +64,7 @@ impl TerminalPanel {
             exited: None,
             title: None,
             error: None,
+            chrome: true,
             urls: Default::default(),
             _subscriptions: Vec::new(),
         };
@@ -161,7 +164,21 @@ impl TerminalPanel {
         cx.emit(TerminalPanelEvent::AddToComposer { text, cwd: self.cwd.clone() });
     }
 
-    fn restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Whether the panel draws its own header (the dock draws one for it
+    /// when it shows run targets beside the shell).
+    pub(crate) fn set_chrome(&mut self, chrome: bool, cx: &mut Context<Self>) {
+        if self.chrome != chrome {
+            self.chrome = chrome;
+            cx.notify();
+        }
+    }
+
+    /// The shell has ended or could not start.
+    pub(crate) fn ended(&self) -> bool {
+        self.exited.is_some() || self.error.is_some()
+    }
+
+    pub(crate) fn restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(term) = self.term.take() {
             self.app.update(cx, |app, _| app.send(Command::CloseTerminal { term }));
         }
@@ -193,7 +210,7 @@ impl Render for TerminalPanel {
             .size_full()
             .bg(theme.background)
             .on_action(cx.listener(Self::add_selection))
-            .child(
+            .when(self.chrome, |el| el.child(
                 h_flex()
                     .h_8()
                     .flex_none()
@@ -230,7 +247,7 @@ impl Render for TerminalPanel {
                             .tooltip("Close terminal (Ctrl+`)")
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalPanelEvent::Close))),
                     ),
-            )
+            ))
             .child(match &self.error {
                 Some(error) => div()
                     .flex_1()

@@ -54,7 +54,8 @@ impl HomeView {
             cx.observe(&app, |this, app, cx| {
                 // Adopt the last used settings until the user changes them here.
                 if !this.config_touched {
-                    let defaults = new_thread_config(&app, cx);
+                    let project = this.project(cx);
+                    let defaults = project_config(&app, project, cx);
                     this.composer.update(cx, |c, cx| c.set_config(defaults, cx));
                 }
                 this.sync_context(cx);
@@ -82,15 +83,21 @@ impl HomeView {
 
     pub fn select_project(&mut self, project: Option<ProjectId>, cx: &mut Context<Self>) {
         self.picked = Some(project);
+        // A project's own agent, unless the user picked one here.
+        if !self.config_touched {
+            let config = project_config(&self.app, project, cx);
+            self.composer.update(cx, |c, cx| c.set_config(config, cx));
+        }
         self.sync_context(cx);
         cx.notify();
     }
 
     fn sync_context(&mut self, cx: &mut Context<Self>) {
-        if !self.worktree_touched {
-            self.worktree = crate::settings::get(cx).workspace.worktree_by_default;
-        }
         let project = self.project(cx);
+        if !self.worktree_touched {
+            let own = project.and_then(|p| self.app.read(cx).state().project_configs.get(&p).and_then(|c| c.worktree_by_default));
+            self.worktree = own.unwrap_or(crate::settings::get(cx).workspace.worktree_by_default);
+        }
         let state = self.app.read(cx).state();
         let project = project.and_then(|id| state.projects.iter().find(|p| p.id == id));
         let context = Some(project.map(|_| "Current checkout".to_owned()).unwrap_or_else(|| "Scratch folder".into()));
@@ -186,6 +193,19 @@ impl HomeView {
     }
 }
 
+/// The project's own agent for new threads (Settings › Projects), else the
+/// last used.
+fn project_config(app: &Entity<AppState>, project: Option<ProjectId>, cx: &App) -> ThreadConfig {
+    let own = project.and_then(|p| app.read(cx).state().project_configs.get(&p).and_then(|c| c.default_config.clone()));
+    match own {
+        Some(mut config) => {
+            config.access = config.access.for_new_thread();
+            config
+        }
+        None => new_thread_config(app, cx),
+    }
+}
+
 /// The last used model and options, with the access level from settings: a
 /// new thread starts at the chosen default, never at full access.
 fn new_thread_config(app: &Entity<AppState>, cx: &App) -> ThreadConfig {
@@ -203,7 +223,7 @@ impl Render for HomeView {
             .and_then(|id| state.projects.iter().find(|p| p.id == id))
             .map(|p| p.name.clone())
             .unwrap_or_else(|| "No project".into());
-        let projects: Vec<(ProjectId, String)> = state.projects.iter().map(|p| (p.id, p.name.clone())).collect();
+        let projects: Vec<(ProjectId, String)> = state.active_projects().map(|p| (p.id, p.name.clone())).collect();
         let mut recent: Vec<&Thread> = state.threads.values().filter(|t| !t.archived).collect();
         recent.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
         let recent: Vec<Thread> = recent.into_iter().take(5).cloned().collect();

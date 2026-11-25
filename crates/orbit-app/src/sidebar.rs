@@ -381,8 +381,9 @@ impl Sidebar {
                 .collect();
             entries.extend(hits.iter().map(|t| Entry::Thread { id: t.id, compact: false }));
         } else if self.by_project {
+            // Archived projects stay out of the sidebar (Settings › Projects).
             let mut groups: Vec<(Option<ProjectId>, String)> =
-                state.projects.iter().map(|p| (Some(p.id), p.name.clone())).collect();
+                state.active_projects().map(|p| (Some(p.id), p.name.clone())).collect();
             groups.push((None, "No project".into()));
             for (project, name) in groups {
                 let in_group: Vec<&&Thread> =
@@ -819,7 +820,8 @@ impl Sidebar {
                 Entry::Project { id, name, count, open } => {
                     let new_in = id;
                     let seed = id.map(|p| p.0).unwrap_or_default();
-                    h_flex()
+                    let menu_project = id.and_then(|p| state.projects.iter().find(|x| x.id == p)).cloned();
+                    let row = h_flex()
                         .id(("project", seed))
                         .h_8()
                         .px_2()
@@ -832,8 +834,19 @@ impl Sidebar {
                         .hover(|s| s.bg(theme.sidebar_accent.opacity(0.55)))
                         .on_click(cx.listener(move |this, _, _, cx| this.toggle_project(id, cx)))
                         .child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall().text_color(theme.muted_foreground))
-                        .child(ui::Monogram::new(name.clone(), seed))
+                        .child(match id.and_then(|p| state.projects.iter().find(|x| x.id == p)) {
+                            Some(project) => crate::project::mark(project, &state.project_config(project.id)),
+                            None => ui::Monogram::new(name.clone(), seed).into_any_element(),
+                        })
                         .child(div().flex_1().min_w_0().truncate().child(name))
+                        .when_some(id, |el, project| {
+                            el.child(
+                                div().flex_shrink(1.).min_w_0().max_w(rems(7.)).child(
+                                    crate::project::GitBadge::new(("project-git", project.0), state.git.get(&WorkspaceRoot::Project(project)))
+                                        .compact(),
+                                ),
+                            )
+                        })
                         .child(self.activity_strip(id, cx))
                         // Open, the rows below are the count; closed, it says what is inside.
                         .when(!open && count > 0, |el| el.child(div().text_color(theme.muted_foreground).child(count.to_string())))
@@ -849,7 +862,13 @@ impl Sidebar {
                                     }),
                             )
                         })
-                        .into_any_element()
+                        ;
+                    match menu_project {
+                        Some(project) => row
+                            .context_menu(move |menu, _, cx| crate::project::project_menu(menu, &project, cx))
+                            .into_any_element(),
+                        None => row.into_any_element(),
+                    }
                 }
                 Entry::Thread { id, compact } => {
                     let Some(thread) = state.threads.get(&id) else {
