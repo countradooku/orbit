@@ -1,2 +1,11 @@
+# One line ending everywhere: agents and editors on Windows must not flip
+# whole files to CRLF (that turns every merge into a whole-file conflict).
+* text=auto eol=lf
+
 # Shell scripts run on macOS and Linux runners: never check them out with CRLF.
 *.sh text eol=lf
+
+*.png binary
+*.ico binary
+*.icns binary
+*.bin binary
