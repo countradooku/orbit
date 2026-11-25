@@ -46,6 +46,10 @@ pub struct Composer {
     /// Home only: whether the next thread gets its own worktree. `None`
     /// hides the choice (an existing thread's workspace is fixed).
     worktree_choice: Option<bool>,
+    /// Slash-command completion: the selected suggestion and whether the
+    /// user dismissed the list for the current word.
+    slash_ix: usize,
+    slash_dismissed: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -59,10 +63,22 @@ impl Composer {
                 .submit_on_enter(true)
                 .placeholder("Describe a change, a fix or a question — / for commands")
         });
-        let input_sub = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { shift: false, secondary } = event {
-                this.submit(*secondary, window, cx);
+        let input_sub = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { shift: false, secondary } => {
+                if !this.slash_matches(cx).is_empty() {
+                    this.complete_slash(window, cx);
+                } else {
+                    this.submit(*secondary, window, cx);
+                }
             }
+            InputEvent::Change => {
+                this.slash_ix = 0;
+                if !this.input.read(cx).value().starts_with('/') {
+                    this.slash_dismissed = false;
+                }
+                cx.notify();
+            }
+            _ => {}
         });
         // Providers report their catalogs asynchronously; re-render when they do.
         let app_sub = cx.observe(&app, |_, _, cx| cx.notify());
@@ -77,6 +93,8 @@ impl Composer {
             context: None,
             branch: None,
             worktree_choice: None,
+            slash_ix: 0,
+            slash_dismissed: false,
             _subscriptions: vec![input_sub, app_sub],
         }
     }
@@ -132,6 +150,113 @@ impl Composer {
     pub fn set_text(composer: &Entity<Self>, text: &str, window: &mut Window, cx: &mut App) {
         let input = composer.read(cx).input.clone();
         input.update(cx, |input, cx| input.set_value(text, window, cx));
+    }
+
+    /// The provider's slash commands matching the word being typed, while
+    /// the text is a lone `/word`.
+    fn slash_matches(&self, cx: &App) -> Vec<SlashCommand> {
+        if self.slash_dismissed {
+            return Vec::new();
+        }
+        let text = self.input.read(cx).value();
+        let Some(word) = text.strip_prefix('/') else { return Vec::new() };
+        if word.contains(char::is_whitespace) {
+            return Vec::new();
+        }
+        let word = word.to_lowercase();
+        let Some(provider) = self.app.read(cx).state().provider(self.config.provider) else { return Vec::new() };
+        let mut hits: Vec<SlashCommand> = provider
+            .slash_commands
+            .iter()
+            // Names starting with "__" are the runtime's internal commands.
+            .filter(|c| !c.name.starts_with("__") && c.name.to_lowercase().contains(&word))
+            .cloned()
+            .collect();
+        // Prefix matches first, then alphabetical.
+        hits.sort_by_key(|c| (!c.name.to_lowercase().starts_with(&word), c.name.clone()));
+        hits.truncate(8);
+        hits
+    }
+
+    fn complete_slash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let matches = self.slash_matches(cx);
+        let Some(command) = matches.get(self.slash_ix.min(matches.len().saturating_sub(1))) else { return };
+        let text = format!("/{} ", command.name);
+        self.input.update(cx, |input, cx| input.set_value(text, window, cx));
+        self.slash_dismissed = true;
+        cx.notify();
+    }
+
+    fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.slash_matches(cx).len();
+        if count == 0 {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "down" => self.slash_ix = (self.slash_ix + 1) % count,
+            "up" => self.slash_ix = (self.slash_ix + count - 1) % count,
+            "tab" => self.complete_slash(window, cx),
+            "escape" => self.slash_dismissed = true,
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn render_slash_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let matches = self.slash_matches(cx);
+        if matches.is_empty() {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        let selected = self.slash_ix.min(matches.len() - 1);
+        Some(
+            v_flex()
+                .mb_1()
+                .p_1()
+                .rounded(theme.radius_lg)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover)
+                .shadow_md()
+                .children(matches.into_iter().enumerate().map(|(ix, command)| {
+                    let name = command.name.clone();
+                    h_flex()
+                        .id(SharedString::from(format!("slash-{name}")))
+                        .px_2()
+                        .py_1()
+                        .gap_2()
+                        .rounded(theme.radius)
+                        .text_sm()
+                        .cursor_default()
+                        .when(ix == selected, |el| el.bg(theme.accent))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.slash_ix = ix;
+                            this.complete_slash(window, cx);
+                        }))
+                        .child(div().font_family(theme.mono_font_family.clone()).child(format!("/{name}")))
+                        .when(!command.argument_hint.is_empty(), |el| {
+                            el.child(div().text_xs().text_color(theme.muted_foreground).child(command.argument_hint.clone()))
+                        })
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(command.description.clone()),
+                        )
+                }))
+                .child(
+                    div()
+                        .px_2()
+                        .pt_1()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("↑↓ to choose · Tab or Enter to complete · Esc to dismiss"),
+                ),
+        )
     }
 
     fn submit(&mut self, steer_key: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -600,6 +725,8 @@ impl Render for Composer {
         };
         v_flex()
             .w_full()
+            .capture_key_down(cx.listener(Self::on_key))
+            .children(self.render_slash_menu(cx))
             .child(
                 v_flex()
                     .w_full()
