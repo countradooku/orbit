@@ -64,6 +64,37 @@ pub enum ComposerEvent {
     WorktreeChosen(bool),
 }
 
+gpui_kit::actions!(
+    composer,
+    [
+        /// Paste the clipboard's text inline, however long.
+        PasteAsText,
+        /// Edit the latest queued message in place.
+        EditLastQueued,
+        /// Step the model's reasoning effort.
+        CycleEffort,
+        /// Open the agent and model picker.
+        OpenModelPicker,
+    ]
+);
+
+/// The composer's own keys, bound once.
+fn bind_keys(cx: &mut App) {
+    struct Bound;
+    impl Global for Bound {}
+    if cx.has_global::<Bound>() {
+        return;
+    }
+    cx.set_global(Bound);
+    use crate::actions::platform;
+    cx.bind_keys([
+        KeyBinding::new(platform("cmd-shift-v", "ctrl-shift-v"), PasteAsText, Some("Composer")),
+        KeyBinding::new("alt-up", EditLastQueued, Some("Composer")),
+        KeyBinding::new(platform("cmd-shift-e", "ctrl-shift-e"), CycleEffort, Some("Composer")),
+        KeyBinding::new(platform("cmd-shift-m", "ctrl-shift-m"), OpenModelPicker, Some("Composer")),
+    ]);
+}
+
 /// What the send key and the alternate key do while a turn runs, as
 /// (send, alternate) verbs.
 fn follow_up_verbs(cx: &App) -> (&'static str, &'static str) {
@@ -155,6 +186,7 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        bind_keys(cx);
         let enter_sends = settings::get(cx).composer.submit == SubmitKey::Enter;
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -620,26 +652,24 @@ impl Composer {
         }
     }
 
-    /// Keys the text field does not bind.
-    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.input_focused(window, cx) {
-            return;
+    fn on_paste_as_text(&mut self, _: &PasteAsText, window: &mut Window, cx: &mut Context<Self>) {
+        if self.input_focused(window, cx) {
+            self.paste_as_text(window, cx);
         }
-        let keystroke = &event.keystroke;
-        let m = keystroke.modifiers;
-        let secondary = m.secondary(cx);
-        match keystroke.key.as_str() {
-            "v" if secondary && m.shift => self.paste_as_text(window, cx),
-            "up" if m.alt && !secondary && !m.shift => {
-                if !self.edit_last_queued(window, cx) {
-                    return;
-                }
-            }
-            "e" if secondary && m.shift => self.cycle_effort(cx),
-            "m" if secondary && m.shift => self.model_picker.open(window, cx),
-            _ => return,
+    }
+
+    fn on_edit_last_queued(&mut self, _: &EditLastQueued, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.input_focused(window, cx) || !self.edit_last_queued(window, cx) {
+            cx.propagate();
         }
-        cx.stop_propagation();
+    }
+
+    fn on_cycle_effort(&mut self, _: &CycleEffort, _: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_effort(cx);
+    }
+
+    fn on_open_model_picker(&mut self, _: &OpenModelPicker, window: &mut Window, cx: &mut Context<Self>) {
+        self.model_picker.open(window, cx);
     }
 
     fn on_press_enter(&mut self, shift: bool, secondary: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -1001,9 +1031,13 @@ impl Composer {
         for attachment in &self.attachments {
             let hash = attachment.hash.clone();
             let kind = attach::context_kind(&attachment.mime);
-            let description: SharedString = match kind {
-                Some(kind) => kind.label().into(),
-                None => attach::size_label(attachment.size).into(),
+            let description: SharedString = match (kind, self.pasted.get(&hash)) {
+                (Some(_), Some(text)) => {
+                    format!("{} lines · {}", group_digits(text.lines().count() as u64), attach::size_label(attachment.size))
+                        .into()
+                }
+                (Some(kind), None) => kind.label().into(),
+                (None, _) => attach::size_label(attachment.size).into(),
             };
             let mut chip = AttachmentChip::new()
                 .id(SharedString::from(format!("att-{hash}")))
@@ -1177,7 +1211,10 @@ impl Render for Composer {
             .capture_action(cx.listener(Self::on_enter_action))
             .capture_action(cx.listener(Self::on_tab))
             .capture_action(cx.listener(Self::on_escape))
-            .capture_key_down(cx.listener(Self::on_key_down))
+            .on_action(cx.listener(Self::on_paste_as_text))
+            .on_action(cx.listener(Self::on_edit_last_queued))
+            .on_action(cx.listener(Self::on_cycle_effort))
+            .on_action(cx.listener(Self::on_open_model_picker))
             .on_action(cx.listener(Self::on_send_alternate))
             .children(self.render_completion(cx))
             .child(

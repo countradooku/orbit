@@ -281,6 +281,15 @@ pub fn top<T>(candidates: impl IntoIterator<Item = (i32, T)>, limit: usize) -> V
 /// (score, earlier-is-greater order, value): a heap entry.
 type Ranked<T> = (i32, std::cmp::Reverse<usize>, Slot<T>);
 
+/// Drops the weak tail of ranked `(score, value)` results: letters
+/// scattered over a long path match, but next to a real match they are
+/// noise. Keeps everything within half of the best score.
+pub fn strong<T>(ranked: Vec<(i32, T)>) -> Vec<T> {
+    let Some(best) = ranked.first().map(|(s, _)| *s) else { return Vec::new() };
+    let floor = if best > 0 { best / 2 } else { i32::MIN };
+    ranked.into_iter().filter(|(s, _)| *s >= floor).map(|(_, v)| v).collect()
+}
+
 /// Lets any value ride in the heap; ordering ignores it.
 struct Slot<T>(T);
 
@@ -361,6 +370,14 @@ mod tests {
         assert_eq!(m.positions[0], path.rfind('/').unwrap() + 1, "the file name, not a folder");
         let m = find("rv", "review").unwrap();
         assert_eq!(m.positions, vec![0, 2]);
+    }
+
+    #[test]
+    fn scattered_matches_drop_out_next_to_real_ones() {
+        let paths = ["crates/orbit-core/src/engine/orchestrator.rs", "crates/orbit-app/src/shell.rs"];
+        let ranked = top(paths.iter().filter_map(|p| score_path("orche", p).map(|s| (s, (s, *p)))), 10);
+        assert_eq!(ranked.len(), 2, "both match as subsequences");
+        assert_eq!(strong(ranked), vec!["crates/orbit-core/src/engine/orchestrator.rs"]);
     }
 
     #[test]

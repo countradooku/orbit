@@ -96,11 +96,11 @@ pub fn rank_threads<'a>(
     candidates.sort_by_key(|(_, _, _, updated)| std::cmp::Reverse(*updated));
     let scored = candidates.into_iter().filter_map(|(id, title, project, _)| {
         if query.is_empty() {
-            return Some((0, (id, title, project)));
+            return Some((0, (0, (id, title, project))));
         }
-        fuzzy::score(query, title).map(|s| (s, (id, title, project)))
+        fuzzy::score(query, title).map(|s| (s, (s, (id, title, project))))
     });
-    fuzzy::top(scored, limit)
+    fuzzy::strong(fuzzy::top(scored, limit))
         .into_iter()
         .map(|(id, title, project)| Suggestion::Thread { id, title: title.to_owned(), project: project.map(str::to_owned) })
         .collect()

@@ -171,7 +171,8 @@ fn filtered<'a>(providers: &'a [ProviderInfo], query: &str) -> Vec<(&'a Provider
     let scored = all.filter_map(|(p, m)| {
         let haystack = format!("{} {} {}", m.name, m.slug, p.kind.label());
         fuzzy::score(query, &haystack)
-            .or_else(|| m.description.as_deref().and_then(|d| fuzzy::score(query, d)).map(|s| s / 4 - 200))
+            // Descriptions match words, not scattered letters.
+            .or_else(|| m.description.as_deref().filter(|d| d.to_lowercase().contains(&query.to_lowercase())).map(|_| -200))
             .map(|s| (s, (p, m)))
     });
     fuzzy::top(scored, 200)

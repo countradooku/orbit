@@ -360,8 +360,7 @@ impl Composer {
                 ClipboardEntry::String(text) if text.text().len() >= LARGE_PASTE => {
                     let text = text.text();
                     let n = self.attachments.iter().filter(|a| context_kind(&a.mime) == Some(ContextKind::Paste)).count() + 1;
-                    let lines = text.lines().count();
-                    let name = format!("pasted-text-{n} ({lines} lines).txt");
+                    let name = format!("pasted-text-{n}.txt");
                     self.store_bytes(name, ContextKind::Paste.mime().into(), text.as_bytes().to_vec(), None, cx);
                     handled = true;
                 }

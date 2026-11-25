@@ -169,13 +169,11 @@ fn rank(listing: &Listing, query: &str, limit: usize) -> Vec<FileMatch> {
         top.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.path.to_lowercase().cmp(&b.path.to_lowercase())));
         return top.into_iter().take(limit).map(to_match).collect();
     }
-    fuzzy::top(
-        listing.entries.iter().filter_map(|e| fuzzy::score_path(query, &e.path).map(|s| (s, e))),
+    let ranked = fuzzy::top(
+        listing.entries.iter().filter_map(|e| fuzzy::score_path(query, &e.path).map(|s| (s, (s, e)))),
         limit,
-    )
-    .into_iter()
-    .map(to_match)
-    .collect()
+    );
+    fuzzy::strong(ranked).into_iter().map(to_match).collect()
 }
 
 impl Orchestrator {
