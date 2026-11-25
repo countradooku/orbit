@@ -117,7 +117,10 @@ impl EngineHandle {
 async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher: Launcher, probe: bool) {
     let (agent_tx, agent_rx) = mpsc::unbounded_async::<(ThreadId, provider::AgentEvent)>();
     let (internal_tx, internal_rx) = mpsc::unbounded_async::<Internal>();
-    let mut orchestrator = Orchestrator::new(store, agent_tx, internal_tx, launcher);
+    let (term_tx, term_rx) =
+        mpsc::bounded_blocking_async::<(TermId, Vec<u8>)>(crate::terminal::OUTPUT_CAPACITY);
+    let (exit_tx, exit_rx) = mpsc::unbounded_async::<(TermId, Option<i32>)>();
+    let mut orchestrator = Orchestrator::new(store, agent_tx, internal_tx, launcher, term_tx, exit_tx);
     if probe {
         orchestrator.refresh_providers();
     }
@@ -155,6 +158,16 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
                     while let Ok((thread, event)) = agent_rx.try_recv() {
                         orchestrator.handle_agent(thread, event);
                     }
+                }
+            }
+            output = term_rx.recv() => {
+                if let Ok((term, data)) = output {
+                    orchestrator.terminal_output(term, data);
+                }
+            }
+            exit = exit_rx.recv() => {
+                if let Ok((term, code)) = exit {
+                    orchestrator.terminal_exited(term, code);
                 }
             }
             msg = internal_rx.recv() => {

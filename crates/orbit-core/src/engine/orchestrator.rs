@@ -17,11 +17,20 @@ use crate::provider::{
     self, AgentEvent, BlockKind, EventSender, PromptAttachment, SessionHandle, SessionInput, SessionSpec,
     TurnOutcome,
 };
+use crate::git::{Git, GitConfig, TreeId};
 use crate::store::Store;
+use crate::terminal::{ExitSender, OutputSender, TermSize, Terminals};
 
 /// Results of background work, applied on the engine thread.
 pub enum Internal {
     Probed(ProviderInfo),
+    /// The baseline snapshot before a thread's first turn is taken; send the
+    /// held prompt.
+    BaselineReady { thread: ThreadId, tree: Option<String> },
+    /// A finished turn's snapshot is taken.
+    Checkpointed { thread: ThreadId, item: ItemId, tree: Option<String>, files: Option<Vec<FileChange>> },
+    /// The project's current branch was read.
+    ProjectBranch { project: ProjectId, branch: Option<String> },
     /// The provider's quota window has reset; resume the thread's queue.
     QuotaReset(ThreadId),
 }
@@ -50,11 +59,14 @@ struct ActiveTurn {
     cursor: Option<String>,
     files: Vec<FileChange>,
     interrupted: bool,
+    /// The tree the turn started from.
+    base: Option<String>,
 }
 
 impl ActiveTurn {
     fn new(number: u32) -> Self {
         Self {
+            base: None,
             number,
             started: Instant::now(),
             blocks: HashMap::new(),
@@ -77,6 +89,11 @@ struct Runtime {
     queue: VecDeque<ItemId>,
     /// The next session must resume at this provider cursor (rollback).
     resume_at: Option<String>,
+    /// A prompt held until the baseline snapshot exists.
+    held_prompt: Option<SessionInput>,
+    /// The last turn's snapshot is being taken; queued turns wait for it so
+    /// one turn's files never land in another's diff.
+    checkpointing: bool,
 }
 
 pub struct Orchestrator {
@@ -92,6 +109,8 @@ pub struct Orchestrator {
     last_persist: Instant,
     /// Threads a client has open; they stay loaded.
     open: HashSet<ThreadId>,
+    git: Git,
+    terminals: Terminals,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -117,7 +136,10 @@ impl Orchestrator {
         agent_tx: EventSender,
         internal_tx: MTx<mpsc::List<Internal>>,
         launcher: Launcher,
+        terminal_output: OutputSender,
+        terminal_exits: ExitSender,
     ) -> Self {
+        let git = Git::new(GitConfig::new(store.dir()));
         let providers = ProviderKind::ALL
             .iter()
             .map(|&kind| ProviderInfo { kind, message: Some("Checking…".into()), ..Default::default() })
@@ -133,7 +155,170 @@ impl Orchestrator {
             dirty: HashSet::new(),
             last_persist: Instant::now(),
             open: HashSet::new(),
+            git,
+            terminals: Terminals::new(terminal_output, terminal_exits),
         }
+    }
+
+    /// The git repository a thread works in, if any.
+    fn repo_of(&self, thread: &Thread) -> Option<PathBuf> {
+        if let Some(worktree) = &thread.workspace.worktree {
+            return Some(PathBuf::from(worktree));
+        }
+        thread.project.and_then(|p| self.store.project(p)).map(|p| PathBuf::from(&p.path))
+    }
+
+    fn repo_for(&self, thread: ThreadId) -> Result<PathBuf, String> {
+        let t = self.store.thread(thread).ok_or("That thread no longer exists.")?;
+        self.repo_of(t).ok_or_else(|| "This thread isn’t in a project, so it has no changes to show.".into())
+    }
+
+    /// The (from, to) trees of a turn; `to` is `None` while it runs (the
+    /// working tree).
+    fn turn_range(&mut self, thread: ThreadId, turn: u32) -> Option<(String, Option<String>)> {
+        if let Some(active) = self.runtimes.get(&thread).and_then(|r| r.turn.as_ref())
+            && active.number == turn
+        {
+            return active.base.clone().map(|b| (b, None));
+        }
+        let timeline = self.store.load_timeline(thread).ok()?;
+        timeline.items().iter().rev().find_map(|i| match &i.body {
+            ItemBody::TurnEnd(s) if i.turn == turn => s.base_checkpoint.clone().map(|b| (b, s.checkpoint.clone())),
+            _ => None,
+        })
+    }
+
+    /// The tree the thread's first turn started from.
+    fn thread_base(&mut self, thread: ThreadId) -> Option<String> {
+        let timeline = self.store.load_timeline(thread).ok()?;
+        let from_items = timeline.items().iter().find_map(|i| match &i.body {
+            ItemBody::TurnEnd(s) => s.base_checkpoint.clone(),
+            _ => None,
+        });
+        from_items.or_else(|| self.runtimes.get(&thread).and_then(|r| r.turn.as_ref()?.base.clone()))
+    }
+
+    /// The last finished turn's snapshot, the next turn's starting point.
+    fn last_checkpoint(&mut self, thread: ThreadId) -> Option<String> {
+        let timeline = self.store.load_timeline(thread).ok()?;
+        timeline.items().iter().rev().find_map(|i| match &i.body {
+            ItemBody::TurnEnd(s) => s.checkpoint.clone(),
+            _ => None,
+        })
+    }
+
+    fn diff(&mut self, thread: ThreadId, scope: DiffScope) -> Outcome {
+        let repo = match self.repo_for(thread) {
+            Ok(repo) => repo,
+            Err(e) => return Outcome::Ready(Err(e)),
+        };
+        let git = self.git.clone();
+        let range = match &scope {
+            DiffScope::Turn(n) => match self.turn_range(thread, *n) {
+                Some(range) => Some(range),
+                None => return Outcome::Ready(Err("This turn has no snapshot to compare.".into())),
+            },
+            DiffScope::Thread => match self.thread_base(thread) {
+                Some(base) => Some((base, None)),
+                None => return Outcome::Ready(Err("Nothing has run in this thread yet.".into())),
+            },
+            _ => None,
+        };
+        Outcome::Deferred(Box::pin(async move {
+            let result = match range {
+                Some((from, to)) => {
+                    let to = to.map(TreeId::new);
+                    git.diff(&repo, &TreeId::new(from), to.as_ref()).await
+                }
+                None => git.diff_scope(&repo, thread, &scope).await,
+            };
+            result
+                .map(|diff| Reply::Diff(diff.files.iter().map(|f| f.raw.as_str()).collect::<String>()))
+                .map_err(|e| e.to_string())
+        }))
+    }
+
+    fn git_command(&mut self, command: Command) -> Outcome {
+        let git = self.git.clone();
+        match command {
+            Command::Diff { thread, scope } => self.diff(thread, scope),
+            Command::RevertPatch { thread, patch } => match self.repo_for(thread) {
+                Err(e) => Outcome::Ready(Err(e)),
+                Ok(repo) => Outcome::Deferred(Box::pin(async move {
+                    git.revert_patch(&repo, &patch).await.map(|_| Reply::Done).map_err(|e| e.to_string())
+                })),
+            },
+            Command::RestoreCheckpoint { thread, turn } => {
+                let repo = match self.repo_for(thread) {
+                    Ok(repo) => repo,
+                    Err(e) => return Outcome::Ready(Err(e)),
+                };
+                let Some((_, Some(tree))) = self.turn_range(thread, turn) else {
+                    return Outcome::Ready(Err("That turn has no snapshot to restore.".into()));
+                };
+                Outcome::Deferred(Box::pin(async move {
+                    git.restore(&repo, thread, &TreeId::new(tree)).await.map(|_| Reply::Done).map_err(|e| e.to_string())
+                }))
+            }
+            Command::Commit { thread, message, push } => match self.repo_for(thread) {
+                Err(e) => Outcome::Ready(Err(e)),
+                Ok(repo) => Outcome::Deferred(Box::pin(async move {
+                    git.commit(&repo, &message, push).await.map(|_| Reply::Done).map_err(|e| e.to_string())
+                })),
+            },
+            Command::CreatePullRequest { thread, title, body } => match self.repo_for(thread) {
+                Err(e) => Outcome::Ready(Err(e)),
+                Ok(repo) => Outcome::Deferred(Box::pin(async move {
+                    git.create_pull_request(&repo, &title, &body, None)
+                        .await
+                        .map(|url| Reply::PullRequest { url })
+                        .map_err(|e| e.to_string())
+                })),
+            },
+            Command::Branches { project } => {
+                let Some(path) = self.store.project(project).map(|p| PathBuf::from(&p.path)) else {
+                    return Outcome::Ready(Err("That project no longer exists.".into()));
+                };
+                Outcome::Deferred(Box::pin(async move {
+                    let branches = git.branches(&path).await.map_err(|e| e.to_string())?;
+                    let current = branches.iter().find(|b| b.current).map(|b| b.name.clone());
+                    Ok(Reply::Branches { current, all: branches.into_iter().map(|b| b.name).collect() })
+                }))
+            }
+            other => Outcome::Ready(self.handle_command(other)),
+        }
+    }
+
+    fn terminal_command(&mut self, command: Command) -> CommandResult {
+        match command {
+            Command::OpenTerminal { cwd, cols, rows } => self
+                .terminals
+                .open(Path::new(&cwd), TermSize::new(cols.max(2), rows.max(1)), None)
+                .map(Reply::Terminal)
+                .map_err(|e| format!("Couldn’t open a terminal in {cwd}: {e}")),
+            Command::TerminalInput { term, data } => {
+                self.terminals.input(term, &data);
+                Ok(Reply::Done)
+            }
+            Command::ResizeTerminal { term, cols, rows } => {
+                let _ = self.terminals.resize(term, TermSize::new(cols.max(2), rows.max(1)));
+                Ok(Reply::Done)
+            }
+            Command::CloseTerminal { term } => {
+                self.terminals.close(term);
+                Ok(Reply::Done)
+            }
+            _ => Err("not a terminal command".into()),
+        }
+    }
+
+    pub fn terminal_output(&mut self, term: TermId, data: Vec<u8>) {
+        self.emit(Event::TerminalOutput { term, data });
+    }
+
+    pub fn terminal_exited(&mut self, term: TermId, code: Option<i32>) {
+        self.terminals.remove_exited(term);
+        self.emit(Event::TerminalExited { term, code });
     }
 
     pub fn store(&self) -> &Store {
@@ -273,6 +458,51 @@ impl Orchestrator {
     pub fn handle_internal(&mut self, msg: Internal) {
         match msg {
             Internal::Probed(info) => self.set_provider(info),
+            Internal::BaselineReady { thread, tree } => {
+                let Some(runtime) = self.runtimes.get_mut(&thread) else { return };
+                if let Some(turn) = runtime.turn.as_mut() {
+                    turn.base = tree;
+                }
+                if let Some(prompt) = runtime.held_prompt.take() {
+                    let delivered = runtime.session.as_ref().is_some_and(|s| s.send(prompt));
+                    if !delivered {
+                        self.finish_turn(
+                            thread,
+                            TurnOutcome::Failed { message: "The agent stopped before it received the message.".into() },
+                            Usage::default(),
+                            0,
+                        );
+                    }
+                }
+            }
+            Internal::Checkpointed { thread, item, tree, files } => {
+                if let Some(runtime) = self.runtimes.get_mut(&thread) {
+                    runtime.checkpointing = false;
+                }
+                if self.store.thread(thread).is_some()
+                    && self.store.load_timeline(thread).is_ok()
+                    && let Some(mut end) = self.item(thread, item)
+                    && let ItemBody::TurnEnd(summary) = &mut end.body
+                {
+                    summary.checkpoint = tree;
+                    if let Some(files) = files {
+                        summary.files = files;
+                    }
+                    self.put_item(thread, end);
+                }
+                self.start_next_queued(thread);
+                if !self.open.contains(&thread) && self.runtimes.get(&thread).is_none_or(|r| r.turn.is_none()) {
+                    self.store.unload_timeline(thread);
+                }
+            }
+            Internal::ProjectBranch { project, branch } => {
+                if let Some(mut p) = self.store.project(project).cloned()
+                    && p.base_branch != branch
+                {
+                    p.base_branch = branch;
+                    self.emit(Event::ProjectUpserted(p));
+                }
+            }
             Internal::QuotaReset(thread) => {
                 let limited = matches!(
                     self.store.thread(thread).map(|t| &t.status),
@@ -294,6 +524,12 @@ impl Orchestrator {
     pub fn handle(&mut self, command: Command) -> Outcome {
         match command {
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
+            command @ (Command::Diff { .. }
+            | Command::RevertPatch { .. }
+            | Command::RestoreCheckpoint { .. }
+            | Command::Commit { .. }
+            | Command::CreatePullRequest { .. }
+            | Command::Branches { .. }) => self.git_command(command),
             command => Outcome::Ready(self.handle_command(command)),
         }
     }
@@ -359,11 +595,14 @@ impl Orchestrator {
             | Command::RestoreCheckpoint { .. }
             | Command::Commit { .. }
             | Command::CreatePullRequest { .. }
-            | Command::Branches { .. } => Err("Git integration is not available in this build.".into()),
-            Command::OpenTerminal { .. }
+            | Command::Branches { .. } => futures_block_on(match self.git_command(command) {
+                Outcome::Ready(result) => return result,
+                Outcome::Deferred(future) => future,
+            }),
+            command @ (Command::OpenTerminal { .. }
             | Command::TerminalInput { .. }
             | Command::ResizeTerminal { .. }
-            | Command::CloseTerminal { .. } => Err("Terminals are not available in this build.".into()),
+            | Command::CloseTerminal { .. }) => self.terminal_command(command),
         }
     }
 
@@ -388,7 +627,13 @@ impl Orchestrator {
             base_branch: None,
         };
         let id = project.id;
+        let path = PathBuf::from(&project.path);
         self.emit(Event::ProjectUpserted(project));
+        let (git, tx) = (self.git.clone(), self.internal_tx.clone());
+        tokio::spawn(async move {
+            let branch = git.current_branch(&path).await.ok().flatten();
+            let _ = tx.send(Internal::ProjectBranch { project: id, branch });
+        });
         Ok(Reply::Project(id))
     }
 
@@ -451,6 +696,14 @@ impl Orchestrator {
     }
 
     fn delete_thread(&mut self, id: ThreadId) -> CommandResult {
+        if let Some(repo) = self.store.thread(id).and_then(|t| self.repo_of(t)) {
+            let git = self.git.clone();
+            tokio::spawn(async move {
+                if let Err(err) = git.delete_thread(&repo, id).await {
+                    log::debug!("checkpoint cleanup for {id}: {err}");
+                }
+            });
+        }
         if let Some(mut runtime) = self.runtimes.remove(&id)
             && let Some(session) = runtime.session.take()
         {
@@ -530,11 +783,14 @@ impl Orchestrator {
             return Err("Write a message first.".into());
         }
         self.store.load_timeline(thread_id).map_err(|e| e.to_string())?;
-        let busy = self.runtimes.get(&thread_id).is_some_and(|r| r.turn.is_some());
+        let in_turn = self.runtimes.get(&thread_id).is_some_and(|r| r.turn.is_some());
+        // Between a turn's end and its snapshot nothing can be steered; new
+        // messages queue behind the snapshot instead.
+        let busy = in_turn || self.runtimes.get(&thread_id).is_some_and(|r| r.checkpointing);
         let rate_limited = matches!(thread.status, ThreadStatus::RateLimited { .. });
         let item_id = ItemId::new();
         let current_turn = thread.turns;
-        let steering = busy && steer;
+        let steering = in_turn && steer;
         let item = Item {
             id: item_id,
             turn: if steering { current_turn } else { current_turn + 1 },
@@ -631,9 +887,31 @@ impl Orchestrator {
         }
         self.ensure_session(thread_id)?;
         let prompt = self.prompt_input(thread_id, user_item, text, &attachments, false);
+        let base = self.last_checkpoint(thread_id);
+        let repo = self.repo_of(&thread);
         let runtime = self.runtimes.get_mut(&thread_id).unwrap();
-        runtime.turn = Some(ActiveTurn::new(number));
-        let delivered = runtime.session.as_ref().is_some_and(|s| s.send(prompt));
+        let mut turn = ActiveTurn::new(number);
+        turn.base = base.clone();
+        runtime.turn = Some(turn);
+        let delivered = if base.is_none() && let Some(repo) = repo {
+            // First turn in a repository: snapshot the starting point before
+            // the agent can touch anything, then send.
+            runtime.held_prompt = Some(prompt);
+            let (git, tx) = (self.git.clone(), self.internal_tx.clone());
+            tokio::spawn(async move {
+                let tree = match git.snapshot(&repo).await {
+                    Ok(tree) => Some(tree.as_str().to_owned()),
+                    Err(err) => {
+                        log::debug!("no baseline for {thread_id}: {err}");
+                        None
+                    }
+                };
+                let _ = tx.send(Internal::BaselineReady { thread: thread_id, tree });
+            });
+            true
+        } else {
+            runtime.session.as_ref().is_some_and(|s| s.send(prompt))
+        };
         self.update_thread(thread_id, |t| {
             t.turns = number;
             t.status = ThreadStatus::Running;
@@ -650,6 +928,9 @@ impl Orchestrator {
     }
 
     fn start_next_queued(&mut self, thread_id: ThreadId) {
+        if self.runtimes.get(&thread_id).is_some_and(|r| r.checkpointing) {
+            return; // resumed when the snapshot lands
+        }
         let Some(next) = self.runtimes.get_mut(&thread_id).and_then(|r| r.queue.pop_front()) else { return };
         self.update_thread(thread_id, |t| t.queued = t.queued.saturating_sub(1));
         if let Err(err) = self.start_turn(thread_id, next) {
@@ -803,13 +1084,39 @@ impl Orchestrator {
             provider_cursor: turn.cursor.clone(),
             duration_ms: duration,
             checkpoint: None,
+            base_checkpoint: turn.base.clone(),
             files: turn.files.clone(),
             interrupted,
         };
+        let end_item = ItemId::new();
         self.put_item(
             thread_id,
-            Item { id: ItemId::new(), turn: turn.number, status: ItemStatus::Done, body: ItemBody::TurnEnd(summary) },
+            Item { id: end_item, turn: turn.number, status: ItemStatus::Done, body: ItemBody::TurnEnd(summary) },
         );
+        // Snapshot what the turn left behind; its diff replaces the
+        // tool-reported file list with what actually changed on disk.
+        if let Some(repo) = self.store.thread(thread_id).and_then(|t| self.repo_of(t)) {
+            if let Some(runtime) = self.runtimes.get_mut(&thread_id) {
+                runtime.checkpointing = true;
+            }
+            let (git, tx, base) = (self.git.clone(), self.internal_tx.clone(), turn.base.clone());
+            tokio::spawn(async move {
+                let (tree, files) = match git.snapshot(&repo).await {
+                    Ok(tree) => {
+                        let files = match &base {
+                            Some(base) => git.diff(&repo, &TreeId::new(base.clone()), Some(&tree)).await.ok().map(|d| d.changes()),
+                            None => None,
+                        };
+                        (Some(tree.as_str().to_owned()), files)
+                    }
+                    Err(err) => {
+                        log::debug!("no checkpoint for {thread_id}: {err}");
+                        (None, None)
+                    }
+                };
+                let _ = tx.send(Internal::Checkpointed { thread: thread_id, item: end_item, tree, files });
+            });
+        }
         let status = match &outcome {
             TurnOutcome::Completed | TurnOutcome::Interrupted => ThreadStatus::Idle,
             TurnOutcome::Failed { message } => ThreadStatus::Failed { message: message.clone() },

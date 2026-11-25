@@ -15,6 +15,7 @@ fn fake_launcher() -> Launcher {
     Box::new(|_kind, spec, events| {
         let (input, rx) = mpsc::bounded_blocking_async::<SessionInput>(64);
         let thread = spec.thread;
+        let spec = spec.clone();
         tokio::spawn(async move {
             let emit = |e: AgentEvent| {
                 let _ = events.send((thread, e));
@@ -45,6 +46,12 @@ fn fake_launcher() -> Launcher {
                                         break;
                                     }
                                 }
+                                finish(&emit);
+                            }
+                            "write" => {
+                                std::fs::write(spec.cwd.join("written-by-agent.txt"), "hello
+").unwrap();
+                                emit(AgentEvent::BlockDone { block: block.clone(), kind: BlockKind::Text, text: "wrote it".into() });
                                 finish(&emit);
                             }
                             "crash" => {
@@ -309,4 +316,77 @@ fn search_finds_text_in_loaded_and_unloaded_threads() {
     let threads: std::collections::HashSet<ThreadId> = hits.iter().map(|h| h.thread).collect();
     assert!(threads.contains(&a) && threads.contains(&b), "{hits:?}");
     assert!(hits.iter().any(|h| h.excerpt.contains("needle in thread a")));
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let ok = std::process::Command::new("git").args(args).current_dir(dir).status().unwrap().success();
+    assert!(ok, "git {args:?}");
+}
+
+#[test]
+fn a_turns_diff_shows_exactly_what_the_turn_changed() {
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    git(repo.path(), &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]);
+    std::fs::write(repo.path().join("before.txt"), "already here
+").unwrap();
+
+    let mut h = Harness::new();
+    let Reply::Project(project) = h.call(Command::AddProject { path: repo.path().display().to_string() }) else { panic!() };
+    let Reply::Thread(id) =
+        h.call(Command::CreateThread { project: Some(project), config: ThreadConfig::default(), worktree: false })
+    else {
+        panic!()
+    };
+    h.send(id, "write");
+    h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+    // The snapshot after the turn lands asynchronously.
+    h.wait("checkpoint", |h| {
+        h.items.values().any(|i| matches!(&i.body, ItemBody::TurnEnd(s) if s.checkpoint.is_some()))
+    });
+    let summary = h
+        .items
+        .values()
+        .find_map(|i| match &i.body {
+            ItemBody::TurnEnd(s) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let paths: Vec<&str> = summary.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, vec!["written-by-agent.txt"], "untouched pre-existing files are not the turn's");
+
+    let Reply::Diff(patch) = h.call(Command::Diff { thread: id, scope: DiffScope::Turn(1) }) else { panic!() };
+    assert!(patch.contains("written-by-agent.txt") && patch.contains("+hello"), "{patch}");
+    assert!(!patch.contains("before.txt"), "{patch}");
+
+    // Revert the turn's file through its patch.
+    let file = orbit_proto::diff::parse(&patch).remove(0);
+    h.call(Command::RevertPatch { thread: id, patch: orbit_proto::file_patch(&file) });
+    assert!(!repo.path().join("written-by-agent.txt").exists());
+}
+
+#[test]
+fn terminals_round_trip_through_the_engine() {
+    let mut h = Harness::new();
+    let dir = tempfile::tempdir().unwrap();
+    let Reply::Terminal(term) =
+        h.call(Command::OpenTerminal { cwd: dir.path().display().to_string(), cols: 80, rows: 24 })
+    else {
+        panic!()
+    };
+    // ConPTY waits for a cursor-position reply before it shows output.
+    h.call(Command::TerminalInput { term, data: b"[1;1R".to_vec() });
+    h.call(Command::TerminalInput { term, data: b"echo orbit-term-ok
+".to_vec() });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = Vec::new();
+    while !String::from_utf8_lossy(&seen).contains("orbit-term-ok") {
+        assert!(Instant::now() < deadline, "no echo; got {:?}", String::from_utf8_lossy(&seen));
+        match h.events.try_recv() {
+            Ok(Envelope { event: Event::TerminalOutput { term: t, data }, .. }) if t == term => seen.extend(data),
+            Ok(env) => h.apply(env.event),
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    h.call(Command::CloseTerminal { term });
 }

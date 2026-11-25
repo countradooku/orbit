@@ -443,8 +443,12 @@ pub struct TurnSummary {
     /// fork resumes the provider's own history.
     pub provider_cursor: Option<String>,
     pub duration_ms: u64,
-    /// Git tree id of the workspace after the turn; the revert target.
+    /// Git tree id of the workspace after the turn; the restore target.
     pub checkpoint: Option<String>,
+    /// Git tree id the turn started from (the previous turn's checkpoint, or
+    /// the baseline before the first turn). The turn's diff is
+    /// `base_checkpoint..checkpoint`.
+    pub base_checkpoint: Option<String>,
     pub files: Vec<FileChange>,
     pub interrupted: bool,
 }
