@@ -56,38 +56,78 @@ impl ProviderKind {
     }
 }
 
-/// How much thinking the model spends per turn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Encode, Decode)]
-pub enum Effort {
-    Low,
-    #[default]
-    Medium,
-    High,
-    XHigh,
-    Max,
+/// One adjustable option of a model, as the provider reports it at runtime
+/// (reasoning effort, fast mode, thinking on/off…). Orbit never hardcodes the
+/// list: Claude Code describes its models in its `initialize` response and
+/// Codex in `model/list`, and the composer renders whatever comes back.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub struct OptionDescriptor {
+    /// Stable id the provider adapter understands, e.g. `effort`.
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub kind: OptionKind,
 }
 
-impl Effort {
-    pub const ALL: [Effort; 5] = [Effort::Low, Effort::Medium, Effort::High, Effort::XHigh, Effort::Max];
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub enum OptionKind {
+    /// Pick one of `choices`.
+    Select { choices: Vec<OptionChoice> },
+    /// On or off.
+    Toggle { default: bool },
+}
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Effort::Low => "Low",
-            Effort::Medium => "Medium",
-            Effort::High => "High",
-            Effort::XHigh => "Extra high",
-            Effort::Max => "Max",
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub struct OptionChoice {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub is_default: bool,
+}
+
+/// A chosen value for one [`OptionDescriptor`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+pub struct OptionValue {
+    pub id: String,
+    pub value: OptionSetting,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+pub enum OptionSetting {
+    Choice(String),
+    Toggle(bool),
+}
+
+impl OptionDescriptor {
+    /// The provider's default for this option.
+    pub fn default_setting(&self) -> OptionSetting {
+        match &self.kind {
+            OptionKind::Select { choices } => OptionSetting::Choice(
+                choices
+                    .iter()
+                    .find(|c| c.is_default)
+                    .or(choices.first())
+                    .map(|c| c.id.clone())
+                    .unwrap_or_default(),
+            ),
+            OptionKind::Toggle { default } => OptionSetting::Toggle(*default),
         }
     }
+}
 
-    pub fn as_arg(self) -> &'static str {
-        match self {
-            Effort::Low => "low",
-            Effort::Medium => "medium",
-            Effort::High => "high",
-            Effort::XHigh => "xhigh",
-            Effort::Max => "max",
-        }
+/// Turns a provider id such as `xhigh` or `extra_high` into interface copy
+/// (`Extra high`) when the provider supplies only ids. Sentence case, per the
+/// interface-language rules.
+pub fn humanize_id(id: &str) -> String {
+    let spaced = match id {
+        "xhigh" => "extra high".to_owned(),
+        "xlow" => "extra low".to_owned(),
+        _ => id.replace(['_', '-'], " "),
+    };
+    let mut chars = spaced.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
@@ -129,7 +169,10 @@ pub struct ThreadConfig {
     pub provider: ProviderKind,
     /// Provider model slug; empty means the provider's default.
     pub model: String,
-    pub effort: Effort,
+    /// Values for the model's reported options. An option that is absent
+    /// uses the provider's default; values for options the model does not
+    /// report are ignored, so switching models never sends invalid flags.
+    pub options: Vec<OptionValue>,
     pub mode: Mode,
     pub access: Access,
 }
@@ -400,7 +443,8 @@ pub struct ProviderInfo {
     pub account: Option<String>,
     pub binary: Option<String>,
     pub models: Vec<ModelInfo>,
-    pub slash_commands: Vec<String>,
+    pub modes: Vec<ModeInfo>,
+    pub slash_commands: Vec<SlashCommand>,
     pub message: Option<String>,
 }
 
@@ -408,6 +452,55 @@ pub struct ProviderInfo {
 pub struct ModelInfo {
     pub slug: String,
     pub name: String,
+    pub description: Option<String>,
+    /// 0 when the provider does not report it.
     pub context_window: u64,
     pub is_default: bool,
+    pub options: Vec<OptionDescriptor>,
+}
+
+/// An interaction mode the provider supports (for example plan mode), as
+/// reported at runtime.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub struct ModeInfo {
+    pub mode: Mode,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+/// A slash command or skill the provider exposes, passed through intact.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub struct SlashCommand {
+    pub name: String,
+    pub description: String,
+    pub argument_hint: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_ids_become_sentence_case_copy() {
+        assert_eq!(humanize_id("xhigh"), "Extra high");
+        assert_eq!(humanize_id("max"), "Max");
+        assert_eq!(humanize_id("accept_edits"), "Accept edits");
+    }
+
+    #[test]
+    fn select_default_prefers_flagged_choice() {
+        let choice = |id: &str, is_default| OptionChoice {
+            id: id.into(),
+            label: humanize_id(id),
+            description: None,
+            is_default,
+        };
+        let effort = OptionDescriptor {
+            id: "effort".into(),
+            label: "Reasoning".into(),
+            description: None,
+            kind: OptionKind::Select { choices: vec![choice("low", false), choice("high", true)] },
+        };
+        assert_eq!(effort.default_setting(), OptionSetting::Choice("high".into()));
+    }
 }
