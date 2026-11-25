@@ -27,6 +27,9 @@ use crate::app_state::AppState;
 use crate::assets::Lucide;
 use crate::theme;
 
+/// Where Settings › Projects is among the pages.
+const PROJECTS_PAGE: usize = 5;
+
 pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoElement {
     let view = SettingsView::new("orbit-settings");
     // Debug builds: ORBIT_DEBUG_SETTINGS_PAGE=<page>[.<group>] opens there
@@ -36,6 +39,12 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         let (page, group) = t.split_once('.').map_or((t.as_str(), None), |(p, g)| (p, g.parse().ok()));
         Some(gpui_kit::component::setting::SelectIndex { page_ix: page.parse().ok()?, group_ix: group })
     });
+    // Opened from a project (its menu, the thread's Run control): Projects.
+    let target = if crate::project::settings::take_request(cx) {
+        Some(gpui_kit::component::setting::SelectIndex { page_ix: PROJECTS_PAGE, group_ix: None })
+    } else {
+        target
+    };
     let view = match target {
         Some(index) => view.default_selected_index(index),
         None => view,
@@ -46,6 +55,7 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         composer(cx),
         agents(&app, cx),
         workspace(cx),
+        crate::project::settings::page(&app, cx),
         integrations(),
         bots(&app, cx),
         notifications(),
@@ -470,6 +480,7 @@ fn workspace(cx: &App) -> SettingPage {
             .description("New untracked files larger than this many MB are left out of turn checkpoints, so a stray dataset can’t fill the disk. 0 keeps every file.")
             .keywords(["size", "large files", "MB"]),
         ]),
+        crate::files::editor::settings_group(),
     ])
 }
 

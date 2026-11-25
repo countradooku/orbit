@@ -100,7 +100,7 @@ where
     }
     let sub = engine.subscribe(epoch, since).await.map_err(|_| "engine stopped")?;
     writer
-        .send(binary(link.message(&ServerMsg::Welcome { version: PROTOCOL_VERSION, snapshot: sub.snapshot })))
+        .send(binary(link.message(&ServerMsg::Welcome { version: PROTOCOL_VERSION, snapshot: sub.snapshot.map(Box::new) })))
         .await
         .map_err(|e| e.to_string())?;
     if !sub.replay.is_empty() {

@@ -17,14 +17,15 @@
 //! between your messages.
 
 mod banners;
-mod browser;
+pub(crate) mod browser;
 pub(crate) mod edits;
 mod find;
 mod inspector;
 mod minimap;
+pub(crate) mod panels;
 mod questions;
 pub(crate) mod rows;
-mod terminal;
+pub(crate) mod terminal;
 mod transcript;
 
 use std::collections::{HashMap, HashSet};
@@ -47,7 +48,7 @@ use orbit_proto::*;
 use crate::app_state::{AppEvent, AppState};
 use crate::assets::Lucide;
 use crate::composer::{Composer, ComposerEvent};
-use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
+use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use orbit_browser::{BrowserEvent, BrowserView, Url};
 use minimap::{Mark, Minimap};
 use questions::Questions;
@@ -148,6 +149,8 @@ pub struct ThreadView {
     urls: browser::Suggestions,
     /// Whether the shell shows this thread (it keeps a few views alive).
     shown: bool,
+    /// Files, the file viewer and the run targets' dock (`panels.rs`).
+    panels: panels::Panels,
     /// Releases a hidden page after a while.
     browser_suspend: Task<()>,
     /// Where the thread's work stands for shipping (the header's pill).
@@ -214,6 +217,8 @@ impl ThreadView {
             browser::remember(id, browser::Memory { url, open: this.browser_open }, cx);
         }));
         app.update(cx, |app, cx| app.retain_timeline(id, cx));
+        let panels = panels::Panels::new(&app, id, window, cx);
+        subscriptions.extend(panels.subscribe(window, cx));
         let mut view = Self {
             id,
             app,
@@ -243,6 +248,7 @@ impl ThreadView {
             browser_split: cx.new(|_| ResizableState::default()),
             urls: browser::Suggestions::default(),
             shown: true,
+            panels,
             browser_suspend: Task::ready(()),
             ship: None,
             ship_busy: false,
@@ -293,6 +299,7 @@ impl ThreadView {
     /// Opens the thread's terminal in its folder, or closes it.
     pub fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.terminal.take().is_some() {
+            self.sync_dock_shell(cx);
             Composer::focus(&self.composer.clone(), window, cx);
             cx.notify();
             return;
@@ -320,6 +327,7 @@ impl ThreadView {
         let focus = panel.clone();
         window.defer(cx, move |window, cx| TerminalPanel::focus(&focus, window, cx));
         self.terminal = Some(panel);
+        self.sync_dock_shell(cx);
         cx.notify();
     }
 
@@ -884,6 +892,8 @@ impl ThreadView {
         for step in steps.split(';') {
             let items: Vec<Item> = self.app.read(cx).state().timeline(self.id).map(|t| t.items().to_vec()).unwrap_or_default();
             match step.split_once(':') {
+                // `files`, `open:<path>[:line]`, `run:<target>`, `quickopen`, `project`.
+                _ if self.panels_debug_step(step, window, cx) => {}
                 Some(("find", query)) => {
                     self.open_find(window, cx);
                     if let Some(find) = &self.find {
@@ -1237,9 +1247,12 @@ impl ThreadView {
                             .text_xs()
                             .text_color(theme.muted_foreground)
                             .when_some(project, |el, p| el.child(p.name.clone()))
-                            .when_some(thread.workspace.branch.clone(), |el, branch| {
-                                el.child("·").child(Icon::new(Lucide::GitBranch).xsmall()).child(branch)
-                            })
+                            .child("·")
+                            .child(
+                                crate::project::GitBadge::new(("thread-git", id.0), state.git.get(&WorkspaceRoot::Thread(id)))
+                                    .fallback_branch(thread.workspace.branch.clone())
+                                    .compact(),
+                            )
                             .child("·")
                             .child(model),
                     ),
@@ -1261,6 +1274,16 @@ impl ThreadView {
                     .icon(IconName::Search)
                     .tooltip_with_action("Find in thread", &FindInThread, Some("Thread"))
                     .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
+            )
+            .children(crate::project::runs::header_control(&self.app, id, cx))
+            .child(
+                Button::new("toggle-files")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(Lucide::FolderTree))
+                    .selected(self.panels.files.read(cx).is_open())
+                    .tooltip_with_action("Files", &crate::files::ToggleFiles, Some("Thread"))
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_files(&crate::files::ToggleFiles, window, cx))),
             )
             .child(browser_button)
             .children(team_button)
@@ -1437,7 +1460,7 @@ impl Render for ThreadView {
                     .px_4()
                     .pb_4()
                     .items_center()
-                    .child(
+                    .child(panels::drop_target(
                         v_flex()
                             .w_full()
                             .max_w(column)
@@ -1446,7 +1469,8 @@ impl Render for ThreadView {
                             .children(self.render_banner(cx))
                             .child(crate::composer::QueuePanel::new(self.id, &self.composer))
                             .child(self.composer.clone()),
-                    ),
+                        cx,
+                    )),
             );
         v_flex()
             .size_full()
@@ -1465,16 +1489,15 @@ impl Render for ThreadView {
                 this.minimap.update(cx, |m, cx| m.step(true, cx));
             }))
             .on_action(cx.listener(|this, _: &ToggleBrowser, window, cx| this.toggle_browser(window, cx)))
+            .on_action(cx.listener(Self::toggle_files))
+            .on_action(cx.listener(Self::quick_open))
+            .on_action(cx.listener(Self::run_target))
+            .on_action(cx.listener(Self::stop_target))
+            .on_action(cx.listener(Self::run_default_target))
+            .on_action(cx.listener(Self::project_settings))
             .child(self.render_header(cx))
             .child({
-                let main = match &self.terminal {
-                    None => conversation.into_any_element(),
-                    Some(terminal) => v_resizable("thread-split")
-                        .with_state(&self.split)
-                        .child(resizable_panel().child(conversation))
-                        .child(resizable_panel().size(px(300.)).size_range(px(120.)..px(900.)).child(terminal.clone()))
-                        .into_any_element(),
-                };
+                let main = self.panels.wrap(conversation.into_any_element(), &self.split, cx);
                 let body = div().flex_1().min_h_0();
                 match self.browser.as_ref().filter(|_| self.browser_open) {
                     None => body.child(main),

@@ -11,6 +11,7 @@ use crate::model::*;
 use crate::settings::Settings;
 use crate::status::*;
 use crate::teams::*;
+use crate::workspace::*;
 
 /// Client → engine.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -30,7 +31,8 @@ pub enum ClientMsg {
 pub enum ServerMsg {
     /// Reply to `Hello`. `snapshot` is `None` when the client's `since` was
     /// replayable; the missed events follow in `Events`.
-    Welcome { version: u16, snapshot: Option<Snapshot> },
+    /// Boxed: a snapshot is large, and `Box<T>` encodes exactly like `T`.
+    Welcome { version: u16, snapshot: Option<Box<Snapshot>> },
     /// Events in order. Ephemeral events have `seq == 0`.
     Events(Vec<Envelope>),
     Reply { id: u32, result: Result<Reply, String> },
@@ -61,6 +63,12 @@ pub struct Snapshot {
     pub automation_runs: Vec<AutomationRun>,
     /// Agent teams and races (see [`crate::teams`]).
     pub teams: TeamBoard,
+    /// Each project's configuration (projects without one use defaults).
+    pub project_configs: Vec<(ProjectId, ProjectConfig)>,
+    /// The latest git status of every watched checkout.
+    pub git: Vec<(WorkspaceRoot, GitSummary)>,
+    /// Run targets started since the engine started, running or ended.
+    pub runs: Vec<TargetRun>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -126,6 +134,14 @@ pub enum Event {
     /// A team or race changed. Ephemeral; the latest state is in the
     /// snapshot.
     Team(TeamEvent),
+    /// A project's configuration was replaced (whole record, sanitized).
+    ProjectConfigChanged { project: ProjectId, config: Box<ProjectConfig> },
+    /// A checkout's status changed (branch, ahead/behind, changes,
+    /// conflicts). Ephemeral; the latest value is in the snapshot.
+    GitStatus { root: WorkspaceRoot, status: Box<GitSummary> },
+    /// A run target started, ended or was stopped. Ephemeral; the latest
+    /// state is in the snapshot.
+    RunChanged(Box<TargetRun>),
 }
 
 impl Event {
@@ -145,6 +161,8 @@ impl Event {
                 | Event::Bots(_)
                 | Event::GuardChanged(_)
                 | Event::Team(_)
+                | Event::GitStatus { .. }
+                | Event::RunChanged(_)
         )
     }
 }
@@ -336,6 +354,9 @@ pub enum Command {
     Via { via: Via, action: ViaAction },
     /// Agent teams and races; see [`TeamCommand`].
     Team(Box<TeamCommand>),
+    /// Project configuration, run targets, git status and reading files;
+    /// see [`WorkspaceCommand`]. Replies [`Reply::Workspace`] or `Done`.
+    Workspace(WorkspaceCommand),
 }
 
 impl From<TeamCommand> for Command {
@@ -414,6 +435,7 @@ pub enum Reply {
     Bots(BotReply),
     Guard(GuardSettings),
     Team(TeamReply),
+    Workspace(WorkspaceReply),
 }
 
 /// A local merge of a thread's branch, previewed or done.

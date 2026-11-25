@@ -23,11 +23,23 @@ pub struct ShellPrefs {
     /// Sidebar sections the user closed (open by default) or opened (the
     /// Snoozed and Settled shelves), by name.
     pub toggled_sections: Vec<String>,
+    /// Where files open (`crate::files::editor`): an editor's id, `system`
+    /// or `custom`; empty picks the first editor found.
+    pub editor: String,
+    /// The custom editor command, with `{file}`, `{line}`, `{column}` and
+    /// `{folder}`.
+    pub editor_command: String,
 }
 
 impl Default for ShellPrefs {
     fn default() -> Self {
-        Self { sounds: true, group_by_project: false, toggled_sections: Vec::new() }
+        Self {
+            sounds: true,
+            group_by_project: false,
+            toggled_sections: Vec::new(),
+            editor: String::new(),
+            editor_command: String::new(),
+        }
     }
 }
 
@@ -96,7 +108,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shell.json");
         assert_eq!(read(&path), ShellPrefs::default());
-        let prefs = ShellPrefs { sounds: false, group_by_project: true, toggled_sections: vec!["Settled".into()] };
+        let prefs = ShellPrefs {
+            sounds: false,
+            group_by_project: true,
+            toggled_sections: vec!["Settled".into()],
+            editor: "zed".into(),
+            ..ShellPrefs::default()
+        };
         write(&path, &prefs).unwrap();
         assert_eq!(read(&path), prefs);
         // A file from an older build with fewer fields keeps the rest at defaults.

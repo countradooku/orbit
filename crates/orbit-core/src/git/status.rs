@@ -168,6 +168,22 @@ impl Git {
         Ok(head.trim().strip_prefix("ref: refs/heads/").map(str::to_owned))
     }
 
+    /// Commits HEAD has that `base` does not, and the other way round
+    /// (`(ahead, behind)`); `None` when `base` does not resolve.
+    pub async fn ahead_behind(&self, repo: &Path, base: &str) -> Result<Option<(u32, u32)>> {
+        let info = self.repo(repo).await?;
+        let range = format!("{base}...HEAD");
+        let out = self.git_output(&info.root, ["rev-list", "--left-right", "--count", range.as_str(), "--"], Opts::default()).await?;
+        if !out.ok() {
+            return Ok(None);
+        }
+        let line = first_line(&out.stdout);
+        let mut parts = line.split_whitespace().map(|n| n.parse::<u32>().unwrap_or(0));
+        let behind = parts.next().unwrap_or(0);
+        let ahead = parts.next().unwrap_or(0);
+        Ok(Some((ahead, behind)))
+    }
+
     /// The best common ancestor of two revisions, if they have one.
     pub async fn merge_base(&self, repo: &Path, a: &str, b: &str) -> Result<Option<String>> {
         let info = self.repo(repo).await?;

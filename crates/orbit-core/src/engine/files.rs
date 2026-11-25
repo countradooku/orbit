@@ -54,6 +54,8 @@ struct Root {
     /// Held while a walk runs: one walk per root at a time.
     building: tokio::sync::Mutex<()>,
     last_used: Mutex<Option<Instant>>,
+    /// The folder changed since the listing was built.
+    stale: std::sync::atomic::AtomicBool,
 }
 
 struct Listing {
@@ -81,6 +83,14 @@ impl FileIndex {
         root
     }
 
+    /// Notes that `root`'s files changed (a watcher saw it): the next query
+    /// answers at once and rebuilds the listing behind it.
+    pub(crate) fn mark_stale(&self, root: &Path) {
+        if let Some(root) = self.roots.lock().get(root) {
+            root.stale.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// Ranks the root's files against `query`, building the index first if
     /// there is none.
     pub async fn search(&self, root: PathBuf, query: String, limit: usize) -> Result<Vec<FileMatch>, String> {
@@ -88,7 +98,7 @@ impl FileIndex {
         let current = index.listing.lock().clone();
         let listing = match current {
             Some(listing) => {
-                if listing.built.elapsed() > STALE_AFTER {
+                if listing.built.elapsed() > STALE_AFTER || index.stale.swap(false, std::sync::atomic::Ordering::Relaxed) {
                     refresh_in_background(index.clone(), root.clone());
                 }
                 listing
