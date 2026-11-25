@@ -119,7 +119,7 @@ pub fn duration(text: &str) -> Result<Option<Duration>, CliError> {
 }
 
 /// Free text, with `-` read from standard input.
-fn text(args: &Map<String, Value>, name: &str, origin: Origin) -> Result<String, CliError> {
+pub(crate) fn text(args: &Map<String, Value>, name: &str, origin: Origin) -> Result<String, CliError> {
     let value = s(args, name).unwrap_or_default();
     if value == "-" && origin == Origin::Cli {
         let mut input = String::new();
@@ -367,6 +367,7 @@ async fn run(ctx: &Ctx, conn: &Conn, spec: &Spec, args: &Map<String, Value>, out
         }
         ["terminal", "run"] => terminal_run(ctx, conn, args, out).await,
         ["pr", _] | ["issue", _] | ["ship"] => crate::forge::run(ctx, conn, spec.path, args).await,
+        ["automation", _] => crate::automation::run(ctx, conn, spec.path, args).await,
         ["team", _] | ["race"] => crate::teams::run(ctx, conn, spec.path, args).await,
         ["terminal", "read"] => {
             let raw = s(args, "terminal").unwrap_or_default();
@@ -636,6 +637,43 @@ async fn new_thread(ctx: &Ctx, conn: &Conn, args: &Map<String, Value>) -> Result
         None => id.to_string(),
     };
     Ok(Outcome::ok(started, human))
+}
+
+/// `base` with the agent options of `args` applied: --provider, --model,
+/// --effort, --mode and --access.
+pub(crate) fn agent_config(state: &orbit_net::state::ClientState, base: ThreadConfig, args: &Map<String, Value>) -> Result<ThreadConfig, CliError> {
+    let mut config = base;
+    if let Some(provider) = s(args, "provider") {
+        let info = state.providers.iter().find(|p| p.instance_id().eq_ignore_ascii_case(provider));
+        let (kind, instance) = match (info, provider.to_lowercase().as_str()) {
+            (Some(info), _) => (info.kind, info.instance.clone()),
+            (None, "claude") => (ProviderKind::Claude, String::new()),
+            (None, "codex") => (ProviderKind::Codex, String::new()),
+            (None, _) => {
+                let known: Vec<&str> = state.providers.iter().map(|p| p.instance_id()).collect();
+                return Err(CliError::usage(format!("No agent “{provider}”; this Orbit has {}.", known.join(", "))));
+            }
+        };
+        let switched = ThreadConfig { provider: kind, instance, ..Default::default() };
+        if !config.same_instance(&switched) {
+            config = ThreadConfig { mode: config.mode, access: config.access, ..switched };
+        }
+    }
+    if let Some(model) = s(args, "model") {
+        config.model = model.to_owned();
+    }
+    if let Some(effort) = s(args, "effort") {
+        check_effort(state, &config, effort)?;
+        config.options.retain(|o| o.id != "effort");
+        config.options.push(OptionValue { id: "effort".into(), value: OptionSetting::Choice(effort.to_owned()) });
+    }
+    if let Some(mode) = s(args, "mode") {
+        config.mode = if mode == "plan" { Mode::Plan } else { Mode::Build };
+    }
+    if let Some(access) = s(args, "access") {
+        config.access = parse_access(access);
+    }
+    Ok(config)
 }
 
 /// A just-created thread's record, once the event carrying it arrives.

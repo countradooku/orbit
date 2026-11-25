@@ -108,7 +108,7 @@ impl CompareView {
     fn load(&mut self, cx: &mut Context<Self>) {
         let (Some(a), Some(b)) = (self.into, self.from) else { return };
         self.comparison.insert((a, b), Comparison::Loading);
-        let task = self.app.update(cx, |app, cx| app.call(Command::Team(TeamCommand::CompareCandidates { a, b }), cx));
+        let task = self.app.update(cx, |app, cx| app.call(Command::from(TeamCommand::CompareCandidates { a, b }), cx));
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -144,7 +144,7 @@ impl CompareView {
     fn take_hunk(&mut self, file: &FileDiff, hunk: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(into) = self.into else { return };
         let patch = hunk_patch(file, hunk);
-        let task = self.app.update(cx, |app, cx| app.call(Command::Team(TeamCommand::ApplyPatch { thread: into, patch }), cx));
+        let task = self.app.update(cx, |app, cx| app.call(Command::from(TeamCommand::ApplyPatch { thread: into, patch }), cx));
         self.busy = Some("hunk");
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
@@ -166,7 +166,7 @@ impl CompareView {
     fn run(&mut self, label: &'static str, command: TeamCommand, window: &mut Window, cx: &mut Context<Self>) {
         self.busy = Some(label);
         cx.notify();
-        let task = self.app.update(cx, |app, cx| app.call(Command::Team(command), cx));
+        let task = self.app.update(cx, |app, cx| app.call(Command::from(command), cx));
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {

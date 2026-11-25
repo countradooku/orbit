@@ -92,6 +92,10 @@ id_type!(/// A pending approval or question from an agent.
     RequestId, "req");
 id_type!(/// An interactive terminal session.
     TermId, "trm");
+id_type!(/// A scheduled or event-triggered agent run setup.
+    AutomationId, "aut");
+id_type!(/// One run of an automation.
+    RunId, "run");
 id_type!(/// An agent team: an architect thread and its workers.
     TeamId, "team");
 id_type!(/// A race: one prompt run by several candidates side by side.

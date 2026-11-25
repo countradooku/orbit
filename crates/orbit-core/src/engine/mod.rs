@@ -6,6 +6,7 @@
 //! it through an [`EngineHandle`] that can be cloned freely and used from
 //! any thread, including the UI thread, without blocking.
 
+mod automations;
 mod bus;
 pub use bus::Bus;
 mod drafts;

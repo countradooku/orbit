@@ -106,7 +106,7 @@ impl CrewStrip {
     fn merge(&mut self, team: TeamId, key: String, window: &mut Window, cx: &mut Context<Self>) {
         self.merging = Some(key.clone());
         cx.notify();
-        let command = Command::Team(TeamCommand::MergeWorker { actor: None, team: Some(team), worker: key.clone(), dry_run: false });
+        let command = Command::from(TeamCommand::MergeWorker { actor: None, team: Some(team), worker: key.clone(), dry_run: false });
         let task = self.app.update(cx, |app, cx| app.call(command, cx));
         let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
@@ -139,7 +139,7 @@ impl CrewStrip {
     }
 
     fn resume(&mut self, team: TeamId, window: &mut Window, cx: &mut Context<Self>) {
-        self.app.update(cx, |app, cx| app.run(Command::Team(TeamCommand::ResetBreaker { team, limits: None }), window, cx));
+        self.app.update(cx, |app, cx| app.run(Command::from(TeamCommand::ResetBreaker { team, limits: None }), window, cx));
     }
 
     fn render_row(&self, team: &Team, w: &Worker, depth: usize, now: u64, cx: &mut Context<Self>) -> AnyElement {

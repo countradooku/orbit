@@ -210,7 +210,7 @@ impl Rig {
     }
 
     fn call(&self, command: TeamCommand) -> Result<Reply, String> {
-        self.h.engine.call(Command::Team(command)).recv().unwrap()
+        self.h.engine.call(Command::from(command)).recv().unwrap()
     }
 
     fn start_team(&mut self, limits: TeamLimits) -> (TeamId, ThreadId) {
@@ -562,6 +562,6 @@ fn teams_and_races_survive_a_restart() {
         r.h.engine.shutdown();
     }
     let h = Harness::open_with(dir.path().to_owned(), team_launcher());
-    let Reply::Team(TeamReply::Team(t)) = h.call(Command::Team(TeamCommand::Status { actor: Some(architect), team: None })) else { panic!() };
+    let Reply::Team(TeamReply::Team(t)) = h.call(Command::from(TeamCommand::Status { actor: Some(architect), team: None })) else { panic!() };
     assert_eq!((t.id, t.notes[0].text.as_str()), (team, "kept"));
 }

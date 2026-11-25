@@ -42,8 +42,8 @@ pub enum ConnectionStatus {
 /// What a UI applies to its state.
 #[derive(Debug)]
 pub enum Update {
-    /// Replace all state with this snapshot.
-    Reset(Snapshot),
+    /// Replace all state with this snapshot (boxed: it is large and rare).
+    Reset(Box<Snapshot>),
     Events(Vec<Envelope>),
     Status(ConnectionStatus),
 }
@@ -141,7 +141,7 @@ impl LocalFeed {
                 if let Some(snapshot) = sub.snapshot {
                     self.epoch = snapshot.epoch;
                     self.seq = snapshot.seq;
-                    batch.push(Update::Reset(snapshot));
+                    batch.push(Update::Reset(Box::new(snapshot)));
                 }
                 if !sub.replay.is_empty() {
                     self.track(&sub.replay);

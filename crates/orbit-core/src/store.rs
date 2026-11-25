@@ -297,6 +297,8 @@ pub struct Store {
     drafts: HashMap<DraftTarget, Draft>,
     settings: Settings,
     open: HashMap<ThreadId, OpenTimeline>,
+    /// Automations and their recent runs.
+    automations: crate::automations::records::Records,
 }
 
 impl Store {
@@ -330,6 +332,7 @@ impl Store {
             drafts: HashMap::new(),
             settings: Settings::default(),
             open: HashMap::new(),
+            automations: Default::default(),
         };
         for env in records {
             store.seq = store.seq.max(env.seq);
@@ -394,9 +397,14 @@ impl Store {
         &self.settings
     }
 
+    pub fn automations(&self) -> &crate::automations::records::Records {
+        &self.automations
+    }
+
     pub fn snapshot(&self, providers: Vec<ProviderInfo>) -> Snapshot {
         let mut threads: Vec<Thread> = self.threads.values().cloned().collect();
         threads.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
+        let (automations, automation_runs) = self.automations.snapshot();
         Snapshot {
             epoch: self.epoch,
             seq: self.seq,
@@ -407,6 +415,8 @@ impl Store {
             drafts: self.drafts.iter().map(|(k, v)| (*k, v.clone())).collect(),
             settings: Box::new(self.settings.clone()),
             live: Vec::new(),
+            automations,
+            automation_runs,
             teams: Default::default(),
         }
     }
@@ -437,6 +447,9 @@ impl Store {
                 }
             }
             Event::SettingsChanged(settings) => self.settings = settings,
+            event @ (Event::AutomationUpserted(_) | Event::AutomationRemoved(_) | Event::AutomationRun(_)) => {
+                self.automations.apply(event)
+            }
             _ => {}
         }
     }
@@ -566,7 +579,7 @@ impl Store {
     }
 
     fn maybe_compact_meta(&mut self) -> io::Result<()> {
-        let live = self.projects.len() + self.threads.len() + self.drafts.len() + 2;
+        let live = self.projects.len() + self.threads.len() + self.drafts.len() + self.automations.len() + 2;
         if self.meta.records > 256 && self.meta.records > live * 4 {
             self.rewrite_meta()?;
         }
@@ -589,6 +602,7 @@ impl Store {
         for (target, draft) in &self.drafts {
             records.push(Envelope { seq, event: Event::DraftSaved { target: *target, draft: draft.clone() } });
         }
+        records.extend(self.automations.records(seq));
         self.meta.rewrite(records.iter())
     }
 

@@ -47,7 +47,7 @@ impl NotesBoard {
         cx.notify();
         let task = self
             .app
-            .update(cx, |app, cx| app.call(Command::Team(TeamCommand::PostNote { actor: None, team: Some(self.team), text }), cx));
+            .update(cx, |app, cx| app.call(Command::from(TeamCommand::PostNote { actor: None, team: Some(self.team), text }), cx));
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {

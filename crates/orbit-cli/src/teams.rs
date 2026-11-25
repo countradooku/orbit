@@ -52,7 +52,7 @@ fn actor(ctx: &Ctx, conn: &Conn, args: &Map<String, Value>) -> Result<ThreadId, 
 }
 
 async fn team(conn: &Conn, command: TeamCommand) -> Result<Reply, CliError> {
-    conn.call(Command::Team(command)).await
+    conn.call(Command::from(command)).await
 }
 
 /// `config` switched to the agent named `provider` (an instance id).

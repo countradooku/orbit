@@ -270,7 +270,7 @@ pub fn start_race(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let command = Command::Team(TeamCommand::StartRace {
+    let command = Command::from(TeamCommand::StartRace {
         project,
         prompt,
         configs: request.configs,

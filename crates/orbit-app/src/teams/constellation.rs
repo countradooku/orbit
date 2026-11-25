@@ -191,6 +191,9 @@ pub fn layout(stars: &[Star], aspect: f32) -> HashMap<ThreadId, (f32, f32)> {
     out
 }
 
+/// A point in `0..1` of the map's width and height.
+type Spot = (f32, f32);
+
 /// A dot's radius for `weight`, on a log scale.
 fn radius(weight: u64, mode: ConstellationMode) -> f32 {
     let (min, span) = match mode {
@@ -302,7 +305,7 @@ impl Constellation {
         let places = layout(stars, aspect);
         let state = self.app.read(cx).state();
         // Painted: links under dots. Colors are resolved now, from the theme.
-        let paint_links: Vec<((f32, f32), (f32, f32), bool)> = links
+        let paint_links: Vec<(Spot, Spot, bool)> = links
             .iter()
             .filter_map(|l| {
                 let (a, b, clash) = match *l {
@@ -313,7 +316,8 @@ impl Constellation {
             })
             .collect();
         let leads: HashSet<ThreadId> = state.teams.values().map(|t| t.architect).collect();
-        let paint_stars: Vec<((f32, f32), f32, Hsla, bool, bool)> = stars
+        // Where, radius, color, working, architect.
+        let paint_stars: Vec<(Spot, f32, Hsla, bool, bool)> = stars
             .iter()
             .filter_map(|s| {
                 let p = *places.get(&s.thread)?;

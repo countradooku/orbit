@@ -338,11 +338,10 @@ impl Orchestrator {
         }
         let from_label = self.member_label(t, actor);
         let team = self.teams.teams.get_mut(&id).unwrap();
-        let mut next = team.mail.iter().map(|m| m.id).max().unwrap_or(0);
-        for to in recipients {
-            next += 1;
+        let first = team.mail.iter().map(|m| m.id).max().unwrap_or(0) + 1;
+        for (id, to) in (first..).zip(recipients) {
             team.mail.push(Mail {
-                id: next,
+                id,
                 from: actor,
                 from_label: from_label.clone(),
                 to,

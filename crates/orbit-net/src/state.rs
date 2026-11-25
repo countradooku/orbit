@@ -132,6 +132,8 @@ pub struct Changes {
     pub drafts: HashSet<DraftTarget>,
     /// Terminals whose agent started, changed or ended.
     pub terminal_agents: Vec<TermId>,
+    /// An automation or one of its runs changed.
+    pub automations: bool,
     /// A team or race changed (or went away).
     pub teams: bool,
 }
@@ -155,6 +157,7 @@ impl Changes {
             && self.loaded.is_empty()
             && self.drafts.is_empty()
             && self.terminal_agents.is_empty()
+            && !self.automations
             && !self.teams
     }
 
@@ -169,8 +172,12 @@ impl Changes {
             || self.settings
             || self.conflicts
             || self.connection
+            || self.automations
     }
 }
+
+/// Runs kept per automation on the client.
+const KEEP_AUTOMATION_RUNS: usize = 50;
 
 #[derive(Default)]
 pub struct ClientState {
@@ -193,6 +200,10 @@ pub struct ClientState {
     pub live: HashMap<ThreadId, ThreadLive>,
     /// Agents running in terminals, bound to a thread or not.
     pub terminal_agents: HashMap<TermId, TerminalAgent>,
+    /// Automations, oldest first.
+    pub automations: Vec<Automation>,
+    /// Each automation's newest runs, newest first.
+    pub automation_runs: HashMap<AutomationId, Vec<AutomationRun>>,
     /// Agent teams and races (see `orbit_proto::teams`).
     pub teams: HashMap<TeamId, Team>,
     pub races: HashMap<RaceId, Race>,
@@ -291,6 +302,15 @@ impl ClientState {
             .unwrap_or_default()
     }
 
+    pub fn automation(&self, id: AutomationId) -> Option<&Automation> {
+        self.automations.iter().find(|a| a.id == id)
+    }
+
+    /// An automation's newest runs, newest first.
+    pub fn runs(&self, id: AutomationId) -> &[AutomationRun] {
+        self.automation_runs.get(&id).map(Vec::as_slice).unwrap_or_default()
+    }
+
     /// The status glyph of a thread, with its live evidence: what every
     /// surface draws (see [`LiveStatus`]).
     pub fn live_status(&self, thread: &Thread) -> LiveStatus {
@@ -310,6 +330,7 @@ impl ClientState {
         for update in updates {
             match update {
                 Update::Reset(snapshot) => {
+                    let snapshot = *snapshot;
                     self.projects = snapshot.projects;
                     self.threads = snapshot.threads.into_iter().map(|t| (t.id, t)).collect();
                     self.providers = snapshot.providers;
@@ -322,6 +343,11 @@ impl ClientState {
                         .values()
                         .flat_map(|l| l.terminals.iter().map(|a| (a.term, a.clone())))
                         .collect();
+                    self.automations = snapshot.automations;
+                    self.automation_runs.clear();
+                    for run in snapshot.automation_runs {
+                        self.automation_runs.entry(run.automation).or_default().push(run);
+                    }
                     self.teams = snapshot.teams.teams.into_iter().map(|t| (t.id, t)).collect();
                     self.races = snapshot.teams.races.into_iter().map(|r| (r.id, r)).collect();
                     self.live_usage.clear();
@@ -467,6 +493,32 @@ impl ClientState {
                 }
                 changes.drafts.insert(target);
             }
+            Event::AutomationUpserted(automation) => {
+                match self.automations.iter_mut().find(|a| a.id == automation.id) {
+                    Some(slot) => *slot = *automation,
+                    None => {
+                        self.automations.push(*automation);
+                        self.automations.sort_by_key(|a| a.id);
+                    }
+                }
+                changes.automations = true;
+            }
+            Event::AutomationRemoved(id) => {
+                self.automations.retain(|a| a.id != id);
+                self.automation_runs.remove(&id);
+                changes.automations = true;
+            }
+            Event::AutomationRun(run) => {
+                let runs = self.automation_runs.entry(run.automation).or_default();
+                match runs.iter_mut().find(|r| r.id == run.id) {
+                    Some(slot) => *slot = *run,
+                    None => {
+                        runs.insert(0, *run);
+                        runs.truncate(KEEP_AUTOMATION_RUNS);
+                    }
+                }
+                changes.automations = true;
+            }
         }
     }
 }
@@ -601,7 +653,7 @@ mod tests {
         let mut state = ClientState::default();
         let mut settings = Settings::default();
         settings.appearance.ui_scale = 110;
-        state.apply(vec![Update::Reset(Snapshot { settings: Box::new(settings.clone()), ..Default::default() })]);
+        state.apply(vec![Update::Reset(Box::new(Snapshot { settings: Box::new(settings.clone()), ..Default::default() }))]);
         assert_eq!(state.settings, settings);
         settings.composer.submit = SubmitKey::ModEnter;
         let changes = state.apply(events(vec![Event::SettingsChanged(settings.clone())]));

@@ -67,6 +67,7 @@ and `orbit agent-context` for a short guide written for agents.
 | `pr list\|show\|merge\|checkout\|fix-checks` | Pull requests on GitHub or GitLab | `list_pull_requests`, `get_pull_request` |
 | `issue list\|show\|start` | Issues on GitHub, GitLab, Linear or Jira; start a thread from one | `list_issues`, `get_issue` |
 | `ship [thread]` | Where a thread's work stands (uncommitted → merged) | `ship_status` |
+| `automation list\|show\|create\|run\|pause\|resume\|delete\|history` | Scheduled and event-triggered agent runs (see `orbit help automation create`) | `list_automations`, `get_automation`, `create_automation`, `run_automation`, `pause_automation`, `resume_automation`, `delete_automation`, `automation_history` |
 | `search <query>` | Full-text search across threads | `search` |
 | `team start <prompt> [--here] [--max-workers N] [--max-failures N] [--max-cost $]` | Start a thread as a team's architect | |
 | `team spawn <brief> [--title] [--depends-on w1,w2] [--scope paths] [--provider] [--model]` | Spawn a worker on your team | `team_spawn_worker` |

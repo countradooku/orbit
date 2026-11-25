@@ -137,6 +137,7 @@ pub struct Orchestrator {
     pub(crate) status: crate::status::StatusState,
     pub(crate) forge: super::forge::ForgeState,
     pub(crate) cli: super::cli::CliState,
+    pub(crate) automations: super::automations::AutomationsState,
     /// Agent teams and races (`engine/teams.rs`).
     pub(crate) teams: crate::teams::TeamsState,
 }
@@ -190,6 +191,7 @@ impl Orchestrator {
             status: Default::default(),
             forge: Default::default(),
             cli: Default::default(),
+            automations: Default::default(),
             teams,
         }
     }
@@ -419,6 +421,7 @@ impl Orchestrator {
             }
         }
         self.rearm_quota_resets();
+        self.automations_recover();
     }
 
     pub fn store(&self) -> &Store {
@@ -502,6 +505,7 @@ impl Orchestrator {
     /// agent processes.
     pub fn tick(&mut self) {
         self.status_tick();
+        self.automations_tick();
         self.teams_tick();
         let now = Instant::now();
         for runtime in self.runtimes.values_mut() {
@@ -633,7 +637,7 @@ impl Orchestrator {
     pub fn handle(&mut self, command: Command) -> Outcome {
         match command {
             Command::Forge(command) => self.forge(command),
-            Command::Team(command) => self.team_command(command),
+            Command::Team(command) => self.team_command(*command),
             command if super::forge::pushes(&command) => self.forge_after_push(command),
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
             Command::SearchFiles { thread, project, query, limit } => {
@@ -726,7 +730,7 @@ impl Orchestrator {
             Command::NewSession { thread } => self.new_session(thread),
             // Needs the engine's runtime free; only `handle` runs it.
             Command::GenerateText { .. } => Err("Text generation runs asynchronously.".into()),
-            Command::Team(command) => match self.team_command(command) {
+            Command::Team(command) => match self.team_command(*command) {
                 Outcome::Ready(result) => result,
                 Outcome::Deferred(future) => futures_block_on(future),
             },
@@ -756,6 +760,7 @@ impl Orchestrator {
             | Command::RunInTerminal { .. }
             | Command::ReadTerminal { .. }
             | Command::ListTerminals) => self.cli_command(command),
+            Command::Automation(command) => self.automation_command(command),
         }
     }
 
