@@ -271,10 +271,12 @@ pub fn ensure_running(
         return Ok(info);
     }
     let started = Instant::now();
+    // A host started earlier that has not served yet is waited for; one that
+    // is exiting (it may still look alive for a moment) is replaced.
     let starting = child.take().and_then(|mut c| c.try_wait().ok().flatten().is_none().then_some(c));
-    let mut spawned = match starting {
-        Some(starting) => starting,
-        None => spawn(binary.ok_or(HostError::Missing)?, data_dir).map_err(HostError::Spawn)?,
+    let (mut spawned, mut fresh) = match starting {
+        Some(starting) => (starting, false),
+        None => (spawn(binary.ok_or(HostError::Missing)?, data_dir).map_err(HostError::Spawn)?, true),
     };
     let mut wait = Duration::from_millis(2);
     loop {
@@ -287,7 +289,17 @@ pub fn ensure_running(
             if let Some(info) = live_endpoint(data_dir)? {
                 return Ok(info);
             }
-            return Err(HostError::Exited(log_tail(data_dir).unwrap_or_else(|| format!("exit status {status}"))));
+            if !fresh {
+                // That was the previous host finishing its exit: start one.
+                spawned = spawn(binary.ok_or(HostError::Missing)?, data_dir).map_err(HostError::Spawn)?;
+                fresh = true;
+                continue;
+            }
+            let why = match log_tail(data_dir) {
+                Some(line) => format!("{line} ({status})"),
+                None => status.to_string(),
+            };
+            return Err(HostError::Exited(why));
         }
         if started.elapsed() > START_TIMEOUT {
             *child = Some(spawned);

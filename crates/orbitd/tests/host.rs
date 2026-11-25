@@ -249,7 +249,11 @@ fn an_idle_host_exits_after_the_grace_period_and_stays_while_a_turn_runs() {
     assert!(took >= GRACE / 2, "it waited for the grace period ({took:?})");
     // With `always`, it stays.
     orbit_net::host::write_policy(dir.path(), KeepRunning::Always).unwrap();
-    host.start().unwrap();
+    if let Err(err) = host.start() {
+        let log = std::fs::read_to_string(dir.path().join(orbit_net::host::LOG_FILE)).unwrap_or_default();
+        panic!("{err}
+{log}");
+    }
     let pid = host_pid(dir.path()).unwrap();
     App::open(&host).close();
     std::thread::sleep(GRACE * 3);
