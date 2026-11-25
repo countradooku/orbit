@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use bytes::Bytes;
 use crossfire::mpsc;
 use orbit_core::EngineHandle;
+use orbit_proto::link::ServerEncoder;
 use orbit_proto::*;
 use sockudo_ws::server::WebSocketServer;
 use sockudo_ws::{Config, Http1, Message};
@@ -57,13 +58,8 @@ pub async fn serve_on(engine: EngineHandle, listener: TcpListener, token: String
     }
 }
 
-fn frame(msg: &ServerMsg) -> Message {
-    Message::Binary(Bytes::from(encode(msg)))
-}
-
-/// Frames with a reused codec, for the hot event path.
-fn frame_with(codec: &mut Codec, msg: &ServerMsg) -> Message {
-    Message::Binary(Bytes::copy_from_slice(codec.encode(msg)))
+fn binary(bytes: Vec<u8>) -> Message {
+    Message::Binary(Bytes::from(bytes))
 }
 
 /// Constant-time comparison, so the token cannot be guessed byte by byte
@@ -78,6 +74,8 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (mut reader, mut writer) = ws.split();
+    // Frames for this link: hot messages skip the big enums (see `link`).
+    let mut link = ServerEncoder::new();
 
     // Handshake.
     let hello = loop {
@@ -93,38 +91,41 @@ where
     };
     if version != PROTOCOL_VERSION {
         let reason = format!("This host speaks protocol {PROTOCOL_VERSION}; update Orbit to connect.");
-        let _ = writer.send(frame(&ServerMsg::Goodbye { reason })).await;
+        let _ = writer.send(binary(link.message(&ServerMsg::Goodbye { reason }))).await;
         return Err("protocol mismatch".into());
     }
     if !same_token(&presented, token) {
-        let _ = writer.send(frame(&ServerMsg::Goodbye { reason: "The access token is wrong.".into() })).await;
+        let _ = writer.send(binary(link.message(&ServerMsg::Goodbye { reason: "The access token is wrong.".into() }))).await;
         return Err("bad token".into());
     }
     let sub = engine.subscribe(epoch, since).await.map_err(|_| "engine stopped")?;
     writer
-        .send(frame(&ServerMsg::Welcome { version: PROTOCOL_VERSION, snapshot: sub.snapshot }))
+        .send(binary(link.message(&ServerMsg::Welcome { version: PROTOCOL_VERSION, snapshot: sub.snapshot })))
         .await
         .map_err(|e| e.to_string())?;
     if !sub.replay.is_empty() {
         for chunk in sub.replay.chunks(crate::MAX_BATCH) {
-            writer.send(frame(&ServerMsg::Events(chunk.to_vec()))).await.map_err(|e| e.to_string())?;
+            for bytes in link.events(chunk.to_vec()) {
+                writer.send(binary(bytes)).await.map_err(|e| e.to_string())?;
+            }
         }
     }
 
     // Replies are produced by spawned tasks and written by the writer loop.
     let (reply_tx, reply_rx) = mpsc::unbounded_async::<ServerMsg>();
     let events = sub.events;
-    let mut codec = Codec::new();
     let reader_task = {
         let engine = engine.clone();
         tokio::spawn(async move {
+            // The reader decodes calls with its own reused buffers.
+            let mut calls = ServerEncoder::new();
             while let Some(msg) = reader.next().await {
                 let data = match msg {
                     Ok(Message::Binary(data)) => data,
                     Ok(Message::Close(_)) | Err(_) => break,
                     Ok(_) => continue,
                 };
-                let Ok(ClientMsg::Call { id, command }) = decode::<ClientMsg>(&data) else { continue };
+                let Ok(ClientMsg::Call { id, command }) = calls.client(&data) else { continue };
                 let reply = engine.call(command);
                 let tx = reply_tx.clone();
                 tokio::spawn(async move {
@@ -139,8 +140,31 @@ where
         tokio::select! {
             reply = reply_rx.recv() => match reply {
                 Ok(msg) => {
-                    if let Err(e) = writer.send(frame(&msg)).await {
-                        break Err(e.to_string());
+                    // The engine emits a command's events before it replies,
+                    // so they are queued by now: send them first. A client
+                    // that reads its state after a reply then sees what the
+                    // command did (the two queues would otherwise race).
+                    let mut frames = Vec::new();
+                    let mut batch = Vec::new();
+                    while let Ok(env) = events.try_recv() {
+                        batch.push(env);
+                        if batch.len() == crate::MAX_BATCH {
+                            frames.extend(link.events(std::mem::take(&mut batch)));
+                        }
+                    }
+                    if !batch.is_empty() {
+                        frames.extend(link.events(batch));
+                    }
+                    frames.push(link.message(&msg));
+                    let mut failed = None;
+                    for bytes in frames {
+                        if let Err(e) = writer.send(binary(bytes)).await {
+                            failed = Some(e.to_string());
+                            break;
+                        }
+                    }
+                    if let Some(e) = failed {
+                        break Err(e);
                     }
                 }
                 Err(_) => break Ok(()),
@@ -155,14 +179,21 @@ where
                             Err(_) => break,
                         }
                     }
-                    if let Err(e) = writer.send(frame_with(&mut codec, &ServerMsg::Events(batch))).await {
-                        break Err(e.to_string());
+                    let mut failed = None;
+                    for bytes in link.events(batch) {
+                        if let Err(e) = writer.send(binary(bytes)).await {
+                            failed = Some(e.to_string());
+                            break;
+                        }
+                    }
+                    if let Some(e) = failed {
+                        break Err(e);
                     }
                 }
                 Err(_) => {
                     // The engine dropped this subscriber because it fell
                     // behind; the client reconnects and replays from its seq.
-                    let _ = writer.send(frame(&ServerMsg::Goodbye { reason: "resync".into() })).await;
+                    let _ = writer.send(binary(link.message(&ServerMsg::Goodbye { reason: "resync".into() }))).await;
                     break Ok(());
                 }
             },

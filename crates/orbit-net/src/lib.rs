@@ -46,6 +46,35 @@ pub enum Update {
     Reset(Box<Snapshot>),
     Events(Vec<Envelope>),
     Status(ConnectionStatus),
+    /// A call's answer, in order with the events before it (see
+    /// [`RemoteClient::order_replies`]). [`ClientState::apply`] resolves it
+    /// after applying those events.
+    ///
+    /// [`ClientState::apply`]: state::ClientState::apply
+    Reply(PendingReply),
+}
+
+/// A remote call's result, held until the updates before it are applied.
+pub struct PendingReply {
+    reply: crossfire::oneshot::TxOneshot<Result<Reply, String>>,
+    result: Result<Reply, String>,
+}
+
+impl PendingReply {
+    pub(crate) fn new(reply: crossfire::oneshot::TxOneshot<Result<Reply, String>>, result: Result<Reply, String>) -> Self {
+        Self { reply, result }
+    }
+
+    /// Hands the result to the caller.
+    pub fn resolve(self) {
+        self.reply.send(self.result);
+    }
+}
+
+impl std::fmt::Debug for PendingReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingReply").field("result", &self.result).finish_non_exhaustive()
+    }
 }
 
 /// The engine, local or remote.

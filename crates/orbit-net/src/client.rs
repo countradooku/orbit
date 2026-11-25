@@ -10,11 +10,14 @@ use std::time::Duration;
 
 use crossfire::oneshot::{RxOneshot, TxOneshot, oneshot};
 use crossfire::{AsyncRx, BlockingTxTrait, MTx, mpsc};
+use orbit_proto::link::ServerDecoder;
 use orbit_proto::*;
 use std::sync::{Arc, Mutex};
 
 use crate::ws_lite::{self, Incoming};
-use crate::{ConnectionStatus, Update, ready};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::{ConnectionStatus, PendingReply, Update, ready};
 
 enum Outgoing {
     /// Boxed: a command can be large (settings) and the queue holds many.
@@ -28,6 +31,8 @@ pub struct RemoteClient {
     /// Single consumer: the first [`Backend::feed`](crate::Backend::feed)
     /// takes it.
     updates: Arc<Mutex<Option<AsyncRx<mpsc::List<Update>>>>>,
+    /// Replies travel through the update stream (see [`Self::order_replies`]).
+    ordered: Arc<AtomicBool>,
 }
 
 impl RemoteClient {
@@ -35,11 +40,25 @@ impl RemoteClient {
     pub fn connect(url: String, token: String) -> std::io::Result<Self> {
         let (outgoing, out_rx) = mpsc::unbounded_async::<Outgoing>();
         let (update_tx, updates) = mpsc::unbounded_async::<Update>();
+        let ordered = Arc::new(AtomicBool::new(false));
+        let run_ordered = ordered.clone();
         std::thread::Builder::new().name("orbit-remote".into()).spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
-            runtime.block_on(run(url, token, out_rx, update_tx));
+            runtime.block_on(run(url, token, out_rx, update_tx, run_ordered));
         })?;
-        Ok(Self { outgoing, updates: Arc::new(Mutex::new(Some(updates))) })
+        Ok(Self { outgoing, updates: Arc::new(Mutex::new(Some(updates))), ordered })
+    }
+
+    /// Delivers each reply through the update stream, after the events the
+    /// host sent before it, as [`Update::Reply`]; the consumer resolves it
+    /// once those events are applied ([`ClientState::apply`] does). A caller
+    /// that reads its state after a reply then sees what its command did.
+    /// Only for a consumer that applies every update: otherwise calls never
+    /// resolve.
+    ///
+    /// [`ClientState::apply`]: crate::state::ClientState::apply
+    pub fn order_replies(&self, on: bool) {
+        self.ordered.store(on, Ordering::Release);
     }
 
     pub fn call(&self, command: Command) -> RxOneshot<Result<Reply, String>> {
@@ -66,6 +85,7 @@ async fn run(
     token: String,
     outgoing: AsyncRx<mpsc::List<Outgoing>>,
     updates: MTx<mpsc::List<Update>>,
+    ordered: Arc<AtomicBool>,
 ) {
     let mut epoch = 0u64;
     let mut since = 0u64;
@@ -83,7 +103,8 @@ async fn run(
                     format!("The host closed the connection: {e}")
                 } else {
                     let mut welcomed = false;
-                    let mut codec = Codec::new();
+                    // This link's frames: hot messages skip the big enums.
+                    let mut link = ServerDecoder::new();
                     loop {
                         tokio::select! {
                             msg = reader.next() => {
@@ -98,7 +119,7 @@ async fn run(
                                     Ok(Incoming::Close) => break "The host closed the connection.".to_string(),
                                     Err(e) => break format!("Connection lost: {e}"),
                                 };
-                                match codec.decode::<ServerMsg>(&data) {
+                                match link.message(&data) {
                                     Ok(ServerMsg::Welcome { snapshot, .. }) => {
                                         welcomed = true;
                                         if let Some(snapshot) = snapshot {
@@ -116,7 +137,11 @@ async fn run(
                                     }
                                     Ok(ServerMsg::Reply { id, result }) => {
                                         if let Some(reply) = pending.remove(&id) {
-                                            reply.send(result);
+                                            if ordered.load(Ordering::Acquire) {
+                                                let _ = updates.send(Update::Reply(PendingReply::new(reply, result)));
+                                            } else {
+                                                reply.send(result);
+                                            }
                                         }
                                     }
                                     Ok(ServerMsg::Goodbye { reason }) => break reason,
@@ -132,7 +157,7 @@ async fn run(
                                     let id = next_id;
                                     next_id = next_id.wrapping_add(1).max(1);
                                     let msg = ClientMsg::Call { id, command: *command };
-                                    match writer.binary(&encode(&msg)).await {
+                                    match writer.binary(&link.client(&msg)).await {
                                         Ok(()) => { pending.insert(id, reply); }
                                         Err(e) => {
                                             reply.send(Err(format!("Connection lost: {e}")));

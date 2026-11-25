@@ -53,8 +53,8 @@ fn main() {
         scripts: ProjectScripts::default(),
         base_branch: Some("main".into()),
     };
-    store.commit(Event::ProjectUpserted(project.clone())).unwrap();
-    store.commit(Event::ProjectUpserted(web.clone())).unwrap();
+    store.commit(Event::ProjectUpserted(Box::new(project.clone()))).unwrap();
+    store.commit(Event::ProjectUpserted(Box::new(web.clone()))).unwrap();
 
     let usage = Usage {
         input_tokens: 48_200,
@@ -77,7 +77,7 @@ fn main() {
             ..Default::default()
         };
         f(&mut t);
-        store.commit(Event::ThreadUpserted(t.clone())).unwrap();
+        store.commit(Event::ThreadUpserted(Box::new(t.clone()))).unwrap();
         t
     };
 
@@ -208,7 +208,7 @@ fn main() {
     });
     items.push(streaming);
     for item in items {
-        store.commit(Event::ItemUpserted { thread: main.id, item }).unwrap();
+        store.commit(Event::ItemUpserted { thread: main.id, item: Box::new(item) }).unwrap();
     }
 
     // The waiting thread: a turn that asks.
@@ -223,7 +223,7 @@ fn main() {
         waiting_items.push(Item { id: *id, turn: 1, status: ItemStatus::Streaming, body: ItemBody::Request(request.clone()) });
     }
     for item in waiting_items {
-        store.commit(Event::ItemUpserted { thread: waiting.id, item }).unwrap();
+        store.commit(Event::ItemUpserted { thread: waiting.id, item: Box::new(item) }).unwrap();
     }
 
     // The failed thread: the first attempt failed, a retry failed again.
@@ -255,7 +255,7 @@ fn main() {
         item(1, ItemBody::Notice { level: NoticeLevel::Error, text: "The agent exited unexpectedly: out of memory".into() }),
     ];
     for item in failed_items {
-        store.commit(Event::ItemUpserted { thread: failed.id, item }).unwrap();
+        store.commit(Event::ItemUpserted { thread: failed.id, item: Box::new(item) }).unwrap();
     }
 
     // The rate-limited thread.
@@ -265,7 +265,7 @@ fn main() {
         item(1, ItemBody::TurnEnd(TurnSummary { duration_ms: 12_000, ..Default::default() })),
     ];
     for item in limited_items {
-        store.commit(Event::ItemUpserted { thread: limited.id, item }).unwrap();
+        store.commit(Event::ItemUpserted { thread: limited.id, item: Box::new(item) }).unwrap();
     }
 
     // `SEED_FOCUS=main|questions|failed|limited` makes that thread the latest, for
@@ -279,7 +279,7 @@ fn main() {
     };
     if let Some(mut t) = focus {
         t.updated_ms = now + 86_400_000;
-        store.commit(Event::ThreadUpserted(t)).unwrap();
+        store.commit(Event::ThreadUpserted(Box::new(t))).unwrap();
     }
     store.sync().unwrap();
     println!("seeded {dir}");

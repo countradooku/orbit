@@ -25,8 +25,10 @@ impl Orchestrator {
     /// Every agent event is a sign of life. Called before the event is
     /// applied.
     pub(crate) fn status_on_agent(&mut self, thread: ThreadId, event: &AgentEvent) {
-        let (now, ms) = (Instant::now(), now_ms());
-        self.status.lost.remove(&thread);
+        let (now, ms) = self.clock();
+        if !self.status.lost.is_empty() {
+            self.status.lost.remove(&thread);
+        }
         let in_turn = self.runtimes.get(&thread).is_some_and(|r| r.turn.is_some());
         match event {
             AgentEvent::TurnFinished { .. } | AgentEvent::Exited { .. } => {
@@ -378,7 +380,7 @@ impl Orchestrator {
     fn terminal_agent_changed(&mut self, term: TermId) {
         let Some(watch) = self.status.terminals.get(&term) else { return };
         let (agent, thread) = (watch.agent(), watch.thread);
-        self.emit(Event::TerminalAgent { term, agent });
+        self.emit(Event::TerminalAgent { term, agent: agent.map(Box::new) });
         if let Some(thread) = thread {
             self.publish_live(thread);
         }
@@ -422,7 +424,7 @@ impl Orchestrator {
         } else {
             self.status.published.insert(thread, live.clone());
         }
-        self.emit(Event::ThreadLive { thread, live });
+        self.emit(Event::ThreadLive { thread, live: Box::new(live) });
     }
 
     /// Live status for a fresh client's snapshot.

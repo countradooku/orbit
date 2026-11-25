@@ -164,7 +164,7 @@ impl World {
             match self.events.try_recv() {
                 Ok(env) => {
                     if let Event::ThreadUpserted(t) = env.event {
-                        self.threads.insert(t.id, t);
+                        self.threads.insert(t.id, *t);
                     }
                 }
                 Err(_) => std::thread::sleep(Duration::from_millis(5)),

@@ -550,7 +550,7 @@ impl Orchestrator {
             ..Default::default()
         };
         let thread_id = thread.id;
-        self.emit(Event::ThreadUpserted(thread));
+        self.emit(Event::ThreadUpserted(Box::new(thread)));
         self.create_worktree_from(thread_id, project, branch.clone());
         self.teams.member.insert(thread_id, id);
         {
@@ -909,7 +909,7 @@ impl Orchestrator {
                 ..Default::default()
             };
             let tid = thread.id;
-            self.emit(Event::ThreadUpserted(thread));
+            self.emit(Event::ThreadUpserted(Box::new(thread)));
             self.create_worktree_from(tid, record.clone(), Some(base.clone()));
             self.teams.candidate.insert(tid, id);
             candidates.push(Candidate {

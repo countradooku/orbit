@@ -33,7 +33,7 @@ impl Orchestrator {
             return Ok(Reply::Done);
         }
         draft.updated_ms = if draft.is_empty() { 0 } else { now_ms() };
-        self.emit(Event::DraftSaved { target, draft });
+        self.emit(Event::DraftSaved { target, draft: Box::new(draft) });
         Ok(Reply::Done)
     }
 }

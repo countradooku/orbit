@@ -130,7 +130,7 @@ impl Orchestrator {
             ..Default::default()
         };
         let id = thread.id;
-        self.emit(Event::ThreadUpserted(thread));
+        self.emit(Event::ThreadUpserted(Box::new(thread)));
         if let (true, Some(project)) = (worktree, project_record) {
             self.create_worktree(id, project);
         }

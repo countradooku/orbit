@@ -186,7 +186,7 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
                     reply.send(Subscribed { snapshot, replay, events });
                 }
                 Ok(Call::AttachBots(link)) => orchestrator.attach_bots(link),
-                Ok(Call::PublishBots(state)) => orchestrator.emit(Event::Bots(state)),
+                Ok(Call::PublishBots(state)) => orchestrator.emit(Event::Bots(Box::new(state))),
                 Ok(Call::Shutdown { done }) => {
                     orchestrator.shutdown();
                     // Release the data folder before saying we are done.
@@ -201,12 +201,14 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
             },
             event = agent_rx.recv() => {
                 if let Ok((thread, event)) = event {
+                    orchestrator.begin_burst();
                     orchestrator.handle_agent(thread, event);
                     // Drain whatever else is ready so a burst of deltas is
                     // applied in one pass.
                     while let Ok((thread, event)) = agent_rx.try_recv() {
                         orchestrator.handle_agent(thread, event);
                     }
+                    orchestrator.end_burst();
                 }
             }
             output = term_rx.recv() => {

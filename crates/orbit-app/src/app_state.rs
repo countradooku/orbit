@@ -44,6 +44,11 @@ impl EventEmitter<AppEvent> for AppState {}
 
 impl AppState {
     pub fn new(backend: Backend, cx: &mut Context<Self>) -> Self {
+        // The pump applies every update, so a remote reply can wait for the
+        // events before it: what a command did is shown when it returns.
+        if let Backend::Remote(client) = &backend {
+            client.order_replies(true);
+        }
         let mut feed = backend.feed();
         let pump = cx.spawn(async move |this, cx| {
             while let Some(batch) = feed.next_batch().await {

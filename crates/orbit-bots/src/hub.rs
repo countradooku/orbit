@@ -383,7 +383,7 @@ impl Hub {
                         };
                         self.state.apply(vec![Update::Events(vec![env])]);
                         match reaction {
-                            Some((thread, Some(item))) => self.on_item(thread, item),
+                            Some((thread, Some(item))) => self.on_item(thread, *item),
                             Some((thread, None)) => self.on_thread(thread),
                             None => {}
                         }

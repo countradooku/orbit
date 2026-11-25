@@ -138,6 +138,9 @@ impl Conn {
         let client = RemoteClient::connect(target.url.clone(), target.token.clone())
             .map_err(|e| CliError::unavailable(format!("Couldn’t start the connection: {e}")))?;
         let updates = client.updates().expect("a fresh client has its update stream");
+        // Every update is applied below, so replies can wait for the events
+        // before them: a command's effects are in `state()` when it returns.
+        client.order_replies(true);
         let mut state = ClientState::default();
         let mut reset = false;
         let deadline = tokio::time::Instant::now() + timeout;

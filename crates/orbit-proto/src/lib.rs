@@ -22,6 +22,7 @@ pub mod forge;
 pub mod guard;
 pub mod ids;
 pub mod legacy;
+pub mod link;
 pub mod model;
 pub mod settings;
 pub mod status;
@@ -53,8 +54,10 @@ pub use wire::*;
 /// version 6, chat bots and the guard (`Command::Bots`, `Command::Guard`,
 /// `Command::Via` and their replies and events);
 /// version 7, agent teams and races (`Snapshot::teams`, `Event::Team`,
-/// `Command::Team`, `Reply::Team`).
-pub const PROTOCOL_VERSION: u16 = 7;
+/// `Command::Team`, `Reply::Team`); version 8, server frames start with a
+/// kind byte so streamed tokens and `Done` replies skip the big enums
+/// (see [`link`]).
+pub const PROTOCOL_VERSION: u16 = 8;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

@@ -31,7 +31,7 @@ fn main() {
             workspace: Workspace { branch: Some(format!("orbit/{}", title.to_lowercase().replace(' ', "-"))), ..Default::default() },
             ..Default::default()
         };
-        store.commit(Event::ThreadUpserted(thread)).unwrap();
+        store.commit(Event::ThreadUpserted(Box::new(thread))).unwrap();
     };
     add(
         "Run the migration against a scratch database",

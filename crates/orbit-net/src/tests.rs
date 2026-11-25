@@ -120,3 +120,52 @@ fn local_backend_feed_starts_with_a_snapshot() {
         .unwrap();
     collect(&mut feed, |u| has_thread(u, "Local"));
 }
+
+/// With ordered replies, a command's events are applied by the time its
+/// reply resolves: a client reading its state after `await` sees them.
+#[test]
+fn ordered_replies_follow_the_events_they_caused() {
+    use std::sync::{Arc, Mutex};
+
+    use crate::state::ClientState;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = server(engine(dir.path()), "secret");
+    let client = RemoteClient::connect(url, "secret".into()).unwrap();
+    client.order_replies(true);
+    let backend = Backend::Remote(client);
+    let mut feed = backend.feed();
+    let state = Arc::new(Mutex::new(ClientState::default()));
+    // Apply every update on its own thread, as the app's pump does, and
+    // slowly, like a busy UI: an unordered reply would overtake its events.
+    let pump_state = state.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            while let Some(batch) = feed.next_batch().await {
+                std::thread::sleep(Duration::from_millis(3));
+                pump_state.lock().unwrap().apply(batch);
+            }
+        })
+    });
+    let connected = Instant::now();
+    while !matches!(state.lock().unwrap().connection, Some(ConnectionStatus::Connected)) {
+        assert!(connected.elapsed() < Duration::from_secs(5), "never connected");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let Ok(Ok(Reply::Thread(id))) =
+        block_on(backend.call(Command::CreateThread { project: None, config: ThreadConfig::default(), worktree: false }))
+    else {
+        panic!("thread")
+    };
+    assert!(state.lock().unwrap().threads.contains_key(&id), "the new thread is there when the reply is");
+    for i in 0..50 {
+        let title = format!("Title {i}");
+        block_on(backend.call(Command::UpdateThread {
+            id,
+            patch: ThreadPatch { title: Some(title.clone()), ..Default::default() },
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(state.lock().unwrap().threads[&id].title, title, "round {i}");
+    }
+}

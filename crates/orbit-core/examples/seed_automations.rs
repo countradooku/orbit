@@ -27,9 +27,9 @@ fn main() {
         scripts: ProjectScripts::default(),
         base_branch: Some("main".into()),
     };
-    store.commit(Event::ProjectUpserted(project.clone())).unwrap();
+    store.commit(Event::ProjectUpserted(Box::new(project.clone()))).unwrap();
     let config = ThreadConfig { model: "claude-opus-4-5".into(), ..Default::default() };
-    store.commit(Event::DefaultsChanged(config.clone())).unwrap();
+    store.commit(Event::DefaultsChanged(Box::new(config.clone()))).unwrap();
 
     let thread = |store: &mut Store, title: &str, ago: u64| -> ThreadId {
         let t = Thread {
@@ -43,7 +43,7 @@ fn main() {
             usage: Usage { input_tokens: 31_000, output_tokens: 4_200, ..Default::default() },
             ..Default::default()
         };
-        store.commit(Event::ThreadUpserted(t.clone())).unwrap();
+        store.commit(Event::ThreadUpserted(Box::new(t.clone()))).unwrap();
         t.id
     };
 

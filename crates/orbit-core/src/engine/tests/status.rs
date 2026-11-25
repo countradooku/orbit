@@ -79,7 +79,7 @@ impl Rig {
 
     fn live(&self, thread: ThreadId) -> Option<ThreadLive> {
         self.seen.iter().rev().find_map(|e| match e {
-            Event::ThreadLive { thread: t, live } if *t == thread => Some(live.clone()),
+            Event::ThreadLive { thread: t, live } if *t == thread => Some((**live).clone()),
             _ => None,
         })
     }

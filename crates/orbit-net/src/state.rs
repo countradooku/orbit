@@ -336,8 +336,11 @@ impl ClientState {
 
     pub fn apply(&mut self, updates: Vec<Update>) -> Changes {
         let mut changes = Changes::default();
+        // Replies resolve once everything before them is applied.
+        let mut replies = Vec::new();
         for update in updates {
             match update {
+                Update::Reply(reply) => replies.push(reply),
                 Update::Reset(snapshot) => {
                     let snapshot = *snapshot;
                     self.projects = snapshot.projects;
@@ -375,6 +378,9 @@ impl ClientState {
                 }
             }
         }
+        for reply in replies {
+            reply.resolve();
+        }
         changes
     }
 
@@ -393,8 +399,8 @@ impl ClientState {
         match event {
             Event::ProjectUpserted(project) => {
                 match self.projects.iter_mut().find(|p| p.id == project.id) {
-                    Some(slot) => *slot = project,
-                    None => self.projects.push(project),
+                    Some(slot) => *slot = *project,
+                    None => self.projects.push(*project),
                 }
                 self.projects.sort_by_key(|p| p.order);
                 changes.projects = true;
@@ -408,7 +414,7 @@ impl ClientState {
                     self.live_usage.remove(&thread.id);
                 }
                 changes.threads.insert(thread.id);
-                self.threads.insert(thread.id, thread);
+                self.threads.insert(thread.id, *thread);
             }
             Event::ThreadRemoved(id) => {
                 self.threads.remove(&id);
@@ -420,7 +426,7 @@ impl ClientState {
             }
             Event::ItemUpserted { thread, item } => {
                 if let Some(timeline) = self.timelines.get_mut(&thread) {
-                    let change = timeline.upsert(item);
+                    let change = timeline.upsert(*item);
                     changes.timelines.entry(thread).or_default().push(change);
                 }
             }
@@ -439,11 +445,11 @@ impl ClientState {
                 changes.providers = true;
             }
             Event::DefaultsChanged(config) => {
-                self.defaults = config;
+                self.defaults = *config;
                 changes.defaults = true;
             }
             Event::SettingsChanged(settings) => {
-                self.settings = settings;
+                self.settings = *settings;
                 changes.settings = true;
             }
             Event::UsageChanged { thread, usage } => {
@@ -465,20 +471,20 @@ impl ClientState {
                 if live.is_default() {
                     self.live.remove(&thread);
                 } else {
-                    self.live.insert(thread, live);
+                    self.live.insert(thread, *live);
                 }
                 // The shell redraws the thread's row and glyph.
                 changes.threads.insert(thread);
             }
             Event::TerminalAgent { term, agent } => {
                 match agent {
-                    Some(agent) => self.terminal_agents.insert(term, agent),
+                    Some(agent) => self.terminal_agents.insert(term, *agent),
                     None => self.terminal_agents.remove(&term),
                 };
                 changes.terminal_agents.push(term);
             }
             Event::Bots(state) => {
-                self.bots = Some(state);
+                self.bots = Some(*state);
                 changes.bots = true;
             }
             Event::GuardChanged(guard) => {
@@ -506,7 +512,7 @@ impl ClientState {
                 if draft.is_empty() {
                     self.drafts.remove(&target);
                 } else {
-                    self.drafts.insert(target, draft);
+                    self.drafts.insert(target, *draft);
                 }
                 changes.drafts.insert(target);
             }
@@ -604,7 +610,7 @@ mod tests {
         let thread = ThreadId::new();
         let (a, b, c) = (item("a"), item("b"), item("c"));
         state.set_timeline(thread, vec![a.clone(), c.clone()]);
-        let changes = state.apply(events(vec![Event::ItemUpserted { thread, item: b.clone() }]));
+        let changes = state.apply(events(vec![Event::ItemUpserted { thread, item: Box::new(b.clone()) }]));
         assert_eq!(changes.timelines[&thread], vec![ItemChange::Inserted(1)]);
         let ids: Vec<ItemId> = state.timeline(thread).unwrap().items().iter().map(|i| i.id).collect();
         assert_eq!(ids, vec![a.id, b.id, c.id]);
@@ -615,7 +621,7 @@ mod tests {
     fn events_for_closed_timelines_cost_nothing() {
         let mut state = ClientState::default();
         let thread = ThreadId::new();
-        let changes = state.apply(events(vec![Event::ItemUpserted { thread, item: item("x") }]));
+        let changes = state.apply(events(vec![Event::ItemUpserted { thread, item: Box::new(item("x")) }]));
         assert!(changes.is_empty());
         assert!(state.timeline(thread).is_none());
     }
@@ -627,12 +633,12 @@ mod tests {
         let id = thread.id;
         let quiet = ThreadLive { liveness: Liveness::Quiet { since_ms: 1, tool: None }, last_signal_ms: 1, terminals: vec![] };
         let changes = state.apply(vec![Update::Events(vec![
-            Envelope { seq: 1, event: Event::ThreadUpserted(thread.clone()) },
-            Envelope { seq: 0, event: Event::ThreadLive { thread: id, live: quiet } },
+            Envelope { seq: 1, event: Event::ThreadUpserted(Box::new(thread.clone())) },
+            Envelope { seq: 0, event: Event::ThreadLive { thread: id, live: Box::new(quiet) } },
         ])]);
         assert!(changes.affects_shell());
         assert_eq!(state.live_status(&thread), LiveStatus::Quiet);
-        state.apply(vec![Update::Events(vec![Envelope { seq: 0, event: Event::ThreadLive { thread: id, live: ThreadLive::default() } }])]);
+        state.apply(vec![Update::Events(vec![Envelope { seq: 0, event: Event::ThreadLive { thread: id, live: Box::new(ThreadLive::default()) } }])]);
         assert_eq!(state.live_status(&thread), LiveStatus::Working);
         assert!(state.live.is_empty());
         let agent = TerminalAgent {
@@ -644,7 +650,7 @@ mod tests {
             last_signal_ms: 0,
             detail: String::new(),
         };
-        let changes = state.apply(vec![Update::Events(vec![Envelope { seq: 0, event: Event::TerminalAgent { term: TermId(7), agent: Some(agent) } }])]);
+        let changes = state.apply(vec![Update::Events(vec![Envelope { seq: 0, event: Event::TerminalAgent { term: TermId(7), agent: Some(Box::new(agent)) } }])]);
         assert_eq!(changes.terminal_agents, vec![TermId(7)]);
         assert!(state.terminal_agents.contains_key(&TermId(7)));
         state.apply(vec![Update::Events(vec![Envelope { seq: 0, event: Event::TerminalAgent { term: TermId(7), agent: None } }])]);
@@ -655,13 +661,13 @@ mod tests {
     fn live_usage_wins_until_the_turn_settles() {
         let mut state = ClientState::default();
         let mut thread = Thread { id: ThreadId::new(), status: ThreadStatus::Running, ..Default::default() };
-        state.apply(events(vec![Event::ThreadUpserted(thread.clone())]));
+        state.apply(events(vec![Event::ThreadUpserted(Box::new(thread.clone()))]));
         let live = Usage { context_tokens: 500, context_window: 1000, ..Default::default() };
         state.apply(events(vec![Event::UsageChanged { thread: thread.id, usage: live }]));
         assert_eq!(state.usage(thread.id).context_fill(), Some(0.5));
         thread.status = ThreadStatus::Idle;
         thread.usage = Usage { context_tokens: 600, context_window: 1000, ..Default::default() };
-        state.apply(events(vec![Event::ThreadUpserted(thread.clone())]));
+        state.apply(events(vec![Event::ThreadUpserted(Box::new(thread.clone()))]));
         assert_eq!(state.usage(thread.id).context_fill(), Some(0.6));
     }
 
@@ -673,7 +679,7 @@ mod tests {
         state.apply(vec![Update::Reset(Box::new(Snapshot { settings: Box::new(settings.clone()), ..Default::default() }))]);
         assert_eq!(state.settings, settings);
         settings.composer.submit = SubmitKey::ModEnter;
-        let changes = state.apply(events(vec![Event::SettingsChanged(settings.clone())]));
+        let changes = state.apply(events(vec![Event::SettingsChanged(Box::new(settings.clone()))]));
         assert!(changes.settings && changes.affects_shell());
         assert_eq!(state.settings.composer.submit, SubmitKey::ModEnter);
     }

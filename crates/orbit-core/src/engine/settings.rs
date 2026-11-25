@@ -19,7 +19,7 @@ impl Orchestrator {
             return Ok(Reply::Done);
         }
         let old = self.store.settings().clone();
-        self.emit(Event::SettingsChanged(settings));
+        self.emit(Event::SettingsChanged(Box::new(settings)));
         self.apply_settings(&old);
         Ok(Reply::Done)
     }

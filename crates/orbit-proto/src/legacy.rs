@@ -241,16 +241,16 @@ pub mod v1 {
         fn from(event: Event) -> Self {
             use crate::wire::Event as E;
             match event {
-                Event::ProjectUpserted(p) => E::ProjectUpserted(p),
+                Event::ProjectUpserted(p) => E::ProjectUpserted(Box::new(p)),
                 Event::ProjectRemoved(id) => E::ProjectRemoved(id),
-                Event::ThreadUpserted(t) => E::ThreadUpserted(t.into()),
+                Event::ThreadUpserted(t) => E::ThreadUpserted(Box::new(t.into())),
                 Event::ThreadRemoved(id) => E::ThreadRemoved(id),
-                Event::ItemUpserted { thread, item } => E::ItemUpserted { thread, item: item.into() },
+                Event::ItemUpserted { thread, item } => E::ItemUpserted { thread, item: Box::new(item.into()) },
                 Event::ItemDelta { thread, item, delta } => E::ItemDelta { thread, item, delta },
                 Event::ItemRemoved { thread, item } => E::ItemRemoved { thread, item },
                 Event::Providers(list) => E::Providers(list.into_iter().map(Into::into).collect()),
-                Event::DefaultsChanged(c) => E::DefaultsChanged(c.into()),
-                Event::SettingsChanged(s) => E::SettingsChanged(s.into()),
+                Event::DefaultsChanged(c) => E::DefaultsChanged(Box::new(c.into())),
+                Event::SettingsChanged(s) => E::SettingsChanged(Box::new(s.into())),
                 Event::WorkspaceChanged { thread, files } => E::WorkspaceChanged { thread, files },
                 Event::UsageChanged { thread, usage } => E::UsageChanged { thread, usage },
                 Event::Conflicts(c) => E::Conflicts(c),
@@ -301,16 +301,16 @@ pub mod v2 {
         fn from(event: Event) -> Self {
             use crate::wire::Event as E;
             match event {
-                Event::ProjectUpserted(p) => E::ProjectUpserted(p),
+                Event::ProjectUpserted(p) => E::ProjectUpserted(Box::new(p)),
                 Event::ProjectRemoved(id) => E::ProjectRemoved(id),
-                Event::ThreadUpserted(t) => E::ThreadUpserted(t.into()),
+                Event::ThreadUpserted(t) => E::ThreadUpserted(Box::new(t.into())),
                 Event::ThreadRemoved(id) => E::ThreadRemoved(id),
-                Event::ItemUpserted { thread, item } => E::ItemUpserted { thread, item: item.into() },
+                Event::ItemUpserted { thread, item } => E::ItemUpserted { thread, item: Box::new(item.into()) },
                 Event::ItemDelta { thread, item, delta } => E::ItemDelta { thread, item, delta },
                 Event::ItemRemoved { thread, item } => E::ItemRemoved { thread, item },
                 Event::Providers(list) => E::Providers(list),
-                Event::DefaultsChanged(c) => E::DefaultsChanged(c),
-                Event::SettingsChanged(s) => E::SettingsChanged(s.into()),
+                Event::DefaultsChanged(c) => E::DefaultsChanged(Box::new(c)),
+                Event::SettingsChanged(s) => E::SettingsChanged(Box::new(s.into())),
                 Event::WorkspaceChanged { thread, files } => E::WorkspaceChanged { thread, files },
                 Event::UsageChanged { thread, usage } => E::UsageChanged { thread, usage },
                 Event::Conflicts(c) => E::Conflicts(c),
@@ -581,23 +581,23 @@ pub mod v3 {
         fn from(event: Event) -> Self {
             use crate::wire::Event as E;
             match event {
-                Event::ProjectUpserted(p) => E::ProjectUpserted(p),
+                Event::ProjectUpserted(p) => E::ProjectUpserted(Box::new(p)),
                 Event::ProjectRemoved(id) => E::ProjectRemoved(id),
-                Event::ThreadUpserted(t) => E::ThreadUpserted(t.into()),
+                Event::ThreadUpserted(t) => E::ThreadUpserted(Box::new(t.into())),
                 Event::ThreadRemoved(id) => E::ThreadRemoved(id),
-                Event::ItemUpserted { thread, item } => E::ItemUpserted { thread, item: item.into() },
+                Event::ItemUpserted { thread, item } => E::ItemUpserted { thread, item: Box::new(item.into()) },
                 Event::ItemDelta { thread, item, delta } => E::ItemDelta { thread, item, delta },
                 Event::ItemRemoved { thread, item } => E::ItemRemoved { thread, item },
                 Event::Providers(list) => E::Providers(list),
-                Event::DefaultsChanged(c) => E::DefaultsChanged(c),
-                Event::SettingsChanged(s) => E::SettingsChanged(s.into()),
+                Event::DefaultsChanged(c) => E::DefaultsChanged(Box::new(c)),
+                Event::SettingsChanged(s) => E::SettingsChanged(Box::new(s.into())),
                 Event::WorkspaceChanged { thread, files } => E::WorkspaceChanged { thread, files },
                 Event::UsageChanged { thread, usage } => E::UsageChanged { thread, usage },
                 Event::Conflicts(c) => E::Conflicts(c),
                 Event::TerminalOutput { term, data } => E::TerminalOutput { term, data },
                 Event::TimelineMark { thread, mark } => E::TimelineMark { thread, mark },
                 Event::TerminalExited { term, code } => E::TerminalExited { term, code },
-                Event::DraftSaved { target, draft } => E::DraftSaved { target, draft },
+                Event::DraftSaved { target, draft } => E::DraftSaved { target, draft: Box::new(draft) },
             }
         }
     }
@@ -798,7 +798,7 @@ mod tests {
         let bytes = bitcode::encode(&old);
         let env = decode_envelope(2, &bytes).unwrap();
         let thread = Thread { id: ThreadId(9), title: "Before drafts".into(), turns: 2, ..Default::default() };
-        assert_eq!((env.seq, env.event), (5, Event::ThreadUpserted(thread)));
+        assert_eq!((env.seq, env.event), (5, Event::ThreadUpserted(Box::new(thread))));
         let exited = v2::Envelope { seq: 6, event: v2::Event::TerminalExited { term: TermId(1), code: Some(0) } };
         let env = decode_envelope(2, &bitcode::encode(&exited)).unwrap();
         assert_eq!(env.event, Event::TerminalExited { term: TermId(1), code: Some(0) });
@@ -829,7 +829,7 @@ mod tests {
         let draft = Draft { text: "unsent".into(), ..Default::default() };
         let old = v3::Envelope { seq: 13, event: v3::Event::DraftSaved { target: DraftTarget::Thread(ThreadId(5)), draft: draft.clone() } };
         let env = decode_envelope(3, &bitcode::encode(&old)).unwrap();
-        assert_eq!(env.event, Event::DraftSaved { target: DraftTarget::Thread(ThreadId(5)), draft });
+        assert_eq!(env.event, Event::DraftSaved { target: DraftTarget::Thread(ThreadId(5)), draft: Box::new(draft) });
     }
 
     #[test]

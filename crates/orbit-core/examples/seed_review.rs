@@ -154,7 +154,7 @@ fn main() {
         scripts: ProjectScripts::default(),
         base_branch: Some("main".into()),
     };
-    store.commit(Event::ProjectUpserted(project.clone())).unwrap();
+    store.commit(Event::ProjectUpserted(Box::new(project.clone()))).unwrap();
     let thread = |id: ThreadId, title: &str, wt: &Path, branch: &str, turns: u32| Thread {
         id,
         project: Some(project.id),
@@ -165,8 +165,8 @@ fn main() {
         workspace: Workspace { branch: Some(branch.into()), worktree: Some(wt.display().to_string()), port_base: None },
         ..Default::default()
     };
-    store.commit(Event::ThreadUpserted(thread(a, "Stream the parser", &wt_a, "orbit/stream", 2))).unwrap();
-    store.commit(Event::ThreadUpserted(thread(b, "Tidy the lexer", &wt_b, "orbit/lexer", 0))).unwrap();
+    store.commit(Event::ThreadUpserted(Box::new(thread(a, "Stream the parser", &wt_a, "orbit/stream", 2)))).unwrap();
+    store.commit(Event::ThreadUpserted(Box::new(thread(b, "Tidy the lexer", &wt_b, "orbit/lexer", 0)))).unwrap();
 
     let end = |base: &str, cp: &str, files: Vec<FileChange>| {
         ItemBody::TurnEnd(TurnSummary {
@@ -187,7 +187,7 @@ fn main() {
         item(2, end(&turn1, &turn2, changes(&turn1, &turn2))),
     ];
     for item in items {
-        store.commit(Event::ItemUpserted { thread: a, item }).unwrap();
+        store.commit(Event::ItemUpserted { thread: a, item: Box::new(item) }).unwrap();
     }
     store.sync().unwrap();
     println!("seeded {} and {}", data.display(), work.display());

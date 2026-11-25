@@ -93,7 +93,53 @@ fn codec() -> Vec<Result> {
         std::hint::black_box(back);
     }
     let batched = start.elapsed();
+
+    // What the link sends: streamed tokens in their own frames, and `Done`
+    // replies in five bytes (`orbit_proto::link`).
+    let mut link_enc = orbit_proto::link::ServerEncoder::new();
+    let mut link_dec = orbit_proto::link::ServerDecoder::new();
+    let start = Instant::now();
+    let mut link_bytes = 0;
+    for _ in 0..rounds {
+        let frames = link_enc.events(vec![env.clone(); 512]);
+        link_bytes = frames.iter().map(Vec::len).sum::<usize>();
+        for f in &frames {
+            std::hint::black_box(link_dec.message(f).unwrap());
+        }
+    }
+    let link_batched = start.elapsed();
+    let start = Instant::now();
+    for _ in 0..n {
+        let frames = link_enc.events(vec![env.clone()]);
+        std::hint::black_box(link_dec.message(&frames[0]).unwrap());
+    }
+    let link_single = start.elapsed();
+    let done = ServerMsg::Reply { id: 7, result: Ok(Reply::Done) };
+    let calls = 1_000_000;
+    let start = Instant::now();
+    for _ in 0..calls {
+        std::hint::black_box(link_dec.message(&link_enc.message(&done)).unwrap());
+    }
+    let link_done = start.elapsed();
     vec![
+        Result {
+            name: "Link: one streamed token",
+            value: n as f64 / link_single.as_secs_f64() / 1e6,
+            unit: "M/s",
+            note: "a lone delta as the host sends it (own frame kind)".into(),
+        },
+        Result {
+            name: "Link: streamed tokens, 512 per frame",
+            value: (rounds * 512) as f64 / link_batched.as_secs_f64() / 1e6,
+            unit: "M/s",
+            note: format!("{:.1} bytes per delta", link_bytes as f64 / 512.0),
+        },
+        Result {
+            name: "Link: `Done` reply encode+decode",
+            value: link_done.as_nanos() as f64 / calls as f64,
+            unit: "ns",
+            note: "5 bytes".into(),
+        },
         Result {
             name: "Delta encode+decode, single",
             value: n as f64 / elapsed.as_secs_f64() / 1e6,
@@ -230,7 +276,7 @@ fn storage() -> Vec<Result> {
         for i in 0..threads {
             let id = if i == 0 { big } else { ThreadId::new() };
             store
-                .commit(Event::ThreadUpserted(Thread { id, title: format!("Thread {i}"), ..Default::default() }))
+                .commit(Event::ThreadUpserted(Box::new(Thread { id, title: format!("Thread {i}"), ..Default::default() })))
                 .unwrap();
         }
         for i in 0..items_per_thread {
@@ -242,7 +288,7 @@ fn storage() -> Vec<Result> {
             store
                 .commit(Event::ItemUpserted {
                     thread: big,
-                    item: Item { id: ItemId::new(), turn: i / 2, status: ItemStatus::Done, body },
+                    item: Box::new(Item { id: ItemId::new(), turn: i / 2, status: ItemStatus::Done, body }),
                 })
                 .unwrap();
         }

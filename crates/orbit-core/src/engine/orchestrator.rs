@@ -123,6 +123,8 @@ pub struct Orchestrator {
     pub(crate) launcher: Launcher,
     /// Streaming items changed since they were last persisted.
     pub(crate) dirty: HashSet<(ThreadId, ItemId)>,
+    /// The time read once for a burst of agent events (see [`Self::begin_burst`]).
+    pub(crate) burst_clock: Option<(Instant, u64)>,
     pub(crate) last_persist: Instant,
     /// Threads a client has open; they stay loaded.
     pub(crate) open: HashSet<ThreadId>,
@@ -182,6 +184,7 @@ impl Orchestrator {
             internal_tx,
             launcher,
             dirty: HashSet::new(),
+            burst_clock: None,
             last_persist: Instant::now(),
             open: HashSet::new(),
             git,
@@ -471,13 +474,13 @@ impl Orchestrator {
         f(&mut thread);
         if thread != before {
             thread.updated_ms = now_ms();
-            self.emit(Event::ThreadUpserted(thread));
+            self.emit(Event::ThreadUpserted(Box::new(thread)));
         }
     }
 
     pub(crate) fn put_item(&mut self, thread: ThreadId, item: Item) {
         self.dirty.remove(&(thread, item.id));
-        self.emit(Event::ItemUpserted { thread, item });
+        self.emit(Event::ItemUpserted { thread, item: Box::new(item) });
     }
 
     pub(crate) fn item(&self, thread: ThreadId, id: ItemId) -> Option<Item> {
@@ -524,7 +527,7 @@ impl Orchestrator {
         if self.last_persist.elapsed() >= STREAM_PERSIST && !self.dirty.is_empty() {
             for (thread, id) in std::mem::take(&mut self.dirty) {
                 if let Some(item) = self.item(thread, id) {
-                    self.emit(Event::ItemUpserted { thread, item });
+                    self.emit(Event::ItemUpserted { thread, item: Box::new(item) });
                 }
             }
             if let Err(err) = self.store.sync() {
@@ -537,7 +540,7 @@ impl Orchestrator {
     pub fn shutdown(&mut self) {
         for (thread, id) in std::mem::take(&mut self.dirty) {
             if let Some(item) = self.item(thread, id) {
-                self.emit(Event::ItemUpserted { thread, item });
+                self.emit(Event::ItemUpserted { thread, item: Box::new(item) });
             }
         }
         for runtime in self.runtimes.values_mut() {
@@ -623,7 +626,7 @@ impl Orchestrator {
                     && p.base_branch != branch
                 {
                     p.base_branch = branch;
-                    self.emit(Event::ProjectUpserted(p));
+                    self.emit(Event::ProjectUpserted(Box::new(p)));
                 }
             }
             Internal::TitleGenerated { thread, seed, title } => self.on_title_generated(thread, seed, title),
@@ -671,7 +674,7 @@ impl Orchestrator {
                 if self.store.project(project.id).is_none() {
                     return Err("That project no longer exists.".into());
                 }
-                self.emit(Event::ProjectUpserted(project));
+                self.emit(Event::ProjectUpserted(Box::new(project)));
                 Ok(Reply::Done)
             }
             Command::RemoveProject { id } => {
@@ -721,7 +724,7 @@ impl Orchestrator {
                 Ok(Reply::Done)
             }
             Command::SetDefaults { config } => {
-                self.emit(Event::DefaultsChanged(config));
+                self.emit(Event::DefaultsChanged(Box::new(config)));
                 Ok(Reply::Done)
             }
             Command::SaveDraft { target, draft } => self.save_draft(target, draft),
@@ -797,7 +800,7 @@ impl Orchestrator {
         };
         let id = project.id;
         let path = PathBuf::from(&project.path);
-        self.emit(Event::ProjectUpserted(project));
+        self.emit(Event::ProjectUpserted(Box::new(project)));
         let (git, tx) = (self.git.clone(), self.internal_tx.clone());
         tokio::spawn(async move {
             let branch = git.current_branch(&path).await.ok().flatten();
@@ -829,12 +832,12 @@ impl Orchestrator {
             ..Default::default()
         };
         let id = thread.id;
-        self.emit(Event::ThreadUpserted(thread));
+        self.emit(Event::ThreadUpserted(Box::new(thread)));
         if let (true, Some(project)) = (worktree, project_record) {
             self.create_worktree(id, project);
         }
         if *self.store.defaults() != config {
-            self.emit(Event::DefaultsChanged(config));
+            self.emit(Event::DefaultsChanged(Box::new(config)));
         }
         Ok(Reply::Thread(id))
     }
@@ -935,7 +938,7 @@ impl Orchestrator {
             // Another instance ends the session and hands the conversation
             // off; the same one applies the change live.
             self.apply_config_change(id, &previous, &config);
-            self.emit(Event::DefaultsChanged(config));
+            self.emit(Event::DefaultsChanged(Box::new(config)));
         }
         Ok(Reply::Done)
     }
@@ -1000,7 +1003,7 @@ impl Orchestrator {
             ..Default::default()
         };
         let fork_id = fork.id;
-        self.emit(Event::ThreadUpserted(fork));
+        self.emit(Event::ThreadUpserted(Box::new(fork)));
         for item in items {
             let item = Item { id: ItemId::new(), ..item };
             self.put_item(fork_id, item);
@@ -1468,6 +1471,22 @@ impl Orchestrator {
 
     // ── Agent events ─────────────────────────────────────────────────────
 
+    /// Reads the clock once for a burst of agent events: streaming calls
+    /// [`Self::handle_agent`] per token, and liveness only needs the tick's
+    /// half-second precision, not two clock reads per token.
+    pub fn begin_burst(&mut self) {
+        self.burst_clock = Some((Instant::now(), now_ms()));
+    }
+
+    pub fn end_burst(&mut self) {
+        self.burst_clock = None;
+    }
+
+    /// Now, as read for the current burst of agent events (or now).
+    pub(crate) fn clock(&self) -> (Instant, u64) {
+        self.burst_clock.unwrap_or_else(|| (Instant::now(), now_ms()))
+    }
+
     pub fn handle_agent(&mut self, thread_id: ThreadId, event: AgentEvent) {
         if self.store.thread(thread_id).is_none() {
             return; // deleted while the session was still reporting
@@ -1475,8 +1494,9 @@ impl Orchestrator {
         if self.store.load_timeline(thread_id).is_err() {
             return;
         }
+        let (now, _) = self.clock();
         if let Some(runtime) = self.runtimes.get_mut(&thread_id) {
-            runtime.last_active = Some(Instant::now());
+            runtime.last_active = Some(now);
         }
         self.status_on_agent(thread_id, &event);
         match event {

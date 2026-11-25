@@ -126,11 +126,11 @@ fn main() {
         scripts: ProjectScripts { run: vec![RunScript { name: "test".into(), command: "cargo test".into() }], ..Default::default() },
         base_branch: Some("main".into()),
     };
-    store.commit(Event::ProjectUpserted(project.clone())).unwrap();
+    store.commit(Event::ProjectUpserted(Box::new(project.clone()))).unwrap();
     if light {
         let mut settings = store.settings().clone();
         settings.appearance.mode = ColorMode::Light;
-        store.commit(Event::SettingsChanged(settings)).unwrap();
+        store.commit(Event::SettingsChanged(Box::new(settings))).unwrap();
     }
     let opus = ThreadConfig { provider: ProviderKind::Claude, model: "opus".into(), access: Access::AutoEdit, ..Default::default() };
     let sonnet = ThreadConfig { model: "sonnet".into(), ..opus.clone() };
@@ -151,9 +151,9 @@ fn main() {
             ..Default::default()
         };
         let id = t.id;
-        store.commit(Event::ThreadUpserted(t)).unwrap();
+        store.commit(Event::ThreadUpserted(Box::new(t))).unwrap();
         for item in items {
-            store.commit(Event::ItemUpserted { thread: id, item }).unwrap();
+            store.commit(Event::ItemUpserted { thread: id, item: Box::new(item) }).unwrap();
         }
         id
     };

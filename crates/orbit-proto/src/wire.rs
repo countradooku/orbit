@@ -66,21 +66,24 @@ pub struct Envelope {
     pub event: Event,
 }
 
+/// Large payloads are boxed so an event stays small to move: every streamed
+/// token travels as one. `Box<T>` encodes exactly like `T`, so this changes
+/// nothing on disk or on the wire.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub enum Event {
-    ProjectUpserted(Project),
+    ProjectUpserted(Box<Project>),
     ProjectRemoved(ProjectId),
-    ThreadUpserted(Thread),
+    ThreadUpserted(Box<Thread>),
     ThreadRemoved(ThreadId),
     /// A timeline item was added or replaced.
-    ItemUpserted { thread: ThreadId, item: Item },
+    ItemUpserted { thread: ThreadId, item: Box<Item> },
     /// Streamed text appended to an item. Ephemeral.
     ItemDelta { thread: ThreadId, item: ItemId, delta: Delta },
     ItemRemoved { thread: ThreadId, item: ItemId },
     Providers(Vec<ProviderInfo>),
-    DefaultsChanged(ThreadConfig),
+    DefaultsChanged(Box<ThreadConfig>),
     /// The user's settings were replaced (whole record, already sanitized).
-    SettingsChanged(Settings),
+    SettingsChanged(Box<Settings>),
     /// The thread's working tree changed on disk. Ephemeral.
     WorkspaceChanged { thread: ThreadId, files: Vec<FileChange> },
     /// Live token and context accounting of a running turn. Ephemeral; the
@@ -96,14 +99,14 @@ pub enum Event {
     TimelineMark { thread: ThreadId, mark: u64 },
     TerminalExited { term: TermId, code: Option<i32> },
     /// A composer's unsent message changed; an empty draft means none.
-    DraftSaved { target: DraftTarget, draft: Draft },
+    DraftSaved { target: DraftTarget, draft: Box<Draft> },
     /// A thread's live status evidence changed: its session went quiet or
     /// unverified, or an agent in one of its terminals changed state.
     /// Ephemeral; the latest value is in the snapshot.
-    ThreadLive { thread: ThreadId, live: ThreadLive },
+    ThreadLive { thread: ThreadId, live: Box<ThreadLive> },
     /// An agent started, changed state or ended (`None`) in a terminal,
     /// whether or not the terminal belongs to a thread. Ephemeral.
-    TerminalAgent { term: TermId, agent: Option<TerminalAgent> },
+    TerminalAgent { term: TermId, agent: Option<Box<TerminalAgent>> },
     /// An automation was created, edited, paused or its state advanced.
     AutomationUpserted(Box<Automation>),
     /// An automation and its run history were deleted.
@@ -112,7 +115,7 @@ pub enum Event {
     AutomationRun(Box<AutomationRun>),
     /// The chat bots' settings, pairings or connections changed. Ephemeral;
     /// read the current state with [`BotCommand::State`].
-    Bots(BotsState),
+    Bots(Box<BotsState>),
     /// The guard list changed. Ephemeral; read it with `Command::Guard(None)`.
     GuardChanged(GuardSettings),
     /// A team or race changed. Ephemeral; the latest state is in the
@@ -466,14 +469,14 @@ mod tests {
         };
         assert!(!delta.is_durable());
         assert!(Event::ThreadRemoved(ThreadId::new()).is_durable());
-        assert!(Event::SettingsChanged(Settings::default()).is_durable());
+        assert!(Event::SettingsChanged(Box::default()).is_durable());
     }
 
     #[test]
     fn live_status_is_ephemeral_and_round_trips() {
         let live = Event::ThreadLive {
             thread: ThreadId(3),
-            live: ThreadLive {
+            live: Box::new(ThreadLive {
                 liveness: Liveness::Quiet { since_ms: 9, tool: Some("cargo test".into()) },
                 last_signal_ms: 9,
                 terminals: vec![TerminalAgent {
@@ -485,7 +488,7 @@ mod tests {
                     last_signal_ms: 2,
                     detail: "Bash".into(),
                 }],
-            },
+            }),
         };
         assert!(!live.is_durable());
         assert!(!Event::TerminalAgent { term: TermId(4), agent: None }.is_durable());
@@ -530,8 +533,8 @@ mod tests {
         assert_eq!(
             back,
             vec![
-                Event::ThreadUpserted(thread),
-                Event::DraftSaved { target: DraftTarget::Home, draft: Draft::default() },
+                Event::ThreadUpserted(Box::new(thread)),
+                Event::DraftSaved { target: DraftTarget::Home, draft: Box::new(Draft::default()) },
                 Event::ThreadRemoved(ThreadId(5)),
             ]
         );
@@ -567,7 +570,7 @@ mod tests {
         let thread = Thread { id: ThreadId(8), title: "Before automations".into(), ..Default::default() };
         let old = vec![V4Event::ThreadUpserted(thread.clone()), V4Event::ThreadRemoved(ThreadId(8))];
         let back: Vec<Event> = bitcode::decode(&bitcode::encode(&old)).unwrap();
-        assert_eq!(back, vec![Event::ThreadUpserted(thread), Event::ThreadRemoved(ThreadId(8))]);
+        assert_eq!(back, vec![Event::ThreadUpserted(Box::new(thread)), Event::ThreadRemoved(ThreadId(8))]);
     }
 
     #[test]
@@ -615,5 +618,27 @@ mod tests {
         };
         // 2 ids + tags + 5 bytes of text: far below a JSON encoding (~90 B).
         assert!(encode(&env).len() < 32, "{} bytes", encode(&env).len());
+    }
+
+    /// `Event` boxes its large payloads; bitcode must encode `Box<T>` as `T`
+    /// or every durable log written before the boxing would stop decoding.
+    #[test]
+    fn boxed_payloads_encode_like_plain_ones() {
+        #[derive(bitcode::Encode, bitcode::Decode, Debug, PartialEq)]
+        enum Plain {
+            T(Thread),
+            S(crate::Settings),
+        }
+        #[derive(bitcode::Encode, bitcode::Decode, Debug, PartialEq)]
+        enum Boxed {
+            T(Box<Thread>),
+            S(Box<crate::Settings>),
+        }
+        let thread = Thread { title: "hello".into(), turns: 3, ..Default::default() };
+        let plain = vec![Plain::T(thread.clone()), Plain::S(Default::default())];
+        let boxed = vec![Boxed::T(Box::new(thread)), Boxed::S(Box::default())];
+        assert_eq!(encode(&plain), encode(&boxed));
+        assert_eq!(decode::<Vec<Boxed>>(&encode(&plain)).unwrap(), boxed);
+        assert!(std::mem::size_of::<Event>() <= 80, "Event is {} bytes", std::mem::size_of::<Event>());
     }
 }

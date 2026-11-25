@@ -215,15 +215,15 @@ impl Harness {
     fn apply(&mut self, event: Event) {
         match event {
             Event::ThreadUpserted(t) => {
-                self.threads.insert(t.id, t);
+                self.threads.insert(t.id, *t);
             }
             Event::ItemUpserted { item, .. } => {
-                self.items.insert(item.id, item);
+                self.items.insert(item.id, *item);
             }
             Event::ItemRemoved { item, .. } => {
                 self.items.remove(&item);
             }
-            Event::SettingsChanged(settings) => self.settings = settings,
+            Event::SettingsChanged(settings) => self.settings = *settings,
             _ => {}
         }
     }

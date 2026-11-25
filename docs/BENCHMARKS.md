@@ -29,28 +29,51 @@ T3 Code's idle CPU varies between runs (2.34 % in an earlier session).
 
 ## Engine, protocol, storage, network (`orbit-bench`)
 
-Median of three runs on 2026-11-25 (main `25e3dc2`), with the first
-recorded run (2026-11-24) for comparison.
+Median of three runs on 2026-11-25, release builds, on the same machine and
+day as the baseline column (main at `da03e0a`, before the feature packages
+landed). "Regressed" is main at `25e3dc2`, after they landed and before the
+fix below.
 
-| Benchmark | Now | First run |
-| --- | ---: | ---: |
-| Delta codec, 512-delta wire frames | 24.2 M/s, 7.8 B/delta | 39.8 M/s, 7.3 B/delta |
-| Engine streaming to UI feed | 2.18 M deltas/s | ~3.0 M deltas/s |
-| UI state apply | 17.2 M deltas/s | ~17 M deltas/s |
-| Cold start with 1,000 threads | 9.6 ms | 7 ms |
-| Open a 3,000-item thread | 2.9 ms | 2.5 ms |
-| In-process command round trip | 0.40 µs p50, 1.1 µs p99 | 0.4 µs p50 |
-| WebSocket round trip (loopback) | 107 µs p50, 199 µs p99 | 63 µs p50, 141 µs p99 |
-| WebSocket streaming | 2.58 M deltas/s | 3.6 M deltas/s |
+| Benchmark | Baseline | Regressed | Now |
+| --- | ---: | ---: | ---: |
+| Link: one streamed token (host → client) | 0.50 M/s | 0.20 M/s | **5.4 M/s** |
+| Link: streamed tokens, 512 per frame | 36.6 M/s, 7.3 B/delta | 24.2 M/s, 7.8 B/delta | **35 M/s, 6.7 B/delta** |
+| Link: `Done` reply encode+decode | 4.2 µs | 13.7 µs | **14 ns** |
+| Engine streaming to UI feed | 2.41 M deltas/s | 2.18 M deltas/s | **2.98 M deltas/s** |
+| UI state apply | 17 M deltas/s | 17.2 M deltas/s | **21.5 M deltas/s** |
+| Cold start with 1,000 threads | 8.4 ms | 9.6 ms | 9.6 ms |
+| Open a 3,000-item thread | 2.5 ms | 2.9 ms | 2.8 ms |
+| In-process command round trip | 0.40 µs p50 | 0.40 µs p50 | 0.40 µs p50, 1.1 µs p99 |
+| WebSocket round trip (loopback) | 74 µs p50, 161 µs p99 | 107 µs p50, 199 µs p99 | **47 µs p50, 91 µs p99** |
+| WebSocket streaming | 2.59 M deltas/s | 2.58 M deltas/s | **4.38 M deltas/s** |
 
-**Open regression.** Codec throughput, engine streaming, WebSocket round
-trip and streaming all got 25–70 % slower while the feature packages
-landed. Likely causes, not yet confirmed: the `Event`/`Command` enums grew
-(more variants and larger payloads, so a bigger tag and 0.5 more bytes per
-delta), per-delta liveness bookkeeping in the status engine, and the CLI's
-own WebSocket framing (`orbit-net/src/ws_lite.rs`) replacing sockudo-ws's
-on the client. Still far beyond what an agent produces (a fast agent streams
-hundreds of deltas per second), but it should be won back.
+What the regression was, and the fix:
+
+- **bitcode's per-message cost grows with the type, not the value.** It keeps
+  a column per field of every variant and visits all of them on each encode
+  and decode. As `Event`, `Command` and `Reply` grew, a one-byte
+  `Reply::Done` came to cost 13.7 µs. The link now frames its hot messages
+  apart (`orbit_proto::link`): runs of streamed tokens as a small
+  `WireDelta` type, and `Done` replies as five bytes. Everything else is still
+  a `ServerMsg`, through codecs reused per connection; the server used to
+  rebuild them for every reply.
+- **Events were 392 bytes.** Every streamed token is moved as an `Event`.
+  Its large payloads are now boxed (72 bytes); `Box<T>` encodes exactly like
+  `T`, so logs and the wire are unchanged.
+- **Two clock reads per token.** The status engine's liveness stamp read
+  `Instant::now()` and the wall clock for every delta. The engine now reads
+  the clock once per burst of agent events.
+
+Two ordering bugs surfaced while fixing this, and are fixed with tests:
+
+- The server could send a reply before the events its command caused. It now
+  sends the queued events first.
+- A remote client resolved replies before its consumer had applied the
+  events ahead of them. With `RemoteClient::order_replies` (the app and the
+  CLI turn it on), a reply resolves only after those events are applied.
+
+Cold start is still 14 % slower than the baseline (more state to rebuild:
+settings, automations, teams).
 
 ## Review sheet (release build, 165 Hz display)
 

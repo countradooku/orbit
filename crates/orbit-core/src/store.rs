@@ -424,29 +424,29 @@ impl Store {
     fn apply_meta(&mut self, event: Event) {
         match event {
             Event::ProjectUpserted(project) => match self.projects.iter_mut().find(|p| p.id == project.id) {
-                Some(slot) => *slot = project,
+                Some(slot) => *slot = *project,
                 None => {
-                    self.projects.push(project);
+                    self.projects.push(*project);
                     self.projects.sort_by_key(|p| p.order);
                 }
             },
             Event::ProjectRemoved(id) => self.projects.retain(|p| p.id != id),
             Event::ThreadUpserted(thread) => {
-                self.threads.insert(thread.id, thread);
+                self.threads.insert(thread.id, *thread);
             }
             Event::ThreadRemoved(id) => {
                 self.threads.remove(&id);
                 self.drafts.remove(&DraftTarget::Thread(id));
             }
-            Event::DefaultsChanged(config) => self.defaults = config,
+            Event::DefaultsChanged(config) => self.defaults = *config,
             Event::DraftSaved { target, draft } => {
                 if draft.is_empty() {
                     self.drafts.remove(&target);
                 } else {
-                    self.drafts.insert(target, draft);
+                    self.drafts.insert(target, *draft);
                 }
             }
-            Event::SettingsChanged(settings) => self.settings = settings,
+            Event::SettingsChanged(settings) => self.settings = *settings,
             event @ (Event::AutomationUpserted(_) | Event::AutomationRemoved(_) | Event::AutomationRun(_)) => {
                 self.automations.apply(event)
             }
@@ -464,9 +464,9 @@ impl Store {
             Event::ItemUpserted { thread, item } => {
                 let thread = *thread;
                 let item = item.clone();
-                self.timeline_log(thread)?.append(&TimelineRecord::Upsert(item.clone()))?;
+                self.timeline_log(thread)?.append(&TimelineRecord::Upsert((*item).clone()))?;
                 if let Some(open) = self.open.get_mut(&thread) {
-                    open.timeline.upsert(item);
+                    open.timeline.upsert(*item);
                 }
                 self.maybe_compact_timeline(thread)?;
             }
@@ -592,15 +592,15 @@ impl Store {
         let seq = self.seq;
         let mut records = Vec::with_capacity(self.projects.len() + self.threads.len() + self.drafts.len() + 2);
         for p in &self.projects {
-            records.push(Envelope { seq, event: Event::ProjectUpserted(p.clone()) });
+            records.push(Envelope { seq, event: Event::ProjectUpserted(Box::new(p.clone())) });
         }
         for t in self.threads.values() {
-            records.push(Envelope { seq, event: Event::ThreadUpserted(t.clone()) });
+            records.push(Envelope { seq, event: Event::ThreadUpserted(Box::new(t.clone())) });
         }
-        records.push(Envelope { seq, event: Event::DefaultsChanged(self.defaults.clone()) });
-        records.push(Envelope { seq, event: Event::SettingsChanged(self.settings.clone()) });
+        records.push(Envelope { seq, event: Event::DefaultsChanged(Box::new(self.defaults.clone())) });
+        records.push(Envelope { seq, event: Event::SettingsChanged(Box::new(self.settings.clone())) });
         for (target, draft) in &self.drafts {
-            records.push(Envelope { seq, event: Event::DraftSaved { target: *target, draft: draft.clone() } });
+            records.push(Envelope { seq, event: Event::DraftSaved { target: *target, draft: Box::new(draft.clone()) } });
         }
         records.extend(self.automations.records(seq));
         self.meta.rewrite(records.iter())
@@ -713,8 +713,8 @@ mod tests {
         let item = text_item(1, "done");
         {
             let mut store = Store::open(dir.path()).unwrap();
-            store.commit(Event::ThreadUpserted(thread(id))).unwrap();
-            store.commit(Event::ItemUpserted { thread: id, item: item.clone() }).unwrap();
+            store.commit(Event::ThreadUpserted(Box::new(thread(id)))).unwrap();
+            store.commit(Event::ItemUpserted { thread: id, item: Box::new(item.clone()) }).unwrap();
             store.unload_timeline(id);
             assert!(store.timeline(id).is_none());
         }
@@ -732,13 +732,13 @@ mod tests {
         settings.provider_mut(ProviderKind::Claude).binary = "/opt/claude/bin/claude".into();
         {
             let mut store = Store::open(dir.path()).unwrap();
-            store.commit(Event::SettingsChanged(settings.clone())).unwrap();
+            store.commit(Event::SettingsChanged(Box::new(settings.clone()))).unwrap();
             // Enough unrelated records to force a meta-log rewrite.
             let id = ThreadId::new();
             for n in 0..300 {
                 let mut t = thread(id);
                 t.turns = n;
-                store.commit(Event::ThreadUpserted(t)).unwrap();
+                store.commit(Event::ThreadUpserted(Box::new(t))).unwrap();
             }
             assert!(store.meta.records < 300, "the meta log was compacted");
         }
@@ -753,7 +753,7 @@ mod tests {
         let id = ThreadId::new();
         {
             let mut store = Store::open(dir.path()).unwrap();
-            store.commit(Event::ThreadUpserted(thread(id))).unwrap();
+            store.commit(Event::ThreadUpserted(Box::new(thread(id)))).unwrap();
         }
         let meta = dir.path().join("meta.log");
         let mut bytes = fs::read(&meta).unwrap();
@@ -762,7 +762,7 @@ mod tests {
 
         let mut store = Store::open(dir.path()).unwrap();
         assert!(store.thread(id).is_some());
-        store.commit(Event::ThreadUpserted(Thread { title: "Renamed".into(), ..thread(id) })).unwrap();
+        store.commit(Event::ThreadUpserted(Box::new(Thread { title: "Renamed".into(), ..thread(id) }))).unwrap();
         drop(store);
         assert_eq!(Store::open(dir.path()).unwrap().thread(id).unwrap().title, "Renamed");
     }
@@ -772,11 +772,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id = ThreadId::new();
         let mut store = Store::open(dir.path()).unwrap();
-        store.commit(Event::ThreadUpserted(thread(id))).unwrap();
+        store.commit(Event::ThreadUpserted(Box::new(thread(id)))).unwrap();
         let mut item = text_item(1, "");
         for i in 0..1_000 {
             item.body = ItemBody::Assistant { text: "x".repeat(i) };
-            store.commit(Event::ItemUpserted { thread: id, item: item.clone() }).unwrap();
+            store.commit(Event::ItemUpserted { thread: id, item: Box::new(item.clone()) }).unwrap();
         }
         let size = fs::metadata(store.timeline_path(id)).unwrap().len();
         assert!(size < 200_000, "log grew to {size} bytes");
@@ -788,7 +788,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id = ThreadId::new();
         let mut store = Store::open(dir.path()).unwrap();
-        store.commit(Event::ThreadUpserted(thread(id))).unwrap();
+        store.commit(Event::ThreadUpserted(Box::new(thread(id)))).unwrap();
         let blob = store.put_blob("a.png".into(), "image/png".into(), b"pixels").unwrap();
         let again = store.put_blob("b.png".into(), "image/png".into(), b"pixels").unwrap();
         assert_eq!(blob.hash, again.hash, "identical content is stored once");
@@ -798,7 +798,7 @@ mod tests {
             status: ItemStatus::Done,
             body: ItemBody::User(UserMessage { text: "look".into(), attachments: vec![blob.clone()], steer: false }),
         };
-        store.commit(Event::ItemUpserted { thread: id, item: msg }).unwrap();
+        store.commit(Event::ItemUpserted { thread: id, item: Box::new(msg) }).unwrap();
         assert_eq!(store.collect_garbage().unwrap(), 0);
 
         store.commit(Event::ThreadRemoved(id)).unwrap();
@@ -814,19 +814,19 @@ mod tests {
         let blob;
         {
             let mut store = Store::open(dir.path()).unwrap();
-            store.commit(Event::ThreadUpserted(thread(id))).unwrap();
+            store.commit(Event::ThreadUpserted(Box::new(thread(id)))).unwrap();
             blob = store.put_blob("notes.txt".into(), "text/plain".into(), b"half a thought").unwrap();
             let draft = Draft { text: "Refactor the".into(), attachments: vec![blob.clone()], updated_ms: 1 };
-            store.commit(Event::DraftSaved { target: DraftTarget::Thread(id), draft }).unwrap();
+            store.commit(Event::DraftSaved { target: DraftTarget::Thread(id), draft: Box::new(draft) }).unwrap();
             let home = Draft { text: "New idea".into(), ..Default::default() };
-            store.commit(Event::DraftSaved { target: DraftTarget::Home, draft: home }).unwrap();
+            store.commit(Event::DraftSaved { target: DraftTarget::Home, draft: Box::new(home) }).unwrap();
             assert_eq!(store.collect_garbage().unwrap(), 0, "a draft keeps its attachments");
         }
         let mut store = Store::open(dir.path()).unwrap();
         assert_eq!(store.draft(DraftTarget::Thread(id)).unwrap().text, "Refactor the");
         assert_eq!(store.draft(DraftTarget::Home).unwrap().text, "New idea");
         assert_eq!(store.snapshot(Vec::new()).drafts.len(), 2);
-        store.commit(Event::DraftSaved { target: DraftTarget::Home, draft: Draft::default() }).unwrap();
+        store.commit(Event::DraftSaved { target: DraftTarget::Home, draft: Box::new(Draft::default()) }).unwrap();
         assert!(store.draft(DraftTarget::Home).is_none(), "an empty draft removes it");
         store.commit(Event::ThreadRemoved(id)).unwrap();
         assert!(store.draft(DraftTarget::Thread(id)).is_none());
@@ -840,9 +840,9 @@ mod tests {
         let id = ThreadId::new();
         {
             let mut store = Store::open(dir.path()).unwrap();
-            store.commit(Event::ThreadUpserted(Thread { status: ThreadStatus::Running, ..thread(id) })).unwrap();
+            store.commit(Event::ThreadUpserted(Box::new(Thread { status: ThreadStatus::Running, ..thread(id) }))).unwrap();
             let item = Item { status: ItemStatus::Streaming, ..text_item(1, "half a reply") };
-            store.commit(Event::ItemUpserted { thread: id, item }).unwrap();
+            store.commit(Event::ItemUpserted { thread: id, item: Box::new(item) }).unwrap();
         }
         let mut store = Store::open(dir.path()).unwrap();
         assert_eq!(store.load_timeline(id).unwrap().items()[0].status, ItemStatus::Cancelled);
@@ -884,7 +884,7 @@ mod tests {
             assert_eq!(items[1].body, ItemBody::Assistant { text: "Fixed the missing import.".into() });
             // New writes land in the migrated log.
             let config = ThreadConfig { instance: "codex-work".into(), ..thread.config.clone() };
-            store.commit(Event::ThreadUpserted(Thread { config, ..thread })).unwrap();
+            store.commit(Event::ThreadUpserted(Box::new(Thread { config, ..thread }))).unwrap();
         }
         let bytes = fs::read(dir.path().join("meta.log")).unwrap();
         let first = FrameReader::new(&bytes).next_payload().unwrap().to_vec();
@@ -925,7 +925,7 @@ mod tests {
             assert!(matches!(&items[0].body, ItemBody::User(m) if m.text == "Plan the migration"));
             assert!(store.draft(DraftTarget::Thread(id)).is_none());
             let draft = Draft { text: "Then the rollback".into(), ..Default::default() };
-            store.commit(Event::DraftSaved { target: DraftTarget::Thread(id), draft }).unwrap();
+            store.commit(Event::DraftSaved { target: DraftTarget::Thread(id), draft: Box::new(draft) }).unwrap();
         }
         let bytes = fs::read(dir.path().join("meta.log")).unwrap();
         let first = FrameReader::new(&bytes).next_payload().unwrap().to_vec();
@@ -1019,7 +1019,7 @@ mod tests {
             };
             let request = AgentRequest { id: RequestId(0x99), provider_ref: "toolu_r".into(), kind, resolution: None };
             let item = Item { id: ItemId(0x89), turn: 1, status: ItemStatus::Done, body: ItemBody::Request(request) };
-            store.commit(Event::ItemUpserted { thread: id, item }).unwrap();
+            store.commit(Event::ItemUpserted { thread: id, item: Box::new(item) }).unwrap();
         }
         let bytes = fs::read(&log).unwrap();
         assert_eq!(read_timeline(&bytes).0, legacy::META_VERSION, "the timeline log is migrated and versioned");
