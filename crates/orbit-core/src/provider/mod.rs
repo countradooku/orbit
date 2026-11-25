@@ -68,6 +68,8 @@ pub enum SessionInput {
 pub enum BlockKind {
     Text,
     Reasoning,
+    /// A tool call's input JSON as it streams; `block` is the call id.
+    ToolInput,
 }
 
 /// How a turn ended.
@@ -97,6 +99,9 @@ pub enum AgentEvent {
     Delta { block: String, kind: BlockKind, text: String },
     /// Final content of a block; replaces whatever was streamed.
     BlockDone { block: String, kind: BlockKind, text: String },
+    /// A tool call began. Sent again with the same `call_id` once its input
+    /// is complete (title, input and files filled in); the later one replaces
+    /// the earlier.
     ToolStarted(ToolCall),
     /// Streamed tool output (long-running commands).
     ToolOutput { call_id: String, text: String },
