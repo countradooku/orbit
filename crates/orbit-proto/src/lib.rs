@@ -14,8 +14,10 @@
 //! with a length + CRC32 header so torn writes on disk are detected and
 //! truncated on recovery.
 
+pub mod codec;
 pub mod ids;
 
+pub use codec::{FRAME_HEADER, FrameError, FrameReader, decode, encode, write_frame};
 pub use ids::*;
 
 /// Bumped on any incompatible wire change. Clients and servers refuse to talk
