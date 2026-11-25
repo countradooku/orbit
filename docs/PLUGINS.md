@@ -447,6 +447,10 @@ an export; release, LTO, stripped, Windows x64):
 | wasmi 1.1 (fuel, limits) | 1.23 MB (+1.1 MB) | 20 s |
 | wasmtime 51 (Cranelift, component model, WASI p2) | 11.6 MB (+11.5 MB) | 193 s |
 
+The whole plugin system (wasmi, archives, signatures, the keychain, the
+host and its manifests) takes the release `orbitd` on Windows from 12.9 MB
+to 15.8 MB; wasmtime alone would have added 11.5 MB.
+
 Plugin logic is small and short (a hook decides in microseconds), where an
 interpreter's speed is ample and wasmtime's JIT buys nothing worth ten times
 the size and build time. wasmi meters fuel and caps memory, which are the
