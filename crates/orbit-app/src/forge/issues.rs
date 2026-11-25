@@ -207,7 +207,6 @@ fn render_detail(view: &mut ForgeView, _: &mut Window, cx: &mut Context<ForgeVie
                 .child(
                     h_flex()
                         .gap_3()
-                        .flex_wrap()
                         .child(
                             Button::new("forge-start-thread")
                                 .primary()
@@ -221,14 +220,23 @@ fn render_detail(view: &mut ForgeView, _: &mut Window, cx: &mut Context<ForgeVie
                         )
                         .child(
                             Checkbox::new("forge-start-worktree")
-                                .label(format!("On a new worktree ({branch_hint})"))
+                                .label("On a new worktree")
                                 .checked(view.on_worktree)
                                 .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                     this.on_worktree = *checked;
                                     cx.notify();
                                 })),
                         )
-                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .font_family(theme.mono_font_family.clone())
+                                .text_color(theme.muted_foreground)
+                                .when(view.on_worktree, |el| el.child(branch_hint)),
+                        )
                         .child(
                             Button::new("forge-open-issue")
                                 .ghost()

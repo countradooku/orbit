@@ -342,6 +342,11 @@ pub(crate) fn parse_checks(rollup: &[Value]) -> (Vec<Check>, ChecksSummary) {
             }
         })
         .collect();
+    // A re-run or a second trigger reports the same check again; the latest
+    // run is the one that counts, as on the host.
+    checks.sort_by_key(|c| std::cmp::Reverse(c.started_ms.max(c.finished_ms)));
+    let mut seen = std::collections::HashSet::new();
+    checks.retain(|c| seen.insert((c.group.clone(), c.name.clone())));
     checks.sort_by_key(|c| (check_rank(c.state), c.group.clone(), c.name.clone()));
     let mut summary = ChecksSummary::default();
     for c in &checks {

@@ -110,7 +110,8 @@ fn render_actions(view: &ForgeView, detail: &PullRequestDetail, cx: &mut Context
     let url = pr.url.clone();
     let mut row = h_flex().gap_2().flex_wrap();
 
-    if pr.state.is_open() {
+    // Drafts merge (or auto-merge) only once marked ready, on the host.
+    if pr.state == PrState::Open {
         let can_merge = detail.mergeable.can_merge() && pr.state != PrState::Draft;
         let auto = detail.auto_merge.is_some();
         let view_handle = cx.weak_entity();

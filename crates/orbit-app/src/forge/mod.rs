@@ -162,16 +162,27 @@ impl ForgeView {
             }),
         ];
         let on_worktree = crate::settings::get(cx).workspace.worktree_by_default;
+        // Debug builds: `ORBIT_DEBUG_FORGE` = `issues`, `pr:<number>` or
+        // `filter:<mine|merged|closed>` opens that view, for visual checks.
+        let debug = if cfg!(debug_assertions) { std::env::var("ORBIT_DEBUG_FORGE").unwrap_or_default() } else { String::new() };
+        let (page, selected_pr, filter) = match debug.split_once(':') {
+            Some(("pr", n)) => (Page::PullRequests, n.parse().ok(), PrFilter::Open),
+            Some(("filter", f)) => {
+                (Page::PullRequests, None, PrFilter::ALL.into_iter().find(|x| x.label().eq_ignore_ascii_case(f)).unwrap_or_default())
+            }
+            _ if debug == "issues" => (Page::Issues, None, PrFilter::Open),
+            _ => (Page::PullRequests, None, PrFilter::Open),
+        };
         Self {
             app,
             workspace,
             focus: cx.focus_handle(),
-            page: Page::PullRequests,
+            page,
             project: None,
             info: Slot::default(),
-            filter: PrFilter::Open,
+            filter,
             prs: Slot::default(),
-            selected_pr: None,
+            selected_pr,
             pr: Slot::default(),
             tracker: TrackerKind::GitHub,
             query,
@@ -199,7 +210,7 @@ impl ForgeView {
         }
         self.focus.focus(window, cx);
         if self.info.value.is_none() && !self.info.loading {
-            self.reset(cx);
+            self.load_info(cx);
         } else {
             self.refresh(false, cx);
         }
