@@ -17,6 +17,7 @@
 //! between your messages.
 
 mod banners;
+mod browser;
 mod find;
 mod inspector;
 mod minimap;
@@ -34,7 +35,9 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::text::{RangeHighlight, TextViewState};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use orbit_net::state::ItemChange;
@@ -43,10 +46,12 @@ use orbit_proto::*;
 use crate::app_state::{AppEvent, AppState};
 use crate::assets::Lucide;
 use crate::composer::{Composer, ComposerEvent};
-use gpui_kit::component::resizable::{ResizableState, resizable_panel, v_resizable};
+use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
+use orbit_browser::{BrowserEvent, BrowserView, Url};
 use minimap::{Mark, Minimap};
 use questions::Questions;
 use terminal::{TerminalPanel, TerminalPanelEvent};
+use crate::actions::ToggleBrowser;
 use crate::{format, ui};
 
 pub use rows::Row;
@@ -119,6 +124,16 @@ pub struct ThreadView {
     layout: (ChatWidth, u16, u16, ClockFormat),
     terminal: Option<Entity<TerminalPanel>>,
     split: Entity<ResizableState>,
+    /// The preview browser, created the first time it opens.
+    browser: Option<Entity<BrowserView>>,
+    browser_open: bool,
+    browser_split: Entity<ResizableState>,
+    /// Dev-server addresses seen in the thread and its terminal.
+    urls: browser::Suggestions,
+    /// Whether the shell shows this thread (it keeps a few views alive).
+    shown: bool,
+    /// Releases a hidden page after a while.
+    browser_suspend: Task<()>,
     /// When the running turn started (as seen here), for the elapsed time.
     turn_started: Option<Instant>,
     /// When the reader pressed Stop on the running turn.
@@ -168,6 +183,8 @@ impl ThreadView {
         subscriptions.push(cx.on_release(|this, cx| {
             let id = this.id;
             this.app.update(cx, |app, _| app.release_timeline(id));
+            let url = this.browser.as_ref().and_then(|b| b.read(cx).url().cloned());
+            browser::remember(id, browser::Memory { url, open: this.browser_open }, cx);
         }));
         app.update(cx, |app, cx| app.retain_timeline(id, cx));
         let mut view = Self {
@@ -189,6 +206,12 @@ impl ThreadView {
             layout: Self::layout_key(cx),
             terminal: None,
             split: cx.new(|_| ResizableState::default()),
+            browser: None,
+            browser_open: false,
+            browser_split: cx.new(|_| ResizableState::default()),
+            urls: browser::Suggestions::default(),
+            shown: true,
+            browser_suspend: Task::ready(()),
             turn_started: None,
             stop_requested: None,
             dismissed: None,
@@ -200,6 +223,9 @@ impl ThreadView {
         };
         view.rebuild(true, cx);
         view.sync_thread_record(window, cx);
+        if browser::remembered(id, cx).open {
+            view.set_browser_open(true, window, cx);
+        }
         view
     }
 
@@ -235,6 +261,7 @@ impl ThreadView {
         let panel = cx.new(|cx| TerminalPanel::new(self.app.clone(), cwd, window, cx));
         let sub = cx.subscribe_in(&panel, window, |this, _, event: &TerminalPanelEvent, window, cx| match event {
             TerminalPanelEvent::Close => this.toggle_terminal(window, cx),
+            TerminalPanelEvent::Urls(urls) => this.offer_urls(urls.clone(), cx),
             TerminalPanelEvent::AddToComposer { text, cwd } => {
                 let chip = crate::composer::ContextChip::TerminalSelection { text: text.clone(), cwd: Some(cwd.clone()) };
                 let composer = this.composer.clone();
@@ -247,6 +274,98 @@ impl ThreadView {
         window.defer(cx, move |window, cx| TerminalPanel::focus(&focus, window, cx));
         self.terminal = Some(panel);
         cx.notify();
+    }
+
+    // ── Preview browser ──────────────────────────────────────────────────
+
+    /// Opens the preview browser beside the conversation, or closes it.
+    pub fn toggle_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let open = !self.browser_open;
+        self.set_browser_open(open, window, cx);
+        let Some(browser) = self.browser.clone() else { return };
+        if open {
+            // Nothing to show yet: the address field takes the keyboard.
+            if browser.read(cx).url().is_none() {
+                window.defer(cx, move |window, cx| browser.update(cx, |b, cx| b.focus_address(window, cx)));
+            }
+        } else if browser.read(cx).focus_handle(cx).contains_focused(window, cx) {
+            Composer::focus(&self.composer.clone(), window, cx);
+        }
+    }
+
+    /// Opens the preview on `url` (an address the agent or the terminal printed).
+    fn open_preview(&mut self, url: Url, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_browser_open(true, window, cx);
+        if let Some(browser) = &self.browser {
+            browser.update(cx, |b, cx| b.navigate(url, window, cx));
+        }
+    }
+
+    fn set_browser_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if open && self.browser.is_none() {
+            let browser = cx.new(|cx| BrowserView::new(window, cx));
+            if let Some(url) = browser::remembered(self.id, cx).url {
+                browser.update(cx, |b, cx| b.navigate(url, window, cx));
+            }
+            self._subscriptions.push(cx.subscribe(&browser, |this, _, event: &BrowserEvent, cx| {
+                if let BrowserEvent::UrlChanged(url) = event {
+                    browser::remember(this.id, browser::Memory { url: url.clone(), open: this.browser_open }, cx);
+                }
+            }));
+            self.browser = Some(browser);
+            self.push_suggestions(cx);
+        }
+        self.browser_open = open;
+        let url = self.browser.as_ref().and_then(|b| b.read(cx).url().cloned());
+        browser::remember(self.id, browser::Memory { url, open }, cx);
+        self.sync_browser_visibility(cx);
+        cx.notify();
+    }
+
+    /// The shell shows this thread (`true`) or another view (`false`). The
+    /// page is a native surface: it must be hidden explicitly.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown != shown {
+            self.shown = shown;
+            self.sync_browser_visibility(cx);
+        }
+    }
+
+    /// Shows the page while the panel is open on screen; a hidden page is
+    /// released after [`browser::SUSPEND_AFTER`].
+    fn sync_browser_visibility(&mut self, cx: &mut Context<Self>) {
+        let Some(browser) = self.browser.clone() else { return };
+        let visible = self.shown && self.browser_open;
+        browser.update(cx, |b, cx| b.set_visible(visible, cx));
+        self.browser_suspend = if visible || browser.read(cx).is_suspended() {
+            Task::ready(())
+        } else {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(browser::SUSPEND_AFTER).await;
+                let _ = this.update(cx, |this, cx| {
+                    if !(this.shown && this.browser_open)
+                        && let Some(browser) = &this.browser
+                    {
+                        browser.update(cx, |b, cx| b.suspend(cx));
+                    }
+                });
+            })
+        };
+    }
+
+    /// Remembers dev-server addresses seen in the thread or its terminal.
+    fn offer_urls(&mut self, urls: Vec<Url>, cx: &mut Context<Self>) {
+        if self.urls.add(urls) {
+            self.push_suggestions(cx);
+            cx.notify();
+        }
+    }
+
+    fn push_suggestions(&mut self, cx: &mut Context<Self>) {
+        let Some(browser) = self.browser.clone() else { return };
+        let port = self.thread(cx).and_then(|t| t.workspace.port_base);
+        let offered = self.urls.offered(port);
+        browser.update(cx, |b, cx| b.set_suggested_urls(offered, cx));
     }
 
     /// Asks the agent to stop; if it has not stopped after a few seconds,
@@ -357,6 +476,25 @@ impl ThreadView {
     }
 
     fn apply_changes(&mut self, changes: &[ItemChange], cx: &mut Context<Self>) {
+        let found: Vec<Url> = self
+            .app
+            .read(cx)
+            .state()
+            .timeline(self.id)
+            .map(|t| {
+                changes
+                    .iter()
+                    .filter_map(|c| match c {
+                        ItemChange::Inserted(ix) | ItemChange::Updated(ix) => t.items().get(*ix),
+                        ItemChange::Removed(_) => None,
+                    })
+                    .flat_map(browser::item_urls)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !found.is_empty() {
+            self.offer_urls(found, cx);
+        }
         let structural = changes.iter().any(|c| matches!(c, ItemChange::Inserted(_) | ItemChange::Removed(_)));
         if structural {
             // Positions shift in a structural batch; the re-layout also
@@ -422,7 +560,7 @@ impl ThreadView {
     fn rebuild(&mut self, full: bool, cx: &mut Context<Self>) {
         // Read the timeline in place (no copy of every item per new step);
         // collect only what needs a mutable context afterwards.
-        let (layout, item_row, marks, texts, live) = {
+        let (layout, item_row, marks, texts, live, urls) = {
             let state = self.app.read(cx).state();
             let Some(timeline) = state.timeline(self.id) else { return };
             let items = timeline.items();
@@ -455,8 +593,12 @@ impl ThreadView {
                 })
                 .collect();
             let live: HashSet<ItemId> = items.iter().map(|i| i.id).collect();
-            (layout, item_row, marks, texts, live)
+            let urls: Vec<Url> = if full { items.iter().flat_map(browser::item_urls).collect() } else { Vec::new() };
+            (layout, item_row, marks, texts, live, urls)
         };
+        if !urls.is_empty() {
+            self.offer_urls(urls, cx);
+        }
         self.loaded = true;
         for (id, text) in texts {
             self.sync_markdown(id, &text, cx);
@@ -917,6 +1059,7 @@ impl ThreadView {
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let browser_button = self.render_browser_button(cx);
         let state = self.app.read(cx).state();
         let Some(thread) = state.threads.get(&self.id) else { return h_flex() };
         let project = thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p));
@@ -962,6 +1105,7 @@ impl ThreadView {
                     .tooltip_with_action("Find in thread", &FindInThread, Some("Thread"))
                     .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
             )
+            .child(browser_button)
             .child(
                 Button::new("review")
                     .ghost()
@@ -983,6 +1127,37 @@ impl ThreadView {
                     )
                 })
             })
+    }
+
+    /// The header's browser control: "Open preview localhost:3000" once the
+    /// agent or the terminal printed an address and the panel is closed;
+    /// otherwise a toggle.
+    fn render_browser_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        match self.urls.latest().filter(|_| !self.browser_open).cloned() {
+            Some(url) => {
+                let host = orbit_browser::host_label(&url);
+                Button::new("open-preview")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Globe)
+                    .label(format!("Open preview {host}"))
+                    .tooltip(format!("Show {url} beside the conversation"))
+                    .on_click(cx.listener(move |this, _, window, cx| this.open_preview(url.clone(), window, cx)))
+                    .into_any_element()
+            }
+            None => Button::new("toggle-browser")
+                .ghost()
+                .small()
+                .icon(IconName::Globe)
+                .selected(self.browser_open)
+                .tooltip_with_action(
+                    if self.browser_open { "Close the preview browser" } else { "Preview browser" },
+                    &ToggleBrowser,
+                    Some("Thread"),
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx)))
+                .into_any_element(),
+        }
     }
 
     fn render_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1088,24 +1263,34 @@ impl Render for ThreadView {
             .on_action(cx.listener(|this, _: &NextMessage, _, cx| {
                 this.minimap.update(cx, |m, cx| m.step(true, cx));
             }))
+            .on_action(cx.listener(|this, _: &ToggleBrowser, window, cx| this.toggle_browser(window, cx)))
             .child(self.render_header(cx))
-            .child(match &self.terminal {
-                None => div().flex_1().min_h_0().child(conversation).into_any_element(),
-                Some(terminal) => div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        v_resizable("thread-split")
-                            .with_state(&self.split)
-                            .child(resizable_panel().child(conversation))
+            .child({
+                let main = match &self.terminal {
+                    None => conversation.into_any_element(),
+                    Some(terminal) => v_resizable("thread-split")
+                        .with_state(&self.split)
+                        .child(resizable_panel().child(conversation))
+                        .child(resizable_panel().size(px(300.)).size_range(px(120.)..px(900.)).child(terminal.clone()))
+                        .into_any_element(),
+                };
+                let body = div().flex_1().min_h_0();
+                match self.browser.as_ref().filter(|_| self.browser_open) {
+                    None => body.child(main),
+                    // The page beside the thread, so the reply and its
+                    // result are seen together.
+                    Some(browser) => body.child(
+                        h_resizable("thread-browser-split")
+                            .with_state(&self.browser_split)
+                            .child(resizable_panel().size_range(px(360.)..Pixels::MAX).child(main))
                             .child(
                                 resizable_panel()
-                                    .size(px(300.))
-                                    .size_range(px(120.)..px(900.))
-                                    .child(terminal.clone()),
+                                    .size(px(560.))
+                                    .size_range(px(320.)..px(1600.))
+                                    .child(div().size_full().border_l_1().border_color(theme.border).child(browser.clone())),
                             ),
-                    )
-                    .into_any_element(),
+                    ),
+                }
             })
     }
 }

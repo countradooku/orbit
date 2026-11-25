@@ -23,6 +23,8 @@ pub enum TerminalPanelEvent {
     Close,
     /// Put this selected output in the thread's composer.
     AddToComposer { text: String, cwd: String },
+    /// The shell printed dev-server addresses (each once).
+    Urls(Vec<orbit_browser::Url>),
 }
 
 pub struct TerminalPanel {
@@ -36,6 +38,7 @@ pub struct TerminalPanel {
     exited: Option<Option<i32>>,
     title: Option<String>,
     error: Option<String>,
+    urls: super::browser::OutputScanner,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -55,6 +58,7 @@ impl TerminalPanel {
             exited: None,
             title: None,
             error: None,
+            urls: Default::default(),
             _subscriptions: Vec::new(),
         };
         panel._subscriptions = vec![
@@ -62,6 +66,10 @@ impl TerminalPanel {
             cx.subscribe(&app, |this, _, event: &AppEvent, cx| match event {
                 AppEvent::TerminalOutput { term, data } if Some(*term) == this.term => {
                     this.view.update(cx, |view, cx| view.feed(data, cx));
+                    let urls = this.urls.feed(data);
+                    if !urls.is_empty() {
+                        cx.emit(TerminalPanelEvent::Urls(urls));
+                    }
                 }
                 AppEvent::TerminalExited { term, code } if Some(*term) == this.term => {
                     this.exited = Some(*code);

@@ -208,7 +208,18 @@ impl Workspace {
             let home = self.home.clone();
             window.defer(cx, move |window, cx| HomeView::focus_composer(&home, window, cx));
         }
+        // A thread's preview page is a native surface: hide it with its thread.
+        let before = self.current_thread_view().cloned();
         self.route = route;
+        let after = self.current_thread_view().cloned();
+        if before != after {
+            if let Some(view) = before {
+                view.update(cx, |view, cx| view.set_shown(false, cx));
+            }
+            if let Some(view) = after {
+                view.update(cx, |view, cx| view.set_shown(true, cx));
+            }
+        }
         cx.notify();
     }
 

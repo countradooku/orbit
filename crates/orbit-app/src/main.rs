@@ -66,8 +66,16 @@ fn main() {
     };
     let shutdown = backend.clone();
 
-    gpui_kit::application().with_assets(assets::OrbitAssets).run(move |cx| {
+    // The preview browser's WebKitGTK embeds only into X11 windows
+    // (XWayland under Wayland), so Linux runs on X11.
+    #[cfg(target_os = "linux")]
+    let app = gpui_kit::platform::linux(WindowingModes::X11);
+    #[cfg(not(target_os = "linux"))]
+    let app = gpui_kit::application();
+
+    app.with_assets(assets::OrbitAssets).run(move |cx| {
         gpui_kit::init(cx);
+        orbit_browser::init(cx);
         // System notifications need an identity on Windows; harmless elsewhere.
         cx.set_app_identity("dev.orbit.Orbit", "Orbit");
         orbit_terminal::init(cx);

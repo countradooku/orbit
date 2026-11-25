@@ -20,6 +20,7 @@ gpui_kit::actions!(
         PreviousThread,
         FocusComposer,
         ToggleTerminal,
+        ToggleBrowser,
         Quit,
         ZoomIn,
         ZoomOut,
@@ -46,6 +47,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-l", FocusComposer, Some("Workspace")),
         KeyBinding::new("ctrl-`", ToggleTerminal, None),
         KeyBinding::new("ctrl-j", ToggleTerminal, Some("Workspace")),
+        KeyBinding::new(platform("cmd-shift-b", "ctrl-shift-b"), ToggleBrowser, Some("Thread")),
         KeyBinding::new("ctrl-q", Quit, None),
         KeyBinding::new(platform("cmd-+", "ctrl-+"), ZoomIn, None),
         // Bound last, so menus and the keyboard page show it.
