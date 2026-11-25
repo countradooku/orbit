@@ -15,11 +15,15 @@
 //! truncated on recovery.
 
 pub mod codec;
+pub mod diff;
 pub mod ids;
 pub mod model;
 pub mod wire;
 
 pub use codec::{Codec, FRAME_HEADER, FrameError, FrameReader, decode, encode, write_frame};
+pub use diff::{
+    DiffLine, FileDiff, FileDiffKind, Hunk, LineKind, LineRanges, Span, file_patch, hunk_patch, hunks_patch, word_diff,
+};
 pub use ids::*;
 pub use model::*;
 pub use wire::*;

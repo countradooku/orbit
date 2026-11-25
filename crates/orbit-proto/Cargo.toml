@@ -9,3 +9,7 @@ publish.workspace = true
 [dependencies]
 bitcode = { workspace = true }
 crc32fast = { workspace = true }
+memchr = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
