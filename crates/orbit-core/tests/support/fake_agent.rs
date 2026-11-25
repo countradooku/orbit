@@ -206,6 +206,8 @@ fn jsonl(pi: bool, script: Value, log: Arc<Mutex<std::fs::File>>) {
                 return;
             }
         } else if let Some(ms) = step.get("spawnOrphan").and_then(|m| m.as_u64()) {
+            // Deliberately never waited on: it is meant to outlive this process.
+            #[allow(clippy::zombie_processes)]
             std::process::Command::new(std::env::current_exe().unwrap())
                 .env("ORBIT_FAKE_SLEEP_MS", ms.to_string())
                 .stdin(std::process::Stdio::null())

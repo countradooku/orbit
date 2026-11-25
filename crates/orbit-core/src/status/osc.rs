@@ -110,10 +110,8 @@ impl OscScanner {
                 }
                 State::BodyEsc { skip } => {
                     if data[i] == b'\\' {
-                        if !skip {
-                            if let Some(osc) = classify(&self.buf) {
-                                found(osc);
-                            }
+                        if !skip && let Some(osc) = classify(&self.buf) {
+                            found(osc);
                         }
                         self.buf.clear();
                         self.state = State::Ground;
