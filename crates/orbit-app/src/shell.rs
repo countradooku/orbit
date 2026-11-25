@@ -958,6 +958,7 @@ impl Workspace {
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let in_settings = self.route == Route::Settings;
+        let in_guide = crate::onboarding::active_view(cx).is_some();
         let theme = cx.theme().clone();
         let state = self.app.read(cx).state();
         let needs_you = InboxView::waiting(state);
@@ -981,7 +982,7 @@ impl Workspace {
                         .child(Icon::new(Lucide::Orbit).small().text_color(theme.primary))
                         .child("Orbit"),
                 )
-                .when(!in_settings, |el| {
+                .when(!in_settings && !in_guide, |el| {
                     el.child(
                         Button::new("title-forge")
                             .ghost()
@@ -1003,7 +1004,7 @@ impl Workspace {
                             .on_click(|_, window, cx| window.dispatch_action(Box::new(GoAutomations), cx)),
                     )
                 })
-                .when(in_settings, |el| {
+                .when(in_settings && !in_guide, |el| {
                     el.child(
                         Button::new("close-settings")
                             .ghost()

@@ -401,12 +401,15 @@ pub struct Pending {
     pub plan: Plan,
     /// Starts of the new version so far.
     pub starts: u32,
+    /// The new version has shown its release notes.
+    #[serde(default)]
+    pub announced: bool,
 }
 
-/// How the last update went, for the next Orbit to say.
+/// An update that didn't happen, for the next Orbit to say. (One that did
+/// is told by the new version itself: [`take_just_installed`].)
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
-    Installed { from: String, to: String },
     RolledBack { from: String, to: String, reason: String },
     Failed { to: String, reason: String },
 }
@@ -556,7 +559,19 @@ pub fn mark_healthy(data_dir: &Path, version: &str) {
     }
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(plan_path(data_dir));
-    record_outcome(data_dir, &Outcome::Installed { from: pending.plan.from_version.clone(), to: version.to_owned() });
+}
+
+/// When this version was just installed by the updater and hasn't said so
+/// yet: the version it replaced. Says it once.
+pub fn take_just_installed(data_dir: &Path, version: &str) -> Option<String> {
+    let path = pending_path(data_dir);
+    let mut pending = read_json::<Pending>(&path)?;
+    if pending.plan.to_version != version || pending.announced {
+        return None;
+    }
+    pending.announced = true;
+    let _ = write_json(&path, &pending);
+    Some(pending.plan.from_version)
 }
 
 // ── The helper ───────────────────────────────────────────────────────────
@@ -602,7 +617,7 @@ fn run_plan(plan: &Plan, health_wait: Duration) -> i32 {
         return 4;
     }
     let _ = fs::remove_file(healthy_path(data_dir));
-    if let Err(err) = write_json(&pending_path(data_dir), &Pending { plan: plan.clone(), starts: 0 }) {
+    if let Err(err) = write_json(&pending_path(data_dir), &Pending { plan: plan.clone(), starts: 0, announced: false }) {
         log::warn!("couldn’t record the pending update: {err}");
     }
     let mut child = match spawn_detached(&plan.relaunch, &plan.args) {
@@ -842,7 +857,8 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(read(&root.join(APP_EXE)), "new app");
         assert!(!suffixed(&root.join(APP_EXE), BACKUP_SUFFIX).exists(), "backups go once healthy");
-        assert!(matches!(take_outcome(&plan.data_dir), Some(Outcome::Installed { .. })));
+        assert!(!pending_path(&plan.data_dir).exists());
+        assert_eq!(take_outcome(&plan.data_dir), None, "nothing went wrong to tell");
     }
 
     #[test]
@@ -851,7 +867,9 @@ mod tests {
         let Layout::Folder { root } = &layout else { unreachable!() };
         let plan = plan(dir.path(), &layout, &payload, crashing_program());
         apply_swaps(&plan.swaps).unwrap();
-        write_json(&pending_path(&plan.data_dir), &Pending { plan: plan.clone(), starts: 0 }).unwrap();
+        write_json(&pending_path(&plan.data_dir), &Pending { plan: plan.clone(), starts: 0, announced: false }).unwrap();
+        assert_eq!(take_just_installed(&plan.data_dir, "0.2.0").as_deref(), Some("0.1.0"));
+        assert_eq!(take_just_installed(&plan.data_dir, "0.2.0"), None, "told once");
         for _ in 0..MAX_UNHEALTHY_STARTS {
             assert_eq!(boot_guard(&plan.data_dir, "0.2.0"), Boot::Continue);
         }

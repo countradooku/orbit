@@ -2,7 +2,6 @@
 //! that gets it done. It leaves once every step is done or it is dismissed.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::progress::Progress as ProgressBar;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -167,15 +166,18 @@ pub fn render(cx: &App) -> Option<AnyElement> {
                         el.child(div().text_xs().text_color(theme.muted_foreground).child(blocked.unwrap_or(step.help())))
                     }),
             )
+            // Fixed lanes, so keys and buttons line up from row to row.
             .when(!is_done, |el| {
-                el.when_some(keys, |el, keys| el.child(div().text_xs().text_color(theme.muted_foreground).child(keys)))
+                el.child(h_flex().w_16().flex_shrink_0().justify_end().text_xs().text_color(theme.muted_foreground).children(keys))
                     .child(
-                        Button::new(("checklist-do", step.id()))
-                            .small()
-                            .map(|b| if Some(step) == next { b.outline() } else { b.ghost() })
-                            .label(verb)
-                            .disabled(blocked.is_some())
-                            .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx)),
+                        h_flex().w_32().flex_shrink_0().justify_end().child(
+                            Button::new(("checklist-do", step.id()))
+                                .small()
+                                .map(|b| if Some(step) == next { b.outline() } else { b.ghost() })
+                                .label(verb)
+                                .disabled(blocked.is_some())
+                                .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx)),
+                        ),
                     )
             })
     });
@@ -204,13 +206,6 @@ pub fn render(cx: &App) -> Option<AnyElement> {
                             .label("Dismiss")
                             .on_click(|_, _, cx| super::dismiss_checklist(cx)),
                     ),
-            )
-            .child(
-                div().px_3().pb_1().child(
-                    ProgressBar::new("checklist-progress")
-                        .value(done as f32 / total as f32 * 100.0)
-                        .accessibility_label(format!("{done} of {total} steps done")),
-                ),
             )
             .children(rows)
             .into_any_element(),

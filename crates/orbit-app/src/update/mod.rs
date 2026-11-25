@@ -15,6 +15,8 @@
 //! bundles and the installer's records under `<data folder>/updates/`.
 
 pub mod download;
+#[cfg(test)]
+mod fixture;
 pub mod host;
 pub mod install;
 pub mod manifest;
@@ -478,6 +480,10 @@ pub fn on_window_open(window: &mut Window, cx: &mut App) {
         .subscribe(&updater, cx, |_, notice: &UpdateNotice, window, cx| view::announce_notice(notice, window, cx))
         .detach();
     let data_dir = updater.read(cx).data_dir.clone();
+    if install::take_just_installed(&data_dir, VERSION).is_some() {
+        // Show the notes once the window has settled.
+        window.defer(cx, view::open_whats_new);
+    }
     if let Some(outcome) = install::take_outcome(&data_dir) {
         if let install::Outcome::RolledBack { to, .. } = &outcome {
             let to = to.clone();
@@ -485,6 +491,34 @@ pub fn on_window_open(window: &mut Window, cx: &mut App) {
         }
         view::announce_outcome(outcome, window, cx);
     }
+    if cfg!(debug_assertions) {
+        debug_hooks(&updater, window, cx);
+    }
+}
+
+/// Debug builds: `ORBIT_DEBUG_UPDATE` = `check` (check now, as if asked),
+/// `sheet` (open the notes once an update is ready) or `restart` (install it
+/// once ready), for end-to-end checks against a local fixture.
+fn debug_hooks(updater: &Entity<Updater>, window: &mut Window, cx: &mut App) {
+    let Ok(hook) = std::env::var("ORBIT_DEBUG_UPDATE") else { return };
+    if hook == "check" {
+        updater.update(cx, |u, cx| u.check(true, cx));
+        return;
+    }
+    let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+    window
+        .observe(updater, cx, move |updater, window, cx| {
+            if fired.get() || !matches!(updater.read(cx).phase(), Phase::Ready { .. }) {
+                return;
+            }
+            fired.set(true);
+            match hook.as_str() {
+                "sheet" => view::open_release_sheet(window, cx),
+                "restart" => updater.update(cx, |u, cx| u.restart(cx)),
+                _ => {}
+            }
+        })
+        .detach();
 }
 
 #[cfg(test)]

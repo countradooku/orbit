@@ -139,15 +139,6 @@ pub fn open_whats_new(window: &mut Window, cx: &mut App) {
 /// Tells how the last update went.
 pub fn announce_outcome(outcome: install::Outcome, window: &mut Window, cx: &mut App) {
     match outcome {
-        install::Outcome::Installed { .. } => {
-            let updater = updater(cx);
-            // Show the notes once the window has settled.
-            window.defer(cx, move |window, cx| {
-                if updater.is_some() {
-                    open_whats_new(window, cx);
-                }
-            });
-        }
         install::Outcome::RolledBack { from, to, reason } => window.push_notification(
             Notification::warning(format!(
                 "{reason} Orbit {from} is back, and {to} won’t be installed automatically. Check for updates in Settings to try a newer release."

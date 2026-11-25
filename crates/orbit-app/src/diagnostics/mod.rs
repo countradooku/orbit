@@ -57,6 +57,18 @@ pub fn on_window_open(window: &mut Window, cx: &mut App) {
         cx.set_global(PendingCrash(None));
         view::offer_crash_report(report, window, cx);
     }
+    // Debug builds: ORBIT_DEBUG_DIALOG = `about`, `diagnostics` or
+    // `whats-new` opens it, for screenshots and visual checks.
+    if cfg!(debug_assertions)
+        && let Ok(dialog) = std::env::var("ORBIT_DEBUG_DIALOG")
+    {
+        window.defer(cx, move |window, cx| match dialog.as_str() {
+            "about" => open_about(window, cx),
+            "diagnostics" => view::collect_dialog(window, cx),
+            "whats-new" => window.dispatch_action(Box::new(crate::update::ShowWhatsNew), cx),
+            _ => {}
+        });
+    }
 }
 
 /// This run is ending normally (quit, or a restart to update).

@@ -108,9 +108,16 @@ impl OnboardingView {
         // Pick up where the data folder is: a project added before (the
         // guide reopened from Settings) is the one to try a task in.
         let project = app.read(cx).state().projects.first().map(|p| p.id);
+        // Debug builds: ORBIT_DEBUG_ONBOARDING=<step number> opens there, for
+        // screenshots and visual checks.
+        let step = if cfg!(debug_assertions) {
+            std::env::var("ORBIT_DEBUG_ONBOARDING").ok().and_then(|s| s.parse::<usize>().ok()).and_then(|ix| Step::ALL.get(ix).copied())
+        } else {
+            None
+        };
         let mut view = Self {
             app,
-            step: Step::Welcome,
+            step: step.unwrap_or(Step::Welcome),
             generation: 0,
             focus: cx.focus_handle(),
             clone_url,
@@ -127,6 +134,9 @@ impl OnboardingView {
             _subscriptions: subscriptions,
         };
         view.pick_default_agent(cx);
+        if view.step == Step::FirstTask {
+            view.prepare_prompt(window, cx);
+        }
         view
     }
 
@@ -474,6 +484,8 @@ impl OnboardingView {
                 .child(div().mt_0p5().child(icon.small().text_color(theme.primary)))
                 .child(
                     v_flex()
+                        .flex_1()
+                        .min_w_0()
                         .gap_0p5()
                         .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
                         .child(div().text_sm().text_color(theme.muted_foreground).child(text)),
@@ -893,7 +905,6 @@ impl OnboardingView {
         let step = self.step;
         let primary: SharedString = match step {
             Step::Welcome => "Get started".into(),
-            Step::Project if self.project.is_none() => "Skip for now".into(),
             Step::FirstTask => "Start task".into(),
             _ => "Continue".into(),
         };
