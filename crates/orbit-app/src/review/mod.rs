@@ -11,6 +11,7 @@
 
 mod dialogs;
 mod model;
+mod perf;
 mod state;
 
 use std::cell::RefCell;
@@ -149,6 +150,8 @@ pub struct ReviewView {
     drafts: Vec<Draft>,
     next_comment: u64,
     palette: Option<Rc<Palette>>,
+    perf: Option<perf::PerfLog>,
+    load_started: Option<Instant>,
     _subs: Vec<Subscription>,
 }
 
@@ -252,6 +255,8 @@ impl ReviewView {
             drafts: Vec::new(),
             next_comment,
             palette: None,
+            perf: perf::PerfLog::from_env(),
+            load_started: None,
             _subs: subs,
         };
         match scope {
@@ -355,6 +360,7 @@ impl ReviewView {
         self.generation += 1;
         let generation = self.generation;
         self.last_load = Some(Instant::now());
+        self.load_started = Some(Instant::now());
         let task = self.app.update(cx, |app, cx| app.call(Command::Diff { thread: self.thread, scope }, cx));
         cx.spawn(async move |this, cx| {
             let result = match task.await {
@@ -370,12 +376,23 @@ impl ReviewView {
 
     fn loaded(&mut self, generation: u64, result: Result<ReviewData, String>, cx: &mut Context<Self>) {
         self.loading = false;
+        let fetched = self.load_started.take().map(|t| t.elapsed());
         if generation == self.generation {
             match result {
                 Ok(data) => {
                     self.error = None;
                     if data.fingerprint != self.data.fingerprint || self.data.is_empty() {
+                        let (files, lines) =
+                            (data.len(), data.files.iter().map(|f| f.additions + f.deletions).sum::<u32>());
+                        let shown = Instant::now();
                         self.set_data(Rc::new(data), cx);
+                        if let (Some(perf), Some(fetched)) = (&self.perf, fetched) {
+                            perf.write(&format!(
+                                "load files={files} changed_lines={lines} fetch+parse={:.1}ms show={:.1}ms",
+                                fetched.as_secs_f32() * 1000.,
+                                shown.elapsed().as_secs_f32() * 1000.
+                            ));
+                        }
                     }
                 }
                 Err(message) => {
@@ -1705,7 +1722,10 @@ impl Focusable for ReviewView {
 
 impl Render for ReviewView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let _ = window;
+        if let Some(perf) = &mut self.perf {
+            perf.frame();
+            window.request_animation_frame();
+        }
         let p = prefs(cx);
         let conflicts = Rc::new(self.conflicts(cx));
         let body = if let Some(error) = &self.error {
