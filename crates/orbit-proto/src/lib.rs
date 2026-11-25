@@ -18,6 +18,7 @@ pub mod codec;
 pub mod diff;
 pub mod ids;
 pub mod model;
+pub mod settings;
 pub mod wire;
 
 pub use codec::{Codec, FRAME_HEADER, FrameError, FrameReader, decode, encode, write_frame};
@@ -26,6 +27,7 @@ pub use diff::{
 };
 pub use ids::*;
 pub use model::*;
+pub use settings::*;
 pub use wire::*;
 
 /// Bumped on any incompatible wire change. Clients and servers refuse to talk
