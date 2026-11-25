@@ -115,6 +115,7 @@ pub struct Changes {
     pub usage: HashSet<ThreadId>,
     pub providers: bool,
     pub defaults: bool,
+    pub settings: bool,
     pub conflicts: bool,
     pub connection: bool,
     pub workspace: HashSet<ThreadId>,
@@ -132,6 +133,7 @@ impl Changes {
             && self.usage.is_empty()
             && !self.providers
             && !self.defaults
+            && !self.settings
             && !self.conflicts
             && !self.connection
             && self.workspace.is_empty()
@@ -147,6 +149,7 @@ impl Changes {
             || !self.removed_threads.is_empty()
             || self.providers
             || self.defaults
+            || self.settings
             || self.conflicts
             || self.connection
     }
@@ -159,6 +162,8 @@ pub struct ClientState {
     pub threads: HashMap<ThreadId, Thread>,
     pub providers: Vec<ProviderInfo>,
     pub defaults: ThreadConfig,
+    /// The engine's settings, as last broadcast.
+    pub settings: Settings,
     pub conflicts: Vec<Conflict>,
     /// Live usage of running turns, newer than the thread record's total.
     pub live_usage: HashMap<ThreadId, Usage>,
@@ -216,6 +221,7 @@ impl ClientState {
                     self.threads = snapshot.threads.into_iter().map(|t| (t.id, t)).collect();
                     self.providers = snapshot.providers;
                     self.defaults = snapshot.defaults;
+                    self.settings = snapshot.settings;
                     self.live_usage.clear();
                     // Open timelines may be stale; the UI refetches them.
                     self.timelines.clear();
@@ -285,6 +291,10 @@ impl ClientState {
             Event::DefaultsChanged(config) => {
                 self.defaults = config;
                 changes.defaults = true;
+            }
+            Event::SettingsChanged(settings) => {
+                self.settings = settings;
+                changes.settings = true;
             }
             Event::UsageChanged { thread, usage } => {
                 self.live_usage.insert(thread, usage);
@@ -373,5 +383,18 @@ mod tests {
         thread.usage = Usage { context_tokens: 600, context_window: 1000, ..Default::default() };
         state.apply(events(vec![Event::ThreadUpserted(thread.clone())]));
         assert_eq!(state.usage(thread.id).context_fill(), Some(0.6));
+    }
+
+    #[test]
+    fn settings_come_from_the_snapshot_and_follow_events() {
+        let mut state = ClientState::default();
+        let mut settings = Settings::default();
+        settings.appearance.ui_scale = 110;
+        state.apply(vec![Update::Reset(Snapshot { settings: settings.clone(), ..Default::default() })]);
+        assert_eq!(state.settings, settings);
+        settings.composer.submit = SubmitKey::ModEnter;
+        let changes = state.apply(events(vec![Event::SettingsChanged(settings.clone())]));
+        assert!(changes.settings && changes.affects_shell());
+        assert_eq!(state.settings.composer.submit, SubmitKey::ModEnter);
     }
 }
