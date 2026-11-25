@@ -594,7 +594,7 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | Refresh and throttled live refresh | web/components/DiffPanel.tsx (`useLiveRefresh`) | Done | core/engine/review.rs, app/review/mod.rs (`refresh_live`) | One watcher per repository shared by open threads; a change costs one `git status`; the sheet reloads at most every 400 ms, skips identical patches and keeps the line under the pointer. | P1 |
 | Collapse / expand all files | web/components/DiffPanel.tsx | Done | app/review/mod.rs (View menu) | Reviewed files collapse on their own. | P2 |
 | Scroll position restored per scope | web/components/diffs/useCodeViewScrollRestore.ts | Missing | | | P2 |
-| Highlighted rendering, lazy large files, expandable context | web/components/DiffWorkerPoolProvider.tsx, StyledDiffCodeView.tsx | Partial | app/review.rs:169, core/git/diff.rs:62 | One `git diff` for all files, cached by tree id (T3: ~1,650 git processes for 272 files, #40182; 28 fps on large diffs, #42438). Lazy loading and context expansion not verified. | P0 |
+| Highlighted rendering, lazy large files, expandable context | web/components/DiffWorkerPoolProvider.tsx, StyledDiffCodeView.tsx | Done | app/review/mod.rs, core/git/diff.rs | One `git diff` for all files, parsed off the UI thread; tree-sitter highlighting (12 languages); one virtualized list with expandable context. 802 files / 49,609 changed lines: fetch and parse 290 ms, shown in 3 ms; wheel scrolling p99 13.6 ms, no frame over 18 ms (docs/BENCHMARKS.md). | P0 |
 | Review comments sent to the agent (select lines, comment, chips with next message) | web/reviewCommentContext.ts, web/components/diffs/AnnotatableCodeView.tsx | Done | app/review/mod.rs (`send_comments`), app/review/model.rs (`comments_message`) | Comments stay with the thread across sheet opens and go as one follow-up with `path:line`, the quoted diff and the note (queued if the agent is busy). Not yet chips in the composer (WP6). | P1 |
 | Whole-file comments | `buildFileReviewComment` | Done | app/review/mod.rs (file menu) | | P2 |
 | File actions (open in preview or editor, reveal, open with, copy path) | web/diffFileActions.ts | Partial | app/review/mod.rs (`file_menu`) | Open with the system, show in folder, copy path, revert file, comment; no editor picker yet (WP2). | P1 |
@@ -1002,7 +1002,7 @@ Not T3 features, so they are not in the counts above, but the design commits to 
 | #42338 palette cache misses per keystroke | Yes | Palette items built once per open (app/palette.rs:25-58). |
 | #440, #12689 multi-second transitions and typing lag | Yes | Native GPUI; a token re-renders one row (app/thread/mod.rs:133-164). |
 | #30657, #28489 skill and slash menus lag with hundreds of skills | Not yet | No menu. |
-| #42438 diff scrolls at 28 fps | Partly | GPUI Kit diff view; not benchmarked. |
+| #42438 diff scrolls at 28 fps | Yes | 802-file, 49,609-line review: normal wheel scrolling never drops below 60 fps (p99 13.6 ms); a 3× fling has p50 7–8 ms, p95 24 ms (docs/BENCHMARKS.md). |
 | #996 crash on a heavy thread, fixed only by deleting `~/.t3` | Partly | CRC-framed logs truncate torn records on recovery (proto/lib.rs:13-15); no crash-loop guard. |
 | #20366, #12372, #26338, #26385, #30515 scroll anchoring and "scroll to end" pill regressions | Partly | Message scroller follows the tail and appends without resetting (app/thread/mod.rs:204-219); no pill and no tests for scroll-up during a turn. |
 | #12094 rows overlap while a tool group streams | Yes | Each updated row is remeasured (app/thread/mod.rs:149-161). |
