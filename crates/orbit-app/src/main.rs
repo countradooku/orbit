@@ -11,6 +11,7 @@ mod app_state;
 mod assets;
 mod composer;
 mod fleet;
+mod forge;
 mod format;
 mod home;
 mod inbox;
@@ -105,6 +106,7 @@ fn main() {
 
         let app = cx.new(|cx| app_state::AppState::new(backend, cx));
         settings::init(app.clone(), startup, cx);
+        forge::init(app.clone(), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(820.)), cx))),
             window_min_size: Some(size(px(720.), px(480.))),

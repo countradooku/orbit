@@ -1,0 +1,8 @@
+{"data":{"issue":{"identifier":"ENG-123","title":"Crash on empty workspace","url":"https://linear.app/acme/issue/ENG-123/crash-on-empty-workspace",
+ "branchName":"alice/eng-123-crash-on-empty-workspace","updatedAt":"2026-11-24T10:00:00.000Z",
+ "state":{"name":"In Progress","type":"started"},"assignee":{"displayName":"Alice"},"creator":{"displayName":"Bob"},"labels":{"nodes":[{"name":"Bug"}]},
+ "description":"Opening an empty workspace crashes with `index out of range`.\n\n1. Create a workspace\n2. Open it",
+ "comments":{"nodes":[
+   {"body":"Repro on 0.4.2 too.","createdAt":"2026-11-24T11:00:00.000Z","user":{"displayName":"Carol"}},
+   {"body":"Stack trace attached.","createdAt":"2026-11-24T09:00:00.000Z","user":{"displayName":"Bob"}}
+ ]}}}}
