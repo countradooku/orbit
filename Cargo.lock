@@ -5989,6 +5989,8 @@ dependencies = [
  "orbit-net",
  "orbit-proto",
  "orbit-terminal",
+ "serde",
+ "sonic-rs",
  "tempfile",
 ]
 

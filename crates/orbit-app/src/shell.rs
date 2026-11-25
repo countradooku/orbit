@@ -64,7 +64,7 @@ impl Workspace {
         let weak = cx.weak_entity();
         let sidebar = cx.new(|cx| Sidebar::new(app.clone(), weak.clone(), window, cx));
         let home = cx.new(|cx| HomeView::new(app.clone(), weak.clone(), window, cx));
-        let inbox = cx.new(|cx| InboxView::new(app.clone(), weak.clone(), cx));
+        let inbox = cx.new(|cx| InboxView::new(app.clone(), weak.clone(), window, cx));
         let fleet = cx.new(|cx| FleetView::new(app.clone(), weak.clone(), cx));
         let split = cx.new(|_| ResizableState::default());
         let subs = vec![

@@ -14,7 +14,10 @@ mod fleet;
 mod format;
 mod home;
 mod inbox;
+mod keymap;
+mod notify;
 mod palette;
+mod prefs;
 mod review;
 mod settings;
 mod shell;
@@ -72,7 +75,7 @@ fn main() {
         cx.set_app_identity("dev.orbit.Orbit", "Orbit");
         orbit_terminal::init(cx);
         theme::install(cx);
-        actions::bind(cx);
+        keymap::install(&startup.data_dir, cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         // Orbit is one window. Windows quits when its last window closes;
         // macOS and Linux keep the process alive with nothing to show, so
