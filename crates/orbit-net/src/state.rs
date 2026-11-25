@@ -132,6 +132,9 @@ pub struct Changes {
     pub drafts: HashSet<DraftTarget>,
     /// Terminals whose agent started, changed or ended.
     pub terminal_agents: Vec<TermId>,
+    /// The chat bots' state or the guard list changed.
+    pub bots: bool,
+    pub guard: bool,
 }
 
 impl Changes {
@@ -153,6 +156,8 @@ impl Changes {
             && self.loaded.is_empty()
             && self.drafts.is_empty()
             && self.terminal_agents.is_empty()
+            && !self.bots
+            && !self.guard
     }
 
     /// The shell (sidebar, inbox, fleet) needs a render.
@@ -190,6 +195,10 @@ pub struct ClientState {
     pub live: HashMap<ThreadId, ThreadLive>,
     /// Agents running in terminals, bound to a thread or not.
     pub terminal_agents: HashMap<TermId, TerminalAgent>,
+    /// The chat bots, once read (`BotCommand::State`) or broadcast.
+    pub bots: Option<BotsState>,
+    /// The guard list, once read (`Command::Guard(None)`) or broadcast.
+    pub guard: Option<GuardSettings>,
     timelines: HashMap<ThreadId, Timeline>,
     /// Timelines being fetched: the reply and the stream are separate
     /// channels, so events are held until both the reply and its mark have
@@ -433,6 +442,14 @@ impl ClientState {
                     None => self.terminal_agents.remove(&term),
                 };
                 changes.terminal_agents.push(term);
+            }
+            Event::Bots(state) => {
+                self.bots = Some(state);
+                changes.bots = true;
+            }
+            Event::GuardChanged(guard) => {
+                self.guard = Some(guard);
+                changes.guard = true;
             }
             Event::DraftSaved { target, draft } => {
                 if draft.is_empty() {

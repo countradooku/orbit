@@ -137,6 +137,8 @@ pub struct Orchestrator {
     pub(crate) status: crate::status::StatusState,
     pub(crate) forge: super::forge::ForgeState,
     pub(crate) cli: super::cli::CliState,
+    pub(crate) guard: super::guard::GuardState,
+    pub(crate) bots: super::bots::BotsLink,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -187,6 +189,8 @@ impl Orchestrator {
             status: Default::default(),
             forge: Default::default(),
             cli: Default::default(),
+            guard: Default::default(),
+            bots: Default::default(),
         }
     }
 
@@ -628,6 +632,7 @@ impl Orchestrator {
     pub fn handle(&mut self, command: Command) -> Outcome {
         match command {
             Command::Forge(command) => self.forge(command),
+            Command::Bots(command) => self.bots_command(command),
             command if super::forge::pushes(&command) => self.forge_after_push(command),
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
             Command::SearchFiles { thread, project, query, limit } => {
@@ -690,7 +695,7 @@ impl Orchestrator {
             Command::ForceStop { thread } => self.force_stop(thread),
             Command::Retry { thread } => self.retry(thread),
             Command::ReadBlob { hash } => futures_block_on(self.read_blob(hash)),
-            Command::Resolve { thread, request, decision } => self.resolve(thread, request, decision),
+            Command::Resolve { thread, request, decision } => self.resolve_guarded(thread, request, decision),
             Command::Search { query, limit } => {
                 // Synchronous callers (tests) get a blocking scan.
                 let future = self.search(query, limit as usize);
@@ -724,6 +729,12 @@ impl Orchestrator {
                 Outcome::Ready(result) => result,
                 Outcome::Deferred(future) => futures_block_on(future),
             },
+            Command::Guard(settings) => self.guard_command(settings),
+            Command::Bots(command) => match self.bots_command(command) {
+                Outcome::Ready(result) => result,
+                Outcome::Deferred(future) => futures_block_on(future),
+            },
+            Command::Via { via, action } => self.via(via, action),
             Command::Diff { .. }
             | Command::RevertPatch { .. }
             | Command::RestoreCheckpoint { .. }
@@ -1104,6 +1115,7 @@ impl Orchestrator {
         // know which thread they act for (never the access token).
         env.push(("ORBIT_THREAD".to_owned(), thread_id.to_string()));
         env.push(("ORBIT_DATA".to_owned(), self.store.dir().display().to_string()));
+        let guard = self.guard().clone();
         let runtime = self.runtimes.entry(thread_id).or_default();
         let spec = SessionSpec {
             thread: thread_id,
@@ -1115,6 +1127,7 @@ impl Orchestrator {
             args,
             env,
             extra_dirs: vec![self.store.dir().join("blobs")],
+            guard,
         };
         let session = (self.launcher)(thread.config.provider, spec, self.agent_tx.clone());
         self.runtimes.get_mut(&thread_id).unwrap().session = Some(session);

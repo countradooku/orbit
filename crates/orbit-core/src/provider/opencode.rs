@@ -203,6 +203,24 @@ pub fn permission_rules(access: Access) -> Value {
     ])
 }
 
+/// [`permission_rules`] followed by an `ask` rule per guard pattern, for
+/// commands and for edits (OpenCode lets the last matching rule win), so
+/// even Full access asks before a guarded action.
+pub fn guarded_rules(access: Access, guard: &GuardSettings) -> Value {
+    let mut rules = permission_rules(access);
+    if guard.active()
+        && let Some(list) = rules.as_array_mut()
+    {
+        for rule in &guard.rules {
+            let pattern = format!("*{}*", rule.pattern.trim());
+            for permission in ["bash", "edit"] {
+                list.push(json!({"permission": permission, "pattern": pattern.clone(), "action": "ask"}));
+            }
+        }
+    }
+    rules
+}
+
 /// An ascending OpenCode message id (`msg_` + time + random), so the
 /// prompt's own parts can be told apart from the reply's.
 fn message_id() -> String {
@@ -284,12 +302,12 @@ pub async fn run(spec: SessionSpec, events: EventSender, inputs: Inputs) {
     }
     let session_id = match session_id {
         Some(id) => {
-            let body = json!({"permission": permission_rules(spec.config.access)});
+            let body = json!({"permission": guarded_rules(spec.config.access, &spec.guard)});
             let _ = client.request("PATCH", &format!("/session/{id}"), Some(&sonic_rs::to_string(&body).unwrap_or_default())).await;
             id
         }
         None => {
-            let body = json!({"permission": permission_rules(spec.config.access)});
+            let body = json!({"permission": guarded_rules(spec.config.access, &spec.guard)});
             match client.request("POST", "/session", Some(&sonic_rs::to_string(&body).unwrap_or_default())).await {
                 Ok(r) if r.ok() => match sonic_rs::from_str::<Value>(&r.body).ok().and_then(|v| str_of(&v, "id")) {
                     Some(id) => id,
@@ -432,7 +450,7 @@ impl Session {
             }
             SessionInput::Configure(config) => {
                 if config.access != self.spec.config.access {
-                    let body = sonic_rs::to_string(&json!({"permission": permission_rules(config.access)})).unwrap_or_default();
+                    let body = sonic_rs::to_string(&json!({"permission": guarded_rules(config.access, &self.spec.guard)})).unwrap_or_default();
                     let _ = self.client.request("PATCH", &format!("/session/{}", self.session_id), Some(&body)).await;
                 }
                 // Model and agent go with each prompt.
@@ -819,6 +837,11 @@ mod tests {
         assert_eq!(str_of(edit, "action").as_deref(), Some("allow"));
         let rules = permission_rules(Access::Readonly);
         assert_eq!(str_of(&rules.as_array().unwrap()[0], "action").as_deref(), Some("deny"));
+        let guard = GuardSettings { enabled: true, rules: vec![GuardRule::new("rm -rf", "Deletes")] };
+        let rules = guarded_rules(Access::Full, &guard);
+        let last = rules.as_array().unwrap().last().unwrap();
+        assert_eq!((str_of(last, "pattern").as_deref(), str_of(last, "action").as_deref()), (Some("*rm -rf*"), Some("ask")));
+        assert_eq!(guarded_rules(Access::Full, &GuardSettings { enabled: false, ..guard }), permission_rules(Access::Full));
     }
 
     #[test]

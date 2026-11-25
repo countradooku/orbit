@@ -2,7 +2,9 @@
 
 use bitcode::{Decode, Encode};
 
+use crate::bots::{BotCommand, BotReply, BotsState, Via, ViaAction};
 use crate::forge::{ForgeCommand, ForgeReply};
+use crate::guard::GuardSettings;
 use crate::ids::*;
 use crate::model::*;
 use crate::settings::Settings;
@@ -95,6 +97,11 @@ pub enum Event {
     /// An agent started, changed state or ended (`None`) in a terminal,
     /// whether or not the terminal belongs to a thread. Ephemeral.
     TerminalAgent { term: TermId, agent: Option<TerminalAgent> },
+    /// The chat bots' settings, pairings or connections changed. Ephemeral;
+    /// read the current state with [`BotCommand::State`].
+    Bots(BotsState),
+    /// The guard list changed. Ephemeral; read it with `Command::Guard(None)`.
+    GuardChanged(GuardSettings),
 }
 
 impl Event {
@@ -111,6 +118,8 @@ impl Event {
                 | Event::TimelineMark { .. }
                 | Event::ThreadLive { .. }
                 | Event::TerminalAgent { .. }
+                | Event::Bots(_)
+                | Event::GuardChanged(_)
         )
     }
 }
@@ -280,6 +289,19 @@ pub enum Command {
     ReadTerminal { term: TermId, max_bytes: u32 },
     /// Returns [`Reply::Terminals`].
     ListTerminals,
+
+    // ── Chat bots and the guard ──────────────────────────────────────────
+    /// Bot settings, pairing and status; see [`BotCommand`]. Replies
+    /// [`Reply::Bots`] or `Done`. Fails when the host runs no bots.
+    Bots(BotCommand),
+    /// Reads the guard list (`None`) or replaces it. Replies
+    /// [`Reply::Guard`] with the list now in force.
+    Guard(Option<GuardSettings>),
+    /// An action on behalf of someone outside the app (a chat bot). The
+    /// engine notes the origin in the thread's timeline and refuses
+    /// approvals the guard reserves for the app. Replies as the matching
+    /// command would.
+    Via { via: Via, action: ViaAction },
 }
 
 /// Everything needed to start a thread in one step.
@@ -344,6 +366,8 @@ pub enum Reply {
     /// what is kept.
     TerminalTail { info: TerminalInfo, data: Vec<u8>, dropped: u64 },
     Terminals(Vec<TerminalInfo>),
+    Bots(BotReply),
+    Guard(GuardSettings),
 }
 
 /// A local merge of a thread's branch, previewed or done.

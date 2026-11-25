@@ -14,9 +14,11 @@
 //! with a length + CRC32 header so torn writes on disk are detected and
 //! truncated on recovery.
 
+pub mod bots;
 pub mod codec;
 pub mod diff;
 pub mod forge;
+pub mod guard;
 pub mod ids;
 pub mod legacy;
 pub mod model;
@@ -28,7 +30,9 @@ pub use codec::{Codec, FRAME_HEADER, FrameError, FrameReader, decode, encode, wr
 pub use diff::{
     DiffLine, FileDiff, FileDiffKind, Hunk, LineKind, LineRanges, Span, file_patch, hunk_patch, hunks_patch, word_diff,
 };
+pub use bots::*;
 pub use forge::*;
+pub use guard::*;
 pub use ids::*;
 pub use model::*;
 pub use settings::*;
@@ -39,8 +43,10 @@ pub use wire::*;
 /// across versions instead of misreading frames.
 /// Version 3 added live status evidence (`Snapshot::live`,
 /// `Event::ThreadLive`, `Event::TerminalAgent`, `Command::BindTerminal`);
-/// version 4, question options with descriptions and `Command::Push`.
-pub const PROTOCOL_VERSION: u16 = 4;
+/// version 4, question options with descriptions and `Command::Push`;
+/// version 5, chat bots and the guard (`Command::Bots`, `Command::Guard`,
+/// `Command::Via` and their replies and events).
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

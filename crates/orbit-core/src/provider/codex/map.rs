@@ -205,6 +205,17 @@ pub fn policy(access: Access) -> (Value, &'static str, Value) {
     }
 }
 
+/// [`policy`] under a guard: Full access asks Codex to raise every command
+/// that is not known to be read-only (`untrusted`), still without a
+/// sandbox, so Orbit sees each one and approves all but the guarded ones
+/// itself. The other levels already raise what leaves their sandbox.
+pub fn guarded_policy(access: Access, guard_active: bool) -> (Value, &'static str, Value) {
+    match access {
+        Access::Full if guard_active => (json!("untrusted"), "danger-full-access", json!({"type": "dangerFullAccess"})),
+        _ => policy(access),
+    }
+}
+
 /// The value of option `id` for `model`, only if the model reports that
 /// option and the choice exists; anything else is dropped so a model switch
 /// never sends a value the new model rejects. Before the catalog has loaded
@@ -683,6 +694,10 @@ mod tests {
         assert!(approval.get("granular").is_some());
         assert_eq!((mode, sandbox.get("type").and_then(|t| t.as_str())), ("danger-full-access", Some("dangerFullAccess")));
         assert_eq!(policy(Access::default()).1, "workspace-write");
+        let (approval, mode, _) = guarded_policy(Access::Full, true);
+        assert_eq!((approval, mode), (json!("untrusted"), "danger-full-access"), "guarded Full still has no sandbox");
+        assert_eq!(guarded_policy(Access::Full, false), policy(Access::Full));
+        assert_eq!(guarded_policy(Access::AutoEdit, true), policy(Access::AutoEdit));
     }
 
     #[test]

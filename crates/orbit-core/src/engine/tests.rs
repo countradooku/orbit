@@ -1015,3 +1015,37 @@ fn blobs_read_back_and_bad_hashes_are_refused() {
         assert!(h.engine.call(Command::ReadBlob { hash: bad.into() }).recv().unwrap().is_err(), "{bad}");
     }
 }
+
+#[test]
+fn guarded_requests_are_approved_only_in_the_app_and_only_once() {
+    let mut h = Harness::new();
+    let guard = GuardSettings { enabled: true, rules: vec![GuardRule::new("cargo test", "Runs the tests")] };
+    let Reply::Guard(saved) = h.call(Command::Guard(Some(guard.clone()))) else { panic!() };
+    assert_eq!(saved, guard);
+    let id = h.new_thread();
+    let via = Via { channel: "Telegram".into(), user: "Ana".into() };
+    h.call(Command::Via { via: via.clone(), action: ViaAction::Send { thread: id, text: "ask".into(), steer: false } });
+    h.wait("request", |h| h.thread(id).status == ThreadStatus::Waiting);
+    let request = h.thread(id).pending[0].request.id;
+    // A chat cannot approve it.
+    let refused = h
+        .engine
+        .call(Command::Via { via: via.clone(), action: ViaAction::Resolve { thread: id, request, decision: Decision::Allow } })
+        .recv()
+        .unwrap();
+    assert!(refused.unwrap_err().contains("Guarded (Runs the tests)"));
+    assert_eq!(h.thread(id).pending.len(), 1, "still waiting for a person");
+    // The app can, but only once.
+    h.call(Command::Resolve { thread: id, request, decision: Decision::AllowForSession });
+    h.wait("turn to finish", |h| h.thread(id).status == ThreadStatus::Idle && h.thread(id).turns == 1);
+    assert_eq!(h.texts(1).last().unwrap(), "agent: decision: Allow", "allow-for-session became allow-once");
+    let notices: Vec<String> = h
+        .items
+        .values()
+        .filter_map(|i| match &i.body {
+            ItemBody::Notice { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(notices.iter().any(|n| n == "Sent via Telegram by Ana"), "{notices:?}");
+}
