@@ -2,12 +2,13 @@
 //! live worktrees, undoing a restore and merging locally.
 //!
 //! * **Live refresh without polling.** Each repository a client has a thread
-//!   open in gets one file watcher ([`crate::git::watch`]), shared by every
-//!   open thread working there. A debounced burst of changes costs one
-//!   `git status` (two processes), whose result goes out as
-//!   [`Event::WorkspaceChanged`] to each of those threads. Nothing runs for
-//!   threads nobody is looking at, and closing the last one stops the
-//!   watcher.
+//!   open in, and each active project's main checkout, gets one file watcher
+//!   ([`crate::git::watch`]), shared by everything looking at it. A
+//!   debounced burst of changes costs one `git status` (two processes),
+//!   whose result goes out as [`Event::WorkspaceChanged`] to each of those
+//!   threads and as [`Event::GitStatus`] to every root at that folder
+//!   (`engine/workspaces.rs`). Nothing runs for threads nobody is looking
+//!   at, and the last one leaving stops the watcher.
 //! * **Conflicts across worktrees.** When a watched worktree changes, the
 //!   files every live worktree changed since its base are compared (cached
 //!   by tree id, so an unchanged worktree costs one snapshot) and
@@ -29,8 +30,12 @@ const CONFLICT_DELAY: Duration = Duration::from_millis(800);
 
 /// Background results for the review engine.
 pub enum ReviewInternal {
-    /// A watched repository's working tree changed; its status now.
-    Workspace { repo: PathBuf, files: Vec<FileChange> },
+    /// A watched repository's working tree changed; its status now, and
+    /// where it stands against its base branch when it has no upstream
+    /// (`(base, ahead, behind)`).
+    Workspace { repo: PathBuf, status: Box<crate::git::Status>, compared: Option<(String, u32, u32)> },
+    /// A watched folder is not a git checkout (or its watch failed).
+    NotARepo { repo: PathBuf },
     /// Files changed by more than one live worktree.
     Conflicts(Vec<Conflict>),
 }
@@ -38,16 +43,24 @@ pub enum ReviewInternal {
 /// The review engine's state on the orchestrator.
 #[derive(Default)]
 pub struct ReviewState {
-    watchers: HashMap<PathBuf, Watch>,
+    pub(crate) watchers: HashMap<PathBuf, Watch>,
     conflicts_pending: bool,
     conflicts: Vec<Conflict>,
 }
 
-struct Watch {
-    threads: HashSet<ThreadId>,
+pub(crate) struct Watch {
+    pub(crate) threads: HashSet<ThreadId>,
+    /// Projects whose main checkout this is, watched for their rows.
+    pub(crate) projects: HashSet<ProjectId>,
     /// The last status, for threads that start watching later.
     last: Option<Vec<FileChange>>,
     task: tokio::task::JoinHandle<()>,
+}
+
+impl Watch {
+    fn idle(&self) -> bool {
+        self.threads.is_empty() && self.projects.is_empty()
+    }
 }
 
 impl Drop for Watch {
@@ -68,21 +81,69 @@ impl Orchestrator {
             if let Some(files) = watch.last.clone() {
                 self.emit(Event::WorkspaceChanged { thread, files });
             }
+            self.replay_git_status(&repo);
             return;
         }
-        let (git, tx, path) = (self.git.clone(), self.internal_tx.clone(), repo.clone());
-        let task = tokio::spawn(async move {
+        let base = self.store.thread(thread).and_then(|t| self.store.project(t.project?)).and_then(|p| p.base_branch.clone());
+        let task = self.spawn_watch(repo.clone(), base);
+        let watch = Watch { threads: HashSet::from([thread]), projects: HashSet::new(), last: None, task };
+        self.review.watchers.insert(repo, watch);
+    }
+
+    /// Starts watching a project's main checkout for its row's status.
+    pub(crate) fn watch_project(&mut self, project: ProjectId) {
+        let Some(p) = self.store.project(project) else { return };
+        let (repo, base) = (PathBuf::from(&p.path), p.base_branch.clone());
+        if let Some(watch) = self.review.watchers.get_mut(&repo) {
+            watch.projects.insert(project);
+            self.replay_git_status(&repo);
+            return;
+        }
+        let task = self.spawn_watch(repo.clone(), base);
+        let watch = Watch { threads: HashSet::new(), projects: HashSet::from([project]), last: None, task };
+        self.review.watchers.insert(repo, watch);
+    }
+
+    /// Stops watching a project's main checkout (archived or removed).
+    pub(crate) fn unwatch_project(&mut self, project: ProjectId) {
+        self.review.watchers.retain(|_, w| {
+            w.projects.remove(&project);
+            !w.idle()
+        });
+    }
+
+    /// One task per folder: status now, then again after every burst of
+    /// changes, until the watch is dropped.
+    fn spawn_watch(&self, path: PathBuf, base: Option<String>) -> tokio::task::JoinHandle<()> {
+        let (git, tx) = (self.git.clone(), self.internal_tx.clone());
+        tokio::spawn(async move {
             let watcher = match git.watch(&path).await {
                 Ok(watcher) => watcher,
                 Err(err) => {
                     log::debug!("not watching {}: {err}", path.display());
+                    let _ = tx.send(Internal::Review(ReviewInternal::NotARepo { repo: path }));
                     return;
                 }
             };
+            // Ahead/behind against the base, recounted only when HEAD moves.
+            let mut counted: Option<(Option<String>, Option<(String, u32, u32)>)> = None;
             loop {
                 match git.status(&path).await {
                     Ok(status) => {
-                        let msg = ReviewInternal::Workspace { repo: path.clone(), files: status.files };
+                        let compared = match (&status.upstream, &base) {
+                            (None, Some(base)) if status.branch.as_deref() != Some(base.as_str()) => {
+                                match counted.as_ref().filter(|(head, _)| *head == status.head) {
+                                    Some((_, compared)) => compared.clone(),
+                                    None => {
+                                        let compared = super::workspaces::ahead_behind(&git, &path, base).await;
+                                        counted = Some((status.head.clone(), compared.clone()));
+                                        compared
+                                    }
+                                }
+                            }
+                            _ => None,
+                        };
+                        let msg = ReviewInternal::Workspace { repo: path.clone(), status: Box::new(status), compared };
                         if tx.send(Internal::Review(msg)).is_err() {
                             return;
                         }
@@ -94,16 +155,14 @@ impl Orchestrator {
                     let _ = git.refresh_watch_ignores(&watcher).await;
                 }
             }
-        });
-        let watch = Watch { threads: HashSet::from([thread]), last: None, task };
-        self.review.watchers.insert(repo, watch);
+        })
     }
 
     /// Stops reporting `thread`'s changes (closed or deleted).
     pub(crate) fn unwatch_workspace(&mut self, thread: ThreadId) {
         self.review.watchers.retain(|_, w| {
             w.threads.remove(&thread);
-            !w.threads.is_empty()
+            !w.idle()
         });
     }
 
@@ -112,14 +171,15 @@ impl Orchestrator {
             if repo != keep {
                 w.threads.remove(&thread);
             }
-            !w.threads.is_empty()
+            !w.idle()
         });
     }
 
     pub(crate) fn handle_review(&mut self, msg: ReviewInternal) {
         match msg {
-            ReviewInternal::Workspace { repo, files } => {
+            ReviewInternal::Workspace { repo, status, compared } => {
                 let Some(watch) = self.review.watchers.get_mut(&repo) else { return };
+                let files = status.files.clone();
                 watch.last = Some(files.clone());
                 let threads: Vec<ThreadId> = watch.threads.iter().copied().collect();
                 let mut in_worktree = false;
@@ -130,7 +190,9 @@ impl Orchestrator {
                 if in_worktree {
                     self.schedule_conflicts();
                 }
+                self.git_status_changed(&repo, Some(&status), compared);
             }
+            ReviewInternal::NotARepo { repo } => self.git_status_changed(&repo, None, None),
             ReviewInternal::Conflicts(conflicts) => {
                 self.review.conflicts_pending = false;
                 if conflicts != self.review.conflicts {

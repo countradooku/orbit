@@ -479,7 +479,7 @@ async fn worktrees_copy_includes_get_ports_run_scripts_and_clean_up() {
     let removed = git
         .remove_worktree(
             &pa,
-            RemoveWorktree { teardown: Some(teardown), branch: BranchCleanup::Delete, force: true },
+            RemoveWorktree { teardown: Some(teardown), branch: BranchCleanup::Delete, force: true, ..Default::default() },
             &mut |_, _| {},
         )
         .await

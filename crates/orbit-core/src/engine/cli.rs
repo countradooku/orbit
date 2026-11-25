@@ -64,6 +64,12 @@ impl CliState {
         headless
     }
 
+    /// Keeps a command terminal's output and status like one started with
+    /// [`Command::RunInTerminal`] (project run targets).
+    pub(crate) fn record(&mut self, id: TermId, command: String, cwd: String) {
+        self.terminals.insert(id, TermRecord::new(id, command, cwd));
+    }
+
     pub(crate) fn exited(&mut self, term: TermId, code: Option<i32>) {
         let Some(record) = self.terminals.get_mut(&term) else { return };
         record.info.running = false;

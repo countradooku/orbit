@@ -37,6 +37,8 @@ bytes = "1"
 # Time zones for automation schedules (IANA database bundled on Windows);
 # already linked through env_logger.
 jiff = "1"
+# `orbit.toml` and Codex environments (already in the lock for GPUI Kit).
+toml = "1"
 
 [dev-dependencies]
 tempfile = "3"

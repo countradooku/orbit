@@ -139,6 +139,12 @@ pub struct Changes {
     pub guard: bool,
     /// A team or race changed (or went away).
     pub teams: bool,
+    /// A project's configuration changed.
+    pub project_configs: bool,
+    /// Roots whose git status changed.
+    pub git: HashSet<WorkspaceRoot>,
+    /// Threads whose run targets changed.
+    pub runs: HashSet<ThreadId>,
 }
 
 impl Changes {
@@ -164,6 +170,9 @@ impl Changes {
             && !self.bots
             && !self.guard
             && !self.teams
+            && !self.project_configs
+            && self.git.is_empty()
+            && self.runs.is_empty()
     }
 
     /// The shell (sidebar, inbox, fleet) needs a render.
@@ -178,6 +187,8 @@ impl Changes {
             || self.conflicts
             || self.connection
             || self.automations
+            || self.project_configs
+            || !self.git.is_empty()
     }
 }
 
@@ -216,6 +227,12 @@ pub struct ClientState {
     /// Agent teams and races (see `orbit_proto::teams`).
     pub teams: HashMap<TeamId, Team>,
     pub races: HashMap<RaceId, Race>,
+    /// Projects' configurations; a project without one uses the defaults.
+    pub project_configs: HashMap<ProjectId, ProjectConfig>,
+    /// The latest git status of each watched checkout.
+    pub git: HashMap<WorkspaceRoot, GitSummary>,
+    /// Run targets by thread and name, running or ended.
+    pub runs: HashMap<(ThreadId, String), TargetRun>,
     timelines: HashMap<ThreadId, Timeline>,
     /// Timelines being fetched: the reply and the stream are separate
     /// channels, so events are held until both the reply and its mark have
@@ -302,6 +319,27 @@ impl ClientState {
         self.providers.iter().find(|p| p.serves(config))
     }
 
+    /// A project's configuration, or the defaults.
+    pub fn project_config(&self, project: ProjectId) -> std::borrow::Cow<'_, ProjectConfig> {
+        match self.project_configs.get(&project) {
+            Some(config) => std::borrow::Cow::Borrowed(config),
+            None => std::borrow::Cow::Owned(ProjectConfig::default()),
+        }
+    }
+
+    /// Projects not archived, in sidebar order.
+    pub fn active_projects(&self) -> impl Iterator<Item = &Project> {
+        self.projects.iter().filter(|p| !self.project_configs.get(&p.id).is_some_and(|c| c.archived))
+    }
+
+    /// A thread's run targets, in the order its project lists them, each
+    /// with its latest run.
+    pub fn targets_of(&self, thread: ThreadId) -> Vec<(ProjectTarget, Option<&TargetRun>)> {
+        let Some(project) = self.threads.get(&thread).and_then(|t| t.project) else { return Vec::new() };
+        let Some(config) = self.project_configs.get(&project) else { return Vec::new() };
+        config.targets.iter().map(|t| (t.clone(), self.runs.get(&(thread, t.name.clone())))).collect()
+    }
+
     /// The best-known usage of a thread: live while a turn runs.
     pub fn usage(&self, thread: ThreadId) -> Usage {
         self.live_usage
@@ -362,6 +400,9 @@ impl ClientState {
                     }
                     self.teams = snapshot.teams.teams.into_iter().map(|t| (t.id, t)).collect();
                     self.races = snapshot.teams.races.into_iter().map(|r| (r.id, r)).collect();
+                    self.project_configs = snapshot.project_configs.into_iter().collect();
+                    self.git = snapshot.git.into_iter().collect();
+                    self.runs = snapshot.runs.into_iter().map(|r| ((r.thread, r.target.clone()), r)).collect();
                     self.live_usage.clear();
                     // Open timelines may be stale; the UI refetches them.
                     self.timelines.clear();
@@ -407,7 +448,21 @@ impl ClientState {
             }
             Event::ProjectRemoved(id) => {
                 self.projects.retain(|p| p.id != id);
+                self.project_configs.remove(&id);
+                self.git.remove(&WorkspaceRoot::Project(id));
                 changes.projects = true;
+            }
+            Event::ProjectConfigChanged { project, config } => {
+                self.project_configs.insert(project, *config);
+                changes.project_configs = true;
+            }
+            Event::GitStatus { root, status } => {
+                self.git.insert(root, *status);
+                changes.git.insert(root);
+            }
+            Event::RunChanged(run) => {
+                changes.runs.insert(run.thread);
+                self.runs.insert((run.thread, run.target.clone()), *run);
             }
             Event::ThreadUpserted(thread) => {
                 if !thread.status.is_busy() {
@@ -418,6 +473,8 @@ impl ClientState {
             }
             Event::ThreadRemoved(id) => {
                 self.threads.remove(&id);
+                self.runs.retain(|(thread, _), _| *thread != id);
+                self.git.remove(&WorkspaceRoot::Thread(id));
                 self.timelines.remove(&id);
                 self.live_usage.remove(&id);
                 self.live.remove(&id);

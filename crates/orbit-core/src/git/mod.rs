@@ -53,7 +53,7 @@ pub use remote::{CommitResult, PushResult, parse_pr_url};
 pub use status::{Branch, Status};
 pub use watch::{Changes, RepoWatcher, WatchOptions, watch, watch_with};
 pub use worktree::{
-    BranchCleanup, NewWorktree, OutputStream, RemoveWorktree, RemovedWorktree, ScriptResult, WorktreeInfo,
+    BranchCleanup, NewWorktree, OutputStream, RemoveWorktree, RemovedWorktree, ScriptResult, WorktreeExtras, WorktreeInfo,
     WorktreeRecord, disk_usage,
 };
 
