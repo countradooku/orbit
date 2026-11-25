@@ -346,8 +346,9 @@ impl Orchestrator {
     }
 
     /// Reconciles state a crash or quit left behind: requests the agent can
-    /// no longer receive are closed, queued messages are sent, and snooze
-    /// timers are re-armed. Call once after startup.
+    /// no longer receive are closed, queued messages are sent (unless the
+    /// thread waits for a usage limit to reset), and snooze and quota timers
+    /// are re-armed. Call once after startup.
     pub fn recover(&mut self) {
         let threads: Vec<Thread> = self.store.threads().cloned().collect();
         for thread in threads {
@@ -378,7 +379,13 @@ impl Orchestrator {
                 let count = queued.len() as u32;
                 self.runtimes.entry(id).or_default().queue = queued.into();
                 self.update_thread(id, |t| t.queued = count);
-                self.start_next_queued(id);
+                // A thread waiting out a usage limit keeps its queue until
+                // the reset (re-armed below), which retries the limited turn
+                // and then sends the queue; sending now would only hit the
+                // limit again.
+                if !matches!(thread.status, ThreadStatus::RateLimited { .. }) {
+                    self.start_next_queued(id);
+                }
             }
             if !self.open.contains(&id) && self.runtimes.get(&id).is_none_or(|r| r.turn.is_none()) {
                 self.store.unload_timeline(id);
@@ -680,7 +687,7 @@ impl Orchestrator {
                 futures_block_on(self.search_files(thread, project, query, limit))
             }
             Command::ExportThread { thread } => futures_block_on(self.export_thread(thread)),
-            Command::UpdateSettings { settings } => self.update_settings(settings),
+            Command::UpdateSettings { settings } => self.update_settings(*settings),
             Command::NewSession { thread } => self.new_session(thread),
             // Needs the engine's runtime free; only `handle` runs it.
             Command::GenerateText { .. } => Err("Text generation runs asynchronously.".into()),

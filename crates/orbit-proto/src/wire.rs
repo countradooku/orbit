@@ -227,7 +227,9 @@ pub enum Command {
     /// Replace the settings. The engine sanitizes them, persists them,
     /// applies what affects it (provider binaries and environment, git and
     /// worktree locations) and broadcasts [`Event::SettingsChanged`].
-    UpdateSettings { settings: Settings },
+    /// Boxed: settings are by far the largest command, and every other
+    /// command would otherwise be as large.
+    UpdateSettings { settings: Box<Settings> },
 
     /// One-shot text generation (titles, commit messages, pull request
     /// text) on the thread's instance in a cheap mode, or on any available

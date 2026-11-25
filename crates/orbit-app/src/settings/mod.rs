@@ -123,7 +123,7 @@ pub fn flush(cx: &mut App) {
         model.dirty = false;
         model.in_flight = Some(settings.clone());
     });
-    app.read(cx).send(Command::UpdateSettings { settings });
+    app.read(cx).send(Command::UpdateSettings { settings: Box::new(settings) });
 }
 
 /// The engine's settings arrived (snapshot or `SettingsChanged`).

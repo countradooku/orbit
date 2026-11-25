@@ -201,7 +201,10 @@ impl Composer {
             _ => {}
         });
         // Providers report their catalogs asynchronously; re-render when they do.
-        let app_sub = cx.observe(&app, |_, _, cx| cx.notify());
+        let app_sub = cx.observe(&app, |this, _, cx| {
+            this.follow_queue_edit(cx);
+            cx.notify();
+        });
         let draft_sub = cx.subscribe_in(&app, window, |this, _, event: &AppEvent, window, cx| {
             if let AppEvent::Draft(target) = event
                 && *target == this.target

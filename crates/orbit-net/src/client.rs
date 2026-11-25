@@ -89,7 +89,7 @@ async fn run(
                 } else {
                     let mut welcomed = false;
                     let mut codec = Codec::new();
-                    let reason = loop {
+                    loop {
                         tokio::select! {
                             msg = reader.next() => {
                                 let data = match msg {
@@ -146,8 +146,7 @@ async fn run(
                                 }
                             },
                         }
-                    };
-                    reason
+                    }
                 }
             }
         };
