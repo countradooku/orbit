@@ -111,14 +111,165 @@ fn path_name(_: &[FileDiff], _: ThreadId) -> &'static str {
     "the file"
 }
 
+impl ReviewView {
+    fn title(&self, cx: &App) -> String {
+        self.app
+            .read(cx)
+            .state()
+            .threads
+            .get(&self.thread)
+            .map(|t| crate::thread::display_title(t).to_owned())
+            .unwrap_or_default()
+    }
+
+    fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::checkbox::Checkbox;
+        use gpui_kit::component::dialog::{DialogAction, DialogClose};
+        use gpui_kit::component::input::{Textarea, TextareaState};
+        let message = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 10).default_value(self.title(cx)));
+        let push = std::rc::Rc::new(std::cell::Cell::new(true));
+        let (app, thread) = (self.app.clone(), self.thread);
+        let view = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (message, app, push, view) = (message.clone(), app.clone(), push.clone(), view.clone());
+            let push_box = push.clone();
+            dialog
+                .title("Commit changes")
+                .w(px(520.))
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(Textarea::new(&message))
+                        .child(Checkbox::new("push").label("Push after committing").checked(push_box.get()).on_click(
+                            move |checked: &bool, _, _| push_box.set(*checked),
+                        )),
+                )
+                .footer(
+                    h_flex()
+                        .gap_2()
+                        .justify_end()
+                        .child(DialogClose::new().child(Button::new("cancel").outline().label("Cancel")))
+                        .child(DialogAction::new().child(Button::new("commit").primary().label("Commit"))),
+                )
+                .on_ok(move |_, window, cx| {
+                    let text = message.read(cx).value().trim().to_owned();
+                    if text.is_empty() {
+                        return false;
+                    }
+                    let task = app.update(cx, |app, cx| app.call(Command::Commit { thread, message: text, push: push.get() }, cx));
+                    let view = view.clone();
+                    window
+                        .spawn(cx, async move |cx| {
+                            let result = task.await;
+                            let _ = cx.update(|window, cx| {
+                                match result {
+                                    Ok(_) => window.push_notification("Committed", cx),
+                                    Err(message) => window.push_notification(
+                                        gpui_kit::component::notification::Notification::error(message).title("Couldn’t commit"),
+                                        cx,
+                                    ),
+                                }
+                                let _ = view.update(cx, |view, cx| view.load(cx));
+                            });
+                        })
+                        .detach();
+                    true
+                })
+        });
+    }
+
+    fn create_pr(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::dialog::{DialogAction, DialogClose};
+        use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+        let title = cx.new(|cx| InputState::new(window, cx).default_value(self.title(cx)));
+        let files: Vec<String> = self.files.iter().filter_map(|f| f.new_path.clone().or(f.old_path.clone())).collect();
+        let body_text = format!("## Changes\n\n{}", files.iter().map(|f| format!("- `{f}`")).collect::<Vec<_>>().join("\n"));
+        let body = cx.new(|cx| TextareaState::new(window, cx).auto_grow(6, 16).default_value(body_text));
+        let (app, thread) = (self.app.clone(), self.thread);
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (title, body, app) = (title.clone(), body.clone(), app.clone());
+            dialog
+                .title("Create pull request")
+                .w(px(600.))
+                .child(v_flex().gap_3().child(Input::new(&title)).child(Textarea::new(&body)))
+                .footer(
+                    h_flex()
+                        .gap_2()
+                        .justify_end()
+                        .child(DialogClose::new().child(Button::new("cancel").outline().label("Cancel")))
+                        .child(DialogAction::new().child(Button::new("create-pr").primary().label("Create pull request"))),
+                )
+                .on_ok(move |_, window, cx| {
+                    let (title, body) = (title.read(cx).value().trim().to_owned(), body.read(cx).value().to_string());
+                    if title.is_empty() {
+                        return false;
+                    }
+                    let task = app.update(cx, |app, cx| app.call(Command::CreatePullRequest { thread, title, body }, cx));
+                    window
+                        .spawn(cx, async move |cx| {
+                            let result = task.await;
+                            let _ = cx.update(|window, cx| match result {
+                                Ok(Reply::PullRequest { url }) => {
+                                    let open = url.clone();
+                                    window.push_notification(
+                                        gpui_kit::component::notification::Notification::success(url)
+                                            .title("Pull request created")
+                                            .on_click(move |_, _, cx| cx.open_url(&open)),
+                                        cx,
+                                    )
+                                }
+                                Ok(_) => {}
+                                Err(message) => window.push_notification(
+                                    gpui_kit::component::notification::Notification::error(message)
+                                        .title("Couldn’t create the pull request"),
+                                    cx,
+                                ),
+                            });
+                        })
+                        .detach();
+                    true
+                })
+        });
+    }
+}
+
 impl Render for ReviewView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let (adds, dels) = self.files.iter().fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions));
         let view = cx.weak_entity();
+        let has_project = self
+            .app
+            .read(cx)
+            .state()
+            .threads
+            .get(&self.thread)
+            .is_some_and(|t| t.project.is_some());
         v_flex()
             .size_full()
             .gap_3()
+            .when(has_project, |el| {
+                el.child(
+                    h_flex()
+                        .gap_2()
+                        .justify_end()
+                        .child(
+                            Button::new("commit")
+                                .small()
+                                .icon(Lucide::GitCommitHorizontal)
+                                .label("Commit…")
+                                .on_click(cx.listener(|this, _, window, cx| this.commit(window, cx))),
+                        )
+                        .child(
+                            Button::new("pull-request")
+                                .small()
+                                .outline()
+                                .icon(Lucide::GitPullRequest)
+                                .label("Create pull request…")
+                                .on_click(cx.listener(|this, _, window, cx| this.create_pr(window, cx))),
+                        ),
+                )
+            })
             .child(
                 h_flex()
                     .gap_2()

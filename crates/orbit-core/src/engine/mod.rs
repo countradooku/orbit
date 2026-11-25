@@ -9,6 +9,7 @@
 mod bus;
 pub use bus::Bus;
 mod orchestrator;
+mod settings;
 
 #[cfg(test)]
 mod tests;
@@ -48,7 +49,9 @@ pub struct EngineOptions {
 }
 
 impl EngineOptions {
-    /// The platform's per-user data directory (`%APPDATA%\Orbit` on Windows).
+    /// The platform's per-user data directory: `%APPDATA%\Orbit` on Windows,
+    /// `~/Library/Application Support/Orbit` on macOS and
+    /// `$XDG_DATA_HOME/Orbit` (default `~/.local/share/Orbit`) on Linux.
     pub fn default_data_dir() -> PathBuf {
         dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("Orbit")
     }
@@ -121,6 +124,7 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
         mpsc::bounded_blocking_async::<(TermId, Vec<u8>)>(crate::terminal::OUTPUT_CAPACITY);
     let (exit_tx, exit_rx) = mpsc::unbounded_async::<(TermId, Option<i32>)>();
     let mut orchestrator = Orchestrator::new(store, agent_tx, internal_tx, launcher, term_tx, exit_tx);
+    orchestrator.recover();
     if probe {
         orchestrator.refresh_providers();
     }
@@ -142,8 +146,10 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
                 }
                 Ok(Call::Shutdown { done }) => {
                     orchestrator.shutdown();
+                    // Release the data folder before saying we are done.
+                    drop(orchestrator);
                     done.send(());
-                    break;
+                    return;
                 }
                 Err(_) => {
                     orchestrator.shutdown();
@@ -179,3 +185,7 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
         }
     }
 }
+
+// Feature areas add their engine logic as `impl Orchestrator` blocks in their
+// own modules here (review, sessions, workspaces, forge…), touching
+// orchestrator.rs only to dispatch commands to them.

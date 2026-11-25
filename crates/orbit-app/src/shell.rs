@@ -3,10 +3,7 @@
 //! Every command is an Action handled here, so a button, a menu item, the
 //! palette and a key binding all run the same code.
 
-use std::collections::HashMap;
-
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, TitleBar, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -51,18 +48,21 @@ pub struct Workspace {
     fleet: Entity<FleetView>,
     threads: Vec<(ThreadId, Entity<ThreadView>)>,
     focus: FocusHandle,
+    /// Debug builds: a screen to open once data arrives (`ORBIT_DEBUG_ROUTE`
+    /// = `latest`, `inbox`, `fleet`), for screenshots and visual checks.
+    debug_route: Option<String>,
+    /// Last seen attention per thread, to notify on transitions only.
+    attention: std::collections::HashMap<ThreadId, Attention>,
     /// Where closing settings returns to.
     before_settings: Route,
     settings_focus: FocusHandle,
-    /// Last seen attention state per thread, to notice transitions.
-    attention: HashMap<ThreadId, Attention>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
     pub fn new(app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let weak = cx.weak_entity();
-        let sidebar = cx.new(|cx| Sidebar::new(app.clone(), weak.clone(), cx));
+        let sidebar = cx.new(|cx| Sidebar::new(app.clone(), weak.clone(), window, cx));
         let home = cx.new(|cx| HomeView::new(app.clone(), weak.clone(), window, cx));
         let inbox = cx.new(|cx| InboxView::new(app.clone(), weak.clone(), cx));
         let fleet = cx.new(|cx| FleetView::new(app.clone(), weak.clone(), cx));
@@ -75,9 +75,30 @@ impl Workspace {
             }),
             // Field values, chat width and the page itself follow the model.
             cx.observe_global::<settings::SettingsModel>(|_, cx| cx.notify()),
-            cx.observe_in(&app, window, |this, _, window, cx| this.notify_attention(window, cx)),
             // Follow deletions: never leave the user on a thread that is gone.
-            cx.observe(&app, |this, app, cx| {
+            cx.observe_in(&app, window, |this, app, window, cx| {
+                if let Some(route) = this.debug_route.take() {
+                    let route_name = route.clone();
+                    let state = app.read(cx).state();
+                    let target = match route.as_str() {
+                        "inbox" => Some(Route::Inbox),
+                        "fleet" => Some(Route::Fleet),
+                        "latest" | "terminal" => {
+                            state.threads.values().max_by_key(|t| t.updated_ms).map(|t| Route::Thread(t.id))
+                        }
+                        _ => None,
+                    };
+                    match target {
+                        Some(route) => {
+                            this.navigate(route, window, cx);
+                            if route_name_is_terminal(&route_name) {
+                                this.toggle_terminal(&ToggleTerminal, window, cx);
+                            }
+                        }
+                        None if state.threads.is_empty() => this.debug_route = Some(route),
+                        None => {}
+                    }
+                }
                 if let Route::Thread(id) = this.route
                     && !app.read(cx).state().threads.contains_key(&id)
                     && app.read(cx).connection().is_none_or(|c| *c == orbit_net::ConnectionStatus::Connected)
@@ -85,6 +106,7 @@ impl Workspace {
                     this.threads.retain(|(t, _)| *t != id);
                     this.route = Route::Home;
                 }
+                this.notify_transitions(window, cx);
                 cx.notify();
             }),
         ];
@@ -100,10 +122,60 @@ impl Workspace {
             fleet,
             threads: Vec::new(),
             focus: cx.focus_handle(),
+            attention: std::collections::HashMap::new(),
             before_settings: Route::Home,
             settings_focus: cx.focus_handle(),
-            attention: HashMap::new(),
+            debug_route: if cfg!(debug_assertions) { std::env::var("ORBIT_DEBUG_ROUTE").ok() } else { None },
             _subscriptions: subs,
+        }
+    }
+
+    /// Tells the user when a thread starts needing them, fails, or finishes
+    /// with a result: in the window and as a system notification. Nothing
+    /// fires for the thread they are already looking at in a focused window,
+    /// and nothing fires on the first load.
+    fn notify_transitions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::notification::Notification;
+        let first_load = self.attention.is_empty();
+        let prefs = settings::get(cx).notifications.clone();
+        let state = self.app.read(cx).state();
+        let mut fresh = Vec::new();
+        for thread in state.threads.values() {
+            let now = Attention::of(thread);
+            let before = self.attention.insert(thread.id, now);
+            if first_load || before == Some(now) || thread.archived || thread.snoozed_until.is_some() {
+                continue;
+            }
+            let looking = self.route == Route::Thread(thread.id) && window.is_window_active();
+            if looking {
+                continue;
+            }
+            let title = crate::thread::display_title(thread).to_owned();
+            let note = match now {
+                Attention::Waiting if prefs.requests => Some(Notification::warning("Needs your answer").title(title)),
+                Attention::Failed if prefs.failed => Some(Notification::error(match &thread.status {
+                    ThreadStatus::Failed { message } => message.clone(),
+                    _ => "The turn failed.".into(),
+                })
+                .title(title)),
+                Attention::Unread if prefs.finished && before == Some(Attention::Working) => {
+                    Some(Notification::success("Finished").title(title))
+                }
+                _ => None,
+            };
+            if let Some(note) = note {
+                fresh.push((thread.id, note));
+            }
+        }
+        let live: std::collections::HashSet<ThreadId> = state.threads.keys().copied().collect();
+        self.attention.retain(|id, _| live.contains(id));
+        for (id, note) in fresh {
+            let weak = cx.weak_entity();
+            let note = note.in_app_and_system().on_click(move |_, window, cx| {
+                window.activate_window();
+                let _ = weak.update(cx, |ws, cx| ws.navigate(Route::Thread(id), window, cx));
+            });
+            window.push_notification(note, cx);
         }
     }
 
@@ -150,6 +222,7 @@ impl Workspace {
         let view = cx.new(|cx| ThreadView::new(id, app, window, cx));
         let sub = cx.subscribe_in(&view, window, |this, _, event: &ThreadViewEvent, window, cx| match event {
             ThreadViewEvent::Review => this.toggle_review(&ToggleReview, window, cx),
+            ThreadViewEvent::Open(id) => this.navigate(Route::Thread(*id), window, cx),
         });
         self._subscriptions.push(sub);
         self.threads.push((id, view));
@@ -228,59 +301,6 @@ impl Workspace {
         settings::zoom(0, cx);
     }
 
-    // ── Notifications ────────────────────────────────────────────────────
-
-    /// Posts a system notification when a thread starts needing the user,
-    /// finishes or fails while the window is in the background.
-    fn notify_attention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let prefs = settings::get(cx).notifications.clone();
-        let state = self.app.read(cx).state();
-        let mut posts = Vec::new();
-        let first = self.attention.is_empty();
-        let mut seen = HashMap::with_capacity(state.threads.len());
-        for thread in state.threads.values() {
-            let now = Attention::of(thread);
-            let before = self.attention.get(&thread.id).copied();
-            seen.insert(thread.id, now);
-            // A thread seen for the first time (startup, another client) is
-            // not news.
-            if first || before.is_none() || before == Some(now) {
-                continue;
-            }
-            let title = crate::thread::display_title(thread).to_owned();
-            let post = match now {
-                Attention::Waiting if prefs.requests => Some(("Needs you", thread.pending.first().map(|r| crate::inbox::request_summary(&r.request.kind).1))),
-                Attention::Unread if prefs.finished => Some(("Finished", None)),
-                Attention::Failed if prefs.failed => match &thread.status {
-                    ThreadStatus::Failed { message } => Some(("Failed", Some(message.clone()))),
-                    _ => Some(("Failed", None)),
-                },
-                Attention::RateLimited if prefs.failed => Some(("Hit its usage limit", None)),
-                _ => None,
-            };
-            if let Some((what, detail)) = post {
-                posts.push((thread.id, format!("{title}: {what}"), detail));
-            }
-        }
-        self.attention = seen;
-        if posts.is_empty() || window.is_window_active() {
-            return;
-        }
-        let workspace = cx.weak_entity();
-        for (id, title, detail) in posts {
-            let workspace = workspace.clone();
-            let note = Notification::new()
-                .id1::<AttentionNote>(id.0 as usize)
-                .title(title)
-                .message(detail.unwrap_or_else(|| "Open Orbit to see the thread.".into()))
-                .system()
-                .on_click(move |_, window, cx| {
-                    let _ = workspace.update(cx, |ws, cx| ws.navigate(Route::Thread(id), window, cx));
-                });
-            window.push_notification(note, cx);
-        }
-    }
-
     pub fn add_project(&mut self, _: &AddProject, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -312,6 +332,12 @@ impl Workspace {
     fn stop_turn(&mut self, _: &StopTurn, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(view) = self.current_thread_view().cloned() {
             view.update(cx, |view, cx| view.stop(window, cx));
+        }
+    }
+
+    fn toggle_terminal(&mut self, _: &ToggleTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(view) = self.current_thread_view().cloned() {
+            view.update(cx, |view, cx| view.toggle_terminal(window, cx));
         }
     }
 
@@ -458,6 +484,10 @@ impl Workspace {
     }
 }
 
+fn route_name_is_terminal(name: &str) -> bool {
+    name == "terminal"
+}
+
 fn humanize_window(window: &str) -> String {
     match window {
         "five_hour" => "5-hour".into(),
@@ -472,9 +502,6 @@ impl Focusable for Workspace {
         self.focus.clone()
     }
 }
-
-/// Keys a system notification per thread, so a newer one replaces it.
-struct AttentionNote;
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -532,6 +559,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::add_project))
             .on_action(cx.listener(Self::stop_turn))
             .on_action(cx.listener(Self::focus_composer))
+            .on_action(cx.listener(Self::toggle_terminal))
             .on_action(cx.listener(Self::next_thread))
             .on_action(cx.listener(Self::previous_thread))
             .on_action(cx.listener(Self::quit))

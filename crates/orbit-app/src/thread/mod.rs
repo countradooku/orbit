@@ -9,15 +9,16 @@
 //!   row list, and an append keeps the reader's scroll position.
 
 pub(crate) mod rows;
+mod terminal;
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::text::TextViewState;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use orbit_net::state::ItemChange;
@@ -26,6 +27,8 @@ use orbit_proto::*;
 use crate::app_state::{AppEvent, AppState};
 use crate::assets::Lucide;
 use crate::composer::{Composer, ComposerEvent};
+use gpui_kit::component::resizable::{ResizableState, resizable_panel, v_resizable};
+use terminal::{TerminalPanel, TerminalPanelEvent};
 use crate::{format, ui};
 
 pub use rows::Row;
@@ -44,38 +47,23 @@ pub struct ThreadView {
     loaded: bool,
     /// Settings that change row heights; rows are re-measured when they do.
     layout: (ChatWidth, u16, u16),
+    terminal: Option<Entity<TerminalPanel>>,
+    split: Entity<ResizableState>,
+    /// When the running turn started (as seen here), for the elapsed time.
+    turn_started: Option<std::time::Instant>,
+    busy: bool,
+    _ticker: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
 pub enum ThreadViewEvent {
     /// The reader asked to review this thread's changes.
     Review,
+    /// Open another thread (a fork just created from this one).
+    Open(ThreadId),
 }
 
 impl EventEmitter<ThreadViewEvent> for ThreadView {}
-
-/// Deletes a thread, asking first unless Settings › General turned the
-/// confirmation off.
-pub fn delete_thread(app: Entity<AppState>, id: ThreadId, window: &mut Window, cx: &mut App) {
-    if !crate::settings::get(cx).general.confirm_delete {
-        app.update(cx, |app, cx| app.run(Command::DeleteThread { id }, window, cx));
-        return;
-    }
-    let title = app.read(cx).state().threads.get(&id).map(|t| display_title(t).to_owned()).unwrap_or_default();
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let app = app.clone();
-        alert
-            .title(format!("Delete “{title}”?"))
-            .description("Its messages, attachments, checkpoints and worktree are removed. This can’t be undone.")
-            .confirm()
-            .ok_text("Delete")
-            .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
-            .on_ok(move |_, window, cx| {
-                app.update(cx, |app, cx| app.run(Command::DeleteThread { id }, window, cx));
-                true
-            })
-    });
-}
 
 impl ThreadView {
     pub fn new(id: ThreadId, app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -114,6 +102,11 @@ impl ThreadView {
             focus: cx.focus_handle(),
             loaded: false,
             layout: Self::layout_key(cx),
+            terminal: None,
+            split: cx.new(|_| ResizableState::default()),
+            turn_started: None,
+            busy: false,
+            _ticker: None,
             _subscriptions: subscriptions,
         };
         view.rebuild(true, cx);
@@ -133,6 +126,32 @@ impl ThreadView {
     pub fn focus_composer(view: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let composer = view.read(cx).composer.clone();
         Composer::focus(&composer, window, cx);
+    }
+
+    /// Opens the thread's terminal in its folder, or closes it.
+    pub fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal.take().is_some() {
+            Composer::focus(&self.composer.clone(), window, cx);
+            cx.notify();
+            return;
+        }
+        let Some(thread) = self.thread(cx).cloned() else { return };
+        let state = self.app.read(cx).state();
+        let cwd = thread
+            .workspace
+            .worktree
+            .clone()
+            .or_else(|| thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p)).map(|p| p.path.clone()))
+            .unwrap_or_else(|| orbit_core::EngineOptions::default_data_dir().display().to_string());
+        let panel = cx.new(|cx| TerminalPanel::new(self.app.clone(), cwd, window, cx));
+        let sub = cx.subscribe_in(&panel, window, |this, _, event: &TerminalPanelEvent, window, cx| match event {
+            TerminalPanelEvent::Close => this.toggle_terminal(window, cx),
+        });
+        self._subscriptions.push(sub);
+        let focus = panel.clone();
+        window.defer(cx, move |window, cx| TerminalPanel::focus(&focus, window, cx));
+        self.terminal = Some(panel);
+        cx.notify();
     }
 
     pub fn stop(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -160,11 +179,45 @@ impl ThreadView {
     /// Keeps the composer in step with the thread record (config, running).
     fn sync_thread_record(&mut self, cx: &mut Context<Self>) {
         let Some(thread) = self.thread(cx).cloned() else { return };
-        let usage = self.app.read(cx).state().usage(self.id);
+        let state = self.app.read(cx).state();
+        let usage = state.usage(self.id);
+        let project = thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p));
+        let context = Some(match (&thread.workspace.worktree, project) {
+            (Some(_), _) => "Own worktree".to_owned(),
+            (None, Some(p)) => p.name.clone(),
+            (None, None) => "Scratch folder".to_owned(),
+        });
+        let branch = thread.workspace.branch.clone().or_else(|| project.and_then(|p| p.base_branch.clone()));
+        let busy = thread.status.is_busy();
+        if busy != self.busy {
+            self.busy = busy;
+            self.turn_started = busy.then(std::time::Instant::now);
+            // A once-a-second tick only while a turn runs, for the elapsed
+            // time; idle threads cost nothing.
+            self._ticker = busy.then(|| {
+                cx.spawn(async move |this, cx| {
+                    loop {
+                        cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                        let alive = this.update(cx, |this, cx| {
+                            let last = this.rows.len().saturating_sub(1);
+                            this.scroller.update(cx, |s, cx| {
+                                let _ = s.remeasure_items(last..last + 1, cx);
+                            });
+                            cx.notify();
+                        });
+                        if alive.is_err() {
+                            break;
+                        }
+                    }
+                })
+            });
+            self.rebuild(false, cx);
+        }
         self.composer.update(cx, |composer, cx| {
             composer.set_running(thread.status.is_busy(), cx);
             composer.set_config(thread.config.clone(), cx);
             composer.set_usage(Some(usage), cx);
+            composer.set_context(context, branch, cx);
         });
         cx.notify();
     }
@@ -225,7 +278,8 @@ impl ThreadView {
         let Some(timeline) = self.app.read(cx).state().timeline(self.id) else { return };
         let items = timeline.items().to_vec();
         self.loaded = true;
-        let rows = Row::build(&items);
+        let busy = self.app.read(cx).state().threads.get(&self.id).is_some_and(|t| t.status.is_busy());
+        let rows = Row::build(&items, busy);
         let mut item_row = HashMap::with_capacity(items.len());
         for (ix, row) in rows.iter().enumerate() {
             for id in row.items() {
@@ -269,6 +323,7 @@ impl ThreadView {
                 steer: *steer,
             },
             ComposerEvent::Stop => Command::Interrupt { thread: self.id },
+            ComposerEvent::WorktreeChosen(_) => return,
             ComposerEvent::ConfigChanged(config) => Command::UpdateThread {
                 id: self.id,
                 patch: ThreadPatch { config: Some(config.clone()), ..Default::default() },
@@ -292,51 +347,6 @@ impl ThreadView {
         cx.notify();
     }
 
-    fn rename(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let title = self.thread(cx).map(|t| t.title.clone()).unwrap_or_default();
-        let input = cx.new(|cx| gpui_kit::component::input::InputState::new(window, cx).default_value(title));
-        let app = self.app.clone();
-        let id = self.id;
-        window.open_dialog(cx, move |dialog, _, _| {
-            let (input, app) = (input.clone(), app.clone());
-            dialog
-                .title("Rename thread")
-                .w(px(420.))
-                .child(gpui_kit::component::input::Input::new(&input))
-                .footer(
-                    h_flex()
-                        .gap_2()
-                        .justify_end()
-                        .child(gpui_kit::component::dialog::DialogClose::new().child(
-                            Button::new("cancel").outline().label("Cancel"),
-                        ))
-                        .child(gpui_kit::component::dialog::DialogAction::new().child(
-                            Button::new("rename").primary().label("Rename"),
-                        )),
-                )
-                .on_ok(move |_, window, cx| {
-                    let title = input.read(cx).value().trim().to_owned();
-                    if !title.is_empty() {
-                        app.update(cx, |app, cx| {
-                            app.run(
-                                Command::UpdateThread {
-                                    id,
-                                    patch: ThreadPatch { title: Some(title), ..Default::default() },
-                                },
-                                window,
-                                cx,
-                            )
-                        });
-                    }
-                    true
-                })
-        });
-    }
-
-    fn confirm_delete(&self, window: &mut Window, cx: &mut Context<Self>) {
-        delete_thread(self.app.clone(), self.id, window, cx);
-    }
-
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let state = self.app.read(cx).state();
@@ -344,10 +354,6 @@ impl ThreadView {
         let project = thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p));
         let usage = state.usage(self.id);
         let model = ui::model_label(&thread.config, &state.providers);
-        let view = cx.weak_entity();
-        let delete_label = if crate::settings::get(cx).general.confirm_delete { "Delete…" } else { "Delete" };
-        let archived = thread.archived;
-        let pinned = thread.pinned;
         let id = self.id;
         h_flex()
             .h_11()
@@ -388,50 +394,13 @@ impl ThreadView {
                     .tooltip("Review changes (Ctrl+R)")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(ThreadViewEvent::Review))),
             )
-            .child(
+            .child({
+                let (app, menu_thread) = (self.app.clone(), thread.clone());
+                let path = project.map(|p| p.path.clone());
                 Button::new("thread-menu").ghost().small().icon(IconName::Ellipsis).dropdown_menu(move |menu, _, _| {
-                    let (rename, pin, archive, delete) = (view.clone(), view.clone(), view.clone(), view.clone());
-                    menu.item(PopupMenuItem::new("Rename…").icon(Lucide::Pencil).on_click(move |_, window, cx| {
-                        let _ = rename.update(cx, |this, cx| this.rename(window, cx));
-                    }))
-                    .item(PopupMenuItem::new(if pinned { "Unpin" } else { "Pin" }).icon(Lucide::Pin).on_click(
-                        move |_, window, cx| {
-                            let _ = pin.update(cx, |this, cx| {
-                                this.app.update(cx, |app, cx| {
-                                    app.run(
-                                        Command::UpdateThread {
-                                            id,
-                                            patch: ThreadPatch { pinned: Some(!pinned), ..Default::default() },
-                                        },
-                                        window,
-                                        cx,
-                                    )
-                                })
-                            });
-                        },
-                    ))
-                    .item(PopupMenuItem::new(if archived { "Unarchive" } else { "Archive" }).icon(Lucide::Archive).on_click(
-                        move |_, window, cx| {
-                            let _ = archive.update(cx, |this, cx| {
-                                this.app.update(cx, |app, cx| {
-                                    app.run(
-                                        Command::UpdateThread {
-                                            id,
-                                            patch: ThreadPatch { archived: Some(!archived), ..Default::default() },
-                                        },
-                                        window,
-                                        cx,
-                                    )
-                                })
-                            });
-                        },
-                    ))
-                    .separator()
-                    .item(PopupMenuItem::new(delete_label).icon(Lucide::Trash).on_click(move |_, window, cx| {
-                        let _ = delete.update(cx, |this, cx| this.confirm_delete(window, cx));
-                    }))
-                }),
-            )
+                    crate::thread_menu::build(menu, &app, &menu_thread, path.clone())
+                })
+            })
     }
 
     fn render_queue(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
@@ -508,10 +477,8 @@ impl Render for ThreadView {
         .flex_1()
         .min_h_0();
 
-        v_flex()
+        let conversation = v_flex()
             .size_full()
-            .track_focus(&self.focus)
-            .child(self.render_header(cx))
             .child(if empty {
                 ui::empty_state(
                     Icon::new(Lucide::MessageSquare),
@@ -540,6 +507,28 @@ impl Render for ThreadView {
                             .children(self.render_queue(cx))
                             .child(self.composer.clone()),
                     ),
-            )
+            );
+        v_flex()
+            .size_full()
+            .track_focus(&self.focus)
+            .child(self.render_header(cx))
+            .child(match &self.terminal {
+                None => div().flex_1().min_h_0().child(conversation).into_any_element(),
+                Some(terminal) => div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        v_resizable("thread-split")
+                            .with_state(&self.split)
+                            .child(resizable_panel().child(conversation))
+                            .child(
+                                resizable_panel()
+                                    .size(px(300.))
+                                    .size_range(px(120.)..px(900.))
+                                    .child(terminal.clone()),
+                            ),
+                    )
+                    .into_any_element(),
+            })
     }
 }

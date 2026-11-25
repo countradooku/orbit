@@ -272,7 +272,7 @@ fn history_survives_a_restart_and_stays_unloaded_until_opened() {
     let h = Harness::open(dir.path().to_owned());
     assert_eq!(h.thread(id).title, "persist me");
     match h.call(Command::OpenThread { id }) {
-        Reply::Timeline(items) => {
+        Reply::Timeline { items, .. } => {
             let texts: Vec<_> = items
                 .iter()
                 .filter_map(|i| match &i.body {
@@ -365,6 +365,13 @@ fn a_turns_diff_shows_exactly_what_the_turn_changed() {
     assert!(patch.contains("written-by-agent.txt") && patch.contains("+hello"), "{patch}");
     assert!(!patch.contains("before.txt"), "{patch}");
 
+    // Undo the turn: back to how the files were before it.
+    h.call(Command::RestoreCheckpoint { thread: id, turn: 1 });
+    assert!(!repo.path().join("written-by-agent.txt").exists(), "undo removes the turn's file");
+    assert!(repo.path().join("before.txt").exists(), "files from before the turn stay");
+    std::fs::write(repo.path().join("written-by-agent.txt"), "hello
+").unwrap();
+
     // Revert the turn's file through its patch.
     let file = orbit_proto::diff::parse(&patch).remove(0);
     h.call(Command::RevertPatch { thread: id, patch: orbit_proto::file_patch(&file) });
@@ -441,4 +448,119 @@ fn a_provider_binary_override_reaches_the_session() {
     assert_eq!(spec.binary, Some(std::path::PathBuf::from("/opt/agents/claude")));
     assert!(spec.env.contains(&("CLAUDE_CONFIG_DIR".to_owned(), "/tmp/claude-home".to_owned())), "{:?}", spec.env);
     h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+}
+
+#[test]
+fn settle_snooze_and_wake() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.call(Command::UpdateThread { id, patch: ThreadPatch { pinned: Some(true), ..Default::default() } });
+    h.call(Command::UpdateThread { id, patch: ThreadPatch { settled: Some(true), ..Default::default() } });
+    h.wait("settled", |h| h.thread(id).settled_ms.is_some());
+    assert!(!h.thread(id).pinned, "settling unpins");
+
+    // A message brings a settled thread back.
+    h.send(id, "hi");
+    h.wait("unsettled", |h| h.thread(id).settled_ms.is_none() && h.thread(id).turns == 1);
+
+    // A snooze ends by itself and marks the thread as woken.
+    let until = now_ms() + 300;
+    h.call(Command::UpdateThread { id, patch: ThreadPatch { snooze_until: Some(Some(until)), ..Default::default() } });
+    h.wait("snoozed", |h| h.thread(id).snoozed_until == Some(until));
+    h.wait("woke", |h| h.thread(id).snoozed_until.is_none() && h.thread(id).woke);
+
+    // A request wakes a snoozed thread early.
+    h.call(Command::UpdateThread {
+        id,
+        patch: ThreadPatch { snooze_until: Some(Some(now_ms() + 3_600_000)), ..Default::default() },
+    });
+    h.wait("snoozed again", |h| h.thread(id).snoozed_until.is_some());
+    h.send(id, "ask");
+    h.wait("woken by the request", |h| h.thread(id).status == ThreadStatus::Waiting && h.thread(id).snoozed_until.is_none());
+}
+
+#[test]
+fn a_worktree_thread_queues_until_its_worktree_is_ready() {
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.path().join("README.md"), "hi\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"]);
+
+    let mut h = Harness::new();
+    let Reply::Project(project) = h.call(Command::AddProject { path: repo.path().display().to_string() }) else { panic!() };
+    let Reply::Thread(id) =
+        h.call(Command::CreateThread { project: Some(project), config: ThreadConfig::default(), worktree: true })
+    else {
+        panic!()
+    };
+    // Sent before the worktree exists: queued, then run in the worktree.
+    h.send(id, "write");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !(h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle) {
+        assert!(Instant::now() < deadline, "worktree turn never ran: {:?}", h.thread(id).status);
+        match h.events.try_recv() {
+            Ok(env) => h.apply(env.event),
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    let worktree = h.thread(id).workspace.worktree.clone().expect("worktree path");
+    assert!(std::path::Path::new(&worktree).join("written-by-agent.txt").exists(), "the agent ran in the worktree");
+    assert!(!repo.path().join("written-by-agent.txt").exists(), "the main checkout is untouched");
+    assert!(h.thread(id).workspace.branch.as_deref().is_some_and(|b| b.starts_with("orbit/")));
+
+    h.call(Command::DeleteThread { id });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while std::path::Path::new(&worktree).exists() {
+        assert!(Instant::now() < deadline, "worktree was not removed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_restart_closes_unanswerable_requests_and_sends_queued_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut h = Harness::open(dir.path().to_owned());
+        id = h.new_thread();
+        h.send(id, "ask");
+        h.wait("request", |h| h.thread(id).status == ThreadStatus::Waiting);
+        h.send(id, "after the restart");
+        h.wait("queued", |h| h.thread(id).queued == 1);
+        h.engine.shutdown();
+    }
+    let mut h = Harness::open(dir.path().to_owned());
+    // The request is closed (its session is gone) and the queued message runs.
+    h.wait("queued message ran", |h| {
+        h.thread(id).pending.is_empty() && h.thread(id).queued == 0 && h.thread(id).status == ThreadStatus::Idle && h.thread(id).turns == 2
+    });
+    let Reply::Timeline { items, .. } = h.call(Command::OpenThread { id }) else { panic!() };
+    assert!(items.iter().any(|i| matches!(&i.body, ItemBody::Request(r) if matches!(r.resolution, Some(Decision::Deny { .. })))));
+    assert!(items.iter().any(|i| matches!(&i.body, ItemBody::Assistant { text } if text == "echo: after the restart")));
+}
+
+#[test]
+fn archived_threads_refuse_messages() {
+    let h = Harness::new();
+    let id = h.new_thread();
+    h.call(Command::UpdateThread { id, patch: ThreadPatch { archived: Some(true), ..Default::default() } });
+    let result = h.engine.call(Command::Send { thread: id, text: "hi".into(), attachments: vec![], steer: false }).recv().unwrap();
+    assert!(result.unwrap_err().contains("archived"));
+}
+
+#[test]
+fn switching_provider_starts_a_fresh_session() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "hello");
+    h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+    assert!(h.thread(id).session.is_some());
+    let config = ThreadConfig { provider: ProviderKind::Codex, ..Default::default() };
+    h.call(Command::UpdateThread { id, patch: ThreadPatch { config: Some(config), ..Default::default() } });
+    h.wait("session cleared and the switch explained", |h| {
+        h.thread(id).session.is_none()
+            && h.thread(id).config.provider == ProviderKind::Codex
+            && h.items.values().any(|i| matches!(&i.body, ItemBody::Notice { text, .. } if text.contains("Switched to Codex")))
+    });
 }

@@ -14,10 +14,10 @@ use orbit_proto::*;
 
 use super::bus::{Bus, EventRx};
 use crate::provider::{
-    self, AgentEvent, BlockKind, EventSender, PromptAttachment, SessionHandle, SessionInput, SessionSpec,
+    AgentEvent, BlockKind, EventSender, PromptAttachment, SessionHandle, SessionInput, SessionSpec,
     TurnOutcome,
 };
-use crate::git::{Git, GitConfig, TreeId};
+use crate::git::{BranchCleanup, Git, NewWorktree, RemoveWorktree, TreeId};
 use crate::store::Store;
 use crate::terminal::{ExitSender, OutputSender, TermSize, Terminals};
 
@@ -33,6 +33,10 @@ pub enum Internal {
     ProjectBranch { project: ProjectId, branch: Option<String> },
     /// The provider's quota window has reset; resume the thread's queue.
     QuotaReset(ThreadId),
+    /// A snooze timer fired.
+    SnoozeEnded { thread: ThreadId, until: u64 },
+    /// A thread's worktree finished setting up (or failed to).
+    WorktreeReady { thread: ThreadId, result: Result<Workspace, String>, setup_log: Option<String> },
 }
 
 /// Starts provider sessions. Tests replace it with scripted fakes.
@@ -44,27 +48,30 @@ const INLINE_OUTPUT: usize = 64 * 1024;
 const TITLE_CHARS: usize = 72;
 /// Streaming items are persisted at most this often.
 const STREAM_PERSIST: Duration = Duration::from_secs(2);
+/// An idle agent process is stopped after this long; the thread resumes its
+/// session on the next message.
+const IDLE_RELEASE: Duration = Duration::from_secs(15 * 60);
 
-struct ActiveTurn {
-    number: u32,
-    started: Instant,
+pub(crate) struct ActiveTurn {
+    pub(crate) number: u32,
+    pub(crate) started: Instant,
     /// Provider block id → timeline item.
-    blocks: HashMap<String, ItemId>,
+    pub(crate) blocks: HashMap<String, ItemId>,
     /// Provider tool call id → timeline item.
-    tools: HashMap<String, ItemId>,
-    plan: Option<ItemId>,
+    pub(crate) tools: HashMap<String, ItemId>,
+    pub(crate) plan: Option<ItemId>,
     /// Provider request id → (request id, timeline item).
-    requests: HashMap<String, (RequestId, ItemId)>,
-    usage: Usage,
-    cursor: Option<String>,
-    files: Vec<FileChange>,
-    interrupted: bool,
+    pub(crate) requests: HashMap<String, (RequestId, ItemId)>,
+    pub(crate) usage: Usage,
+    pub(crate) cursor: Option<String>,
+    pub(crate) files: Vec<FileChange>,
+    pub(crate) interrupted: bool,
     /// The tree the turn started from.
-    base: Option<String>,
+    pub(crate) base: Option<String>,
 }
 
 impl ActiveTurn {
-    fn new(number: u32) -> Self {
+    pub(crate) fn new(number: u32) -> Self {
         Self {
             base: None,
             number,
@@ -82,35 +89,37 @@ impl ActiveTurn {
 }
 
 #[derive(Default)]
-struct Runtime {
-    session: Option<SessionHandle>,
-    turn: Option<ActiveTurn>,
+pub(crate) struct Runtime {
+    pub(crate) session: Option<SessionHandle>,
+    pub(crate) turn: Option<ActiveTurn>,
     /// Queued user messages, in send order.
-    queue: VecDeque<ItemId>,
+    pub(crate) queue: VecDeque<ItemId>,
     /// The next session must resume at this provider cursor (rollback).
-    resume_at: Option<String>,
+    pub(crate) resume_at: Option<String>,
     /// A prompt held until the baseline snapshot exists.
-    held_prompt: Option<SessionInput>,
+    pub(crate) held_prompt: Option<SessionInput>,
     /// The last turn's snapshot is being taken; queued turns wait for it so
     /// one turn's files never land in another's diff.
-    checkpointing: bool,
+    pub(crate) checkpointing: bool,
+    /// Last time the session did anything, for idle release.
+    pub(crate) last_active: Option<Instant>,
 }
 
 pub struct Orchestrator {
-    store: Store,
-    bus: Bus,
-    providers: Vec<ProviderInfo>,
-    runtimes: HashMap<ThreadId, Runtime>,
-    agent_tx: EventSender,
-    internal_tx: MTx<mpsc::List<Internal>>,
-    launcher: Launcher,
+    pub(crate) store: Store,
+    pub(crate) bus: Bus,
+    pub(crate) providers: Vec<ProviderInfo>,
+    pub(crate) runtimes: HashMap<ThreadId, Runtime>,
+    pub(crate) agent_tx: EventSender,
+    pub(crate) internal_tx: MTx<mpsc::List<Internal>>,
+    pub(crate) launcher: Launcher,
     /// Streaming items changed since they were last persisted.
-    dirty: HashSet<(ThreadId, ItemId)>,
-    last_persist: Instant,
+    pub(crate) dirty: HashSet<(ThreadId, ItemId)>,
+    pub(crate) last_persist: Instant,
     /// Threads a client has open; they stay loaded.
-    open: HashSet<ThreadId>,
-    git: Git,
-    terminals: Terminals,
+    pub(crate) open: HashSet<ThreadId>,
+    pub(crate) git: Git,
+    pub(crate) terminals: Terminals,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -139,7 +148,7 @@ impl Orchestrator {
         terminal_output: OutputSender,
         terminal_exits: ExitSender,
     ) -> Self {
-        let git = Git::new(git_config(store.dir(), store.settings()));
+        let git = Git::new(super::settings::git_config(store.dir(), store.settings()));
         let providers = ProviderKind::ALL
             .iter()
             .map(|&kind| ProviderInfo { kind, message: Some("Checking…".into()), ..Default::default() })
@@ -161,21 +170,21 @@ impl Orchestrator {
     }
 
     /// The git repository a thread works in, if any.
-    fn repo_of(&self, thread: &Thread) -> Option<PathBuf> {
+    pub(crate) fn repo_of(&self, thread: &Thread) -> Option<PathBuf> {
         if let Some(worktree) = &thread.workspace.worktree {
             return Some(PathBuf::from(worktree));
         }
         thread.project.and_then(|p| self.store.project(p)).map(|p| PathBuf::from(&p.path))
     }
 
-    fn repo_for(&self, thread: ThreadId) -> Result<PathBuf, String> {
+    pub(crate) fn repo_for(&self, thread: ThreadId) -> Result<PathBuf, String> {
         let t = self.store.thread(thread).ok_or("That thread no longer exists.")?;
         self.repo_of(t).ok_or_else(|| "This thread isn’t in a project, so it has no changes to show.".into())
     }
 
     /// The (from, to) trees of a turn; `to` is `None` while it runs (the
     /// working tree).
-    fn turn_range(&mut self, thread: ThreadId, turn: u32) -> Option<(String, Option<String>)> {
+    pub(crate) fn turn_range(&mut self, thread: ThreadId, turn: u32) -> Option<(String, Option<String>)> {
         if let Some(active) = self.runtimes.get(&thread).and_then(|r| r.turn.as_ref())
             && active.number == turn
         {
@@ -189,7 +198,7 @@ impl Orchestrator {
     }
 
     /// The tree the thread's first turn started from.
-    fn thread_base(&mut self, thread: ThreadId) -> Option<String> {
+    pub(crate) fn thread_base(&mut self, thread: ThreadId) -> Option<String> {
         let timeline = self.store.load_timeline(thread).ok()?;
         let from_items = timeline.items().iter().find_map(|i| match &i.body {
             ItemBody::TurnEnd(s) => s.base_checkpoint.clone(),
@@ -199,7 +208,7 @@ impl Orchestrator {
     }
 
     /// The last finished turn's snapshot, the next turn's starting point.
-    fn last_checkpoint(&mut self, thread: ThreadId) -> Option<String> {
+    pub(crate) fn last_checkpoint(&mut self, thread: ThreadId) -> Option<String> {
         let timeline = self.store.load_timeline(thread).ok()?;
         timeline.items().iter().rev().find_map(|i| match &i.body {
             ItemBody::TurnEnd(s) => s.checkpoint.clone(),
@@ -207,7 +216,7 @@ impl Orchestrator {
         })
     }
 
-    fn diff(&mut self, thread: ThreadId, scope: DiffScope) -> Outcome {
+    pub(crate) fn diff(&mut self, thread: ThreadId, scope: DiffScope) -> Outcome {
         let repo = match self.repo_for(thread) {
             Ok(repo) => repo,
             Err(e) => return Outcome::Ready(Err(e)),
@@ -238,7 +247,7 @@ impl Orchestrator {
         }))
     }
 
-    fn git_command(&mut self, command: Command) -> Outcome {
+    pub(crate) fn git_command(&mut self, command: Command) -> Outcome {
         let git = self.git.clone();
         match command {
             Command::Diff { thread, scope } => self.diff(thread, scope),
@@ -253,7 +262,7 @@ impl Orchestrator {
                     Ok(repo) => repo,
                     Err(e) => return Outcome::Ready(Err(e)),
                 };
-                let Some((_, Some(tree))) = self.turn_range(thread, turn) else {
+                let Some((tree, _)) = self.turn_range(thread, turn) else {
                     return Outcome::Ready(Err("That turn has no snapshot to restore.".into()));
                 };
                 Outcome::Deferred(Box::pin(async move {
@@ -289,7 +298,7 @@ impl Orchestrator {
         }
     }
 
-    fn terminal_command(&mut self, command: Command) -> CommandResult {
+    pub(crate) fn terminal_command(&mut self, command: Command) -> CommandResult {
         match command {
             Command::OpenTerminal { cwd, cols, rows } => self
                 .terminals
@@ -321,6 +330,47 @@ impl Orchestrator {
         self.emit(Event::TerminalExited { term, code });
     }
 
+    /// Reconciles state a crash or quit left behind: requests the agent can
+    /// no longer receive are closed, queued messages are sent, and snooze
+    /// timers are re-armed. Call once after startup.
+    pub fn recover(&mut self) {
+        let threads: Vec<Thread> = self.store.threads().cloned().collect();
+        for thread in threads {
+            let id = thread.id;
+            if !thread.pending.is_empty() {
+                let pending: Vec<RequestId> = thread.pending.iter().map(|p| p.request.id).collect();
+                if self.store.load_timeline(id).is_ok() {
+                    for request in pending {
+                        self.settle_request(id, request, Decision::Deny { feedback: "Orbit restarted before this was answered.".into() });
+                    }
+                    self.notice(id, NoticeLevel::Info, "Orbit restarted while this thread was waiting for you. Send a message to continue.".into());
+                }
+                self.update_thread(id, |t| t.pending.clear());
+            }
+            if let Some(until) = thread.snoozed_until {
+                let wait = Duration::from_millis(until.saturating_sub(now_ms()));
+                let tx = self.internal_tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(wait).await;
+                    let _ = tx.send(Internal::SnoozeEnded { thread: id, until });
+                });
+            }
+            if thread.queued > 0
+                && let Ok(timeline) = self.store.load_timeline(id)
+            {
+                let queued: Vec<ItemId> =
+                    timeline.items().iter().filter(|i| i.status == ItemStatus::Queued).map(|i| i.id).collect();
+                let count = queued.len() as u32;
+                self.runtimes.entry(id).or_default().queue = queued.into();
+                self.update_thread(id, |t| t.queued = count);
+                self.start_next_queued(id);
+            }
+            if !self.open.contains(&id) && self.runtimes.get(&id).is_none_or(|r| r.turn.is_none()) {
+                self.store.unload_timeline(id);
+            }
+        }
+    }
+
     pub fn store(&self) -> &Store {
         &self.store
     }
@@ -344,7 +394,7 @@ impl Orchestrator {
 
     // ── Emission helpers ─────────────────────────────────────────────────
 
-    fn emit(&mut self, event: Event) {
+    pub(crate) fn emit(&mut self, event: Event) {
         if event.is_durable() {
             match self.store.commit(event.clone()) {
                 Ok(env) => self.bus.publish(env),
@@ -358,7 +408,7 @@ impl Orchestrator {
         }
     }
 
-    fn update_thread(&mut self, id: ThreadId, f: impl FnOnce(&mut Thread)) {
+    pub(crate) fn update_thread(&mut self, id: ThreadId, f: impl FnOnce(&mut Thread)) {
         let Some(mut thread) = self.store.thread(id).cloned() else { return };
         let before = thread.clone();
         f(&mut thread);
@@ -368,18 +418,18 @@ impl Orchestrator {
         }
     }
 
-    fn put_item(&mut self, thread: ThreadId, item: Item) {
+    pub(crate) fn put_item(&mut self, thread: ThreadId, item: Item) {
         self.dirty.remove(&(thread, item.id));
         self.emit(Event::ItemUpserted { thread, item });
     }
 
-    fn item(&self, thread: ThreadId, id: ItemId) -> Option<Item> {
+    pub(crate) fn item(&self, thread: ThreadId, id: ItemId) -> Option<Item> {
         self.store.timeline(thread)?.get(id).cloned()
     }
 
     /// Changes a streaming item in memory and broadcasts the delta; the item
     /// is persisted on the next [`Orchestrator::tick`].
-    fn stream_into(&mut self, thread: ThreadId, id: ItemId, delta: Delta) {
+    pub(crate) fn stream_into(&mut self, thread: ThreadId, id: ItemId, delta: Delta) {
         let Some(timeline) = self.store.timeline_mut(thread) else { return };
         let Some(item) = timeline.get_mut(id) else { return };
         match (&mut item.body, &delta) {
@@ -402,8 +452,19 @@ impl Orchestrator {
         self.emit(Event::ItemDelta { thread, item: id, delta });
     }
 
-    /// Periodic work: persist streaming items, flush logs.
+    /// Periodic work: persist streaming items, flush logs, release idle
+    /// agent processes.
     pub fn tick(&mut self) {
+        let now = Instant::now();
+        for runtime in self.runtimes.values_mut() {
+            let idle = runtime.turn.is_none() && !runtime.checkpointing && runtime.held_prompt.is_none();
+            if runtime.session.is_some() && idle && runtime.last_active.is_some_and(|t| now - t > IDLE_RELEASE) {
+                // The thread keeps its session id; the next message resumes it.
+                if let Some(session) = runtime.session.take() {
+                    session.send(SessionInput::Shutdown);
+                }
+            }
+        }
         if self.last_persist.elapsed() >= STREAM_PERSIST && !self.dirty.is_empty() {
             for (thread, id) in std::mem::take(&mut self.dirty) {
                 if let Some(item) = self.item(thread, id) {
@@ -439,17 +500,7 @@ impl Orchestrator {
         }
     }
 
-    /// Probes one provider with its configured binary and environment.
-    fn probe_provider(&self, kind: ProviderKind) {
-        let (binary, env) = provider_launch(self.store.settings(), kind);
-        let tx = self.internal_tx.clone();
-        tokio::spawn(async move {
-            let info = provider::probe(kind, binary, env).await;
-            let _ = tx.send(Internal::Probed(info));
-        });
-    }
-
-    fn set_provider(&mut self, mut info: ProviderInfo) {
+    pub(crate) fn set_provider(&mut self, mut info: ProviderInfo) {
         if let Some(slot) = self.providers.iter_mut().find(|p| p.kind == info.kind) {
             if info.quota.is_empty() {
                 info.quota = std::mem::take(&mut slot.quota);
@@ -501,6 +552,33 @@ impl Orchestrator {
                     self.store.unload_timeline(thread);
                 }
             }
+            Internal::WorktreeReady { thread, result, setup_log } => {
+                if self.store.thread(thread).is_none() {
+                    return; // deleted while it was being set up
+                }
+                match result {
+                    Ok(workspace) => {
+                        self.update_thread(thread, |t| {
+                            t.workspace = workspace;
+                            t.status = ThreadStatus::Idle;
+                        });
+                        if let Some(log) = setup_log {
+                            self.notice(thread, NoticeLevel::Warning, format!("The setup script failed:\n{log}"));
+                        }
+                        self.start_next_queued(thread);
+                    }
+                    Err(message) => {
+                        self.notice(thread, NoticeLevel::Error, message.clone());
+                        self.update_thread(thread, |t| t.status = ThreadStatus::Failed { message });
+                    }
+                }
+            }
+            Internal::SnoozeEnded { thread, until } => {
+                // Ignore timers for snoozes that were changed since.
+                if self.store.thread(thread).is_some_and(|t| t.snoozed_until == Some(until)) {
+                    self.wake(thread);
+                }
+            }
             Internal::ProjectBranch { project, branch } => {
                 if let Some(mut p) = self.store.project(project).cloned()
                     && p.base_branch != branch
@@ -520,35 +598,6 @@ impl Orchestrator {
                     self.start_next_queued(thread);
                 }
             }
-        }
-    }
-
-    // ── Settings ─────────────────────────────────────────────────────────
-
-    /// Replaces the settings and applies what changed. Sessions already
-    /// running keep the binary and environment they started with; the next
-    /// session of each thread uses the new ones.
-    fn update_settings(&mut self, settings: Settings) -> CommandResult {
-        let settings = settings.sanitized();
-        if *self.store.settings() == settings {
-            return Ok(Reply::Done);
-        }
-        let old = self.store.settings().clone();
-        self.emit(Event::SettingsChanged(settings));
-        self.apply_settings(&old);
-        Ok(Reply::Done)
-    }
-
-    fn apply_settings(&mut self, old: &Settings) {
-        let new = self.store.settings();
-        let git_changed = (&old.workspace.worktree_root, &old.advanced) != (&new.workspace.worktree_root, &new.advanced);
-        if git_changed {
-            self.git = Git::new(git_config(self.store.dir(), new));
-        }
-        let changed: Vec<ProviderKind> =
-            ProviderKind::ALL.into_iter().filter(|&kind| old.provider(kind) != new.provider(kind)).collect();
-        for kind in changed {
-            self.probe_provider(kind);
         }
     }
 
@@ -642,7 +691,7 @@ impl Orchestrator {
         }
     }
 
-    fn add_project(&mut self, path: &str) -> CommandResult {
+    pub(crate) fn add_project(&mut self, path: &str) -> CommandResult {
         let path = Path::new(path);
         let canonical = dunce_canonical(path).map_err(|e| format!("Couldn’t open “{}”: {e}", path.display()))?;
         if !canonical.is_dir() {
@@ -673,14 +722,15 @@ impl Orchestrator {
         Ok(Reply::Project(id))
     }
 
-    fn create_thread(&mut self, project: Option<ProjectId>, config: ThreadConfig, worktree: bool) -> CommandResult {
+    pub(crate) fn create_thread(&mut self, project: Option<ProjectId>, config: ThreadConfig, worktree: bool) -> CommandResult {
         if let Some(project) = project
             && self.store.project(project).is_none()
         {
             return Err("That project no longer exists.".into());
         }
-        if worktree {
-            return Err("Worktrees are not available in this build.".into());
+        let project_record = project.and_then(|p| self.store.project(p).cloned());
+        if worktree && project_record.is_none() {
+            return Err("A worktree needs a project: pick one first.".into());
         }
         let now = now_ms();
         let thread = Thread {
@@ -690,21 +740,66 @@ impl Orchestrator {
             config: config.clone(),
             created_ms: now,
             updated_ms: now,
+            // Messages queue until the worktree is ready.
+            status: if worktree { ThreadStatus::Starting } else { ThreadStatus::Idle },
             ..Default::default()
         };
         let id = thread.id;
         self.emit(Event::ThreadUpserted(thread));
+        if let (true, Some(project)) = (worktree, project_record) {
+            self.create_worktree(id, project);
+        }
         if *self.store.defaults() != config {
             self.emit(Event::DefaultsChanged(config));
         }
         Ok(Reply::Thread(id))
     }
 
-    fn patch_thread(&mut self, id: ThreadId, patch: ThreadPatch) -> CommandResult {
+    pub(crate) fn create_worktree(&mut self, thread: ThreadId, project: Project) {
+        let (git, tx) = (self.git.clone(), self.internal_tx.clone());
+        let short = format!("{:x}", thread.0 & 0xff_ffff);
+        tokio::spawn(async move {
+            let mut log = String::new();
+            let mut on_output = |_: crate::git::OutputStream, line: &str| {
+                if log.len() < 16 * 1024 {
+                    log.push_str(line);
+                    log.push('\n');
+                }
+            };
+            let spec = NewWorktree {
+                project_root: PathBuf::from(&project.path),
+                thread,
+                branch: format!("orbit/{short}"),
+                base: project.base_branch.clone(),
+                path: None,
+                setup: project.scripts.setup.clone(),
+            };
+            let result = git.create_worktree(spec, &mut on_output).await;
+            let (result, setup_log) = match result {
+                Ok(info) => {
+                    let failed = info.setup.as_ref().is_some_and(|s| s.code != Some(0));
+                    let setup_log = info.setup.as_ref().map(|s| s.tail.clone()).filter(|_| failed);
+                    (
+                        Ok(Workspace {
+                            branch: Some(info.record.branch.clone()),
+                            worktree: Some(info.record.path.display().to_string()),
+                            port_base: Some(info.record.port_base),
+                        }),
+                        setup_log,
+                    )
+                }
+                Err(err) => (Err(format!("Couldn’t create the worktree: {err}")), None),
+            };
+            let _ = tx.send(Internal::WorktreeReady { thread, result, setup_log });
+        });
+    }
+
+    pub(crate) fn patch_thread(&mut self, id: ThreadId, patch: ThreadPatch) -> CommandResult {
         if self.store.thread(id).is_none() {
             return Err("That thread no longer exists.".into());
         }
         let config = patch.config.clone();
+        let previous_provider = self.store.thread(id).map(|t| t.config.provider);
         self.update_thread(id, |t| {
             if let Some(title) = patch.title {
                 t.title = title;
@@ -720,10 +815,48 @@ impl Orchestrator {
             }
             if let Some(unread) = patch.unread {
                 t.unread = unread;
+                if !unread {
+                    t.woke = false;
+                }
+            }
+            if let Some(settled) = patch.settled {
+                t.settled_ms = settled.then(now_ms);
+                if settled {
+                    // Settling ends the thread's active life: unpin, unsnooze.
+                    t.pinned = false;
+                    t.snoozed_until = None;
+                }
+            }
+            if let Some(snooze) = patch.snooze_until {
+                t.snoozed_until = snooze.filter(|until| *until > now_ms());
+                t.woke = false;
             }
         });
+        if let Some(Some(until)) = patch.snooze_until {
+            let wait = Duration::from_millis(until.saturating_sub(now_ms()));
+            let tx = self.internal_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(wait).await;
+                let _ = tx.send(Internal::SnoozeEnded { thread: id, until });
+            });
+        }
         if let Some(config) = config {
-            if let Some(session) = self.runtimes.get(&id).and_then(|r| r.session.as_ref()) {
+            if previous_provider.is_some_and(|p| p != config.provider) {
+                // Another agent runtime: its session ids are meaningless to
+                // the new one, so end the old session and start fresh.
+                if let Some(session) = self.runtimes.get_mut(&id).and_then(|r| r.session.take()) {
+                    session.send(SessionInput::Shutdown);
+                }
+                let had_history = self.store.thread(id).is_some_and(|t| t.turns > 0);
+                self.update_thread(id, |t| t.session = None);
+                if had_history {
+                    self.notice(
+                        id,
+                        NoticeLevel::Info,
+                        format!("Switched to {}. It starts a new session and doesn’t see the earlier messages.", config.provider.label()),
+                    );
+                }
+            } else if let Some(session) = self.runtimes.get(&id).and_then(|r| r.session.as_ref()) {
                 session.send(SessionInput::Configure(config.clone()));
             }
             self.emit(Event::DefaultsChanged(config));
@@ -731,7 +864,19 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn delete_thread(&mut self, id: ThreadId) -> CommandResult {
+    pub(crate) fn delete_thread(&mut self, id: ThreadId) -> CommandResult {
+        if let Some(thread) = self.store.thread(id)
+            && let Some(path) = thread.workspace.worktree.clone()
+        {
+            let teardown = thread.project.and_then(|p| self.store.project(p)).and_then(|p| p.scripts.teardown.clone());
+            let git = self.git.clone();
+            tokio::spawn(async move {
+                let opts = RemoveWorktree { teardown, branch: BranchCleanup::DeleteIfMerged, force: true };
+                if let Err(err) = git.remove_worktree(Path::new(&path), opts, &mut |_, _| {}).await {
+                    log::warn!("removing worktree {path}: {err}");
+                }
+            });
+        }
         if let Some(repo) = self.store.thread(id).and_then(|t| self.repo_of(t)) {
             let git = self.git.clone();
             tokio::spawn(async move {
@@ -754,7 +899,7 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn fork_thread(&mut self, id: ThreadId, at: ItemId) -> CommandResult {
+    pub(crate) fn fork_thread(&mut self, id: ThreadId, at: ItemId) -> CommandResult {
         let source = self.store.thread(id).cloned().ok_or("That thread no longer exists.")?;
         let items: Vec<Item> = {
             let timeline = self.store.load_timeline(id).map_err(|e| e.to_string())?;
@@ -792,17 +937,20 @@ impl Orchestrator {
         Ok(Reply::Thread(fork_id))
     }
 
-    fn open_thread(&mut self, id: ThreadId) -> CommandResult {
+    pub(crate) fn open_thread(&mut self, id: ThreadId) -> CommandResult {
         if self.store.thread(id).is_none() {
             return Err("That thread no longer exists.".into());
         }
         self.open.insert(id);
         let items = self.store.load_timeline(id).map_err(|e| e.to_string())?.items().to_vec();
+        // Everything emitted before this mark is in `items`.
+        let mark = next_raw_id();
+        self.emit(Event::TimelineMark { thread: id, mark });
         self.update_thread(id, |t| t.unread = false);
-        Ok(Reply::Timeline(items))
+        Ok(Reply::Timeline { items, mark })
     }
 
-    fn flush_thread(&mut self, id: ThreadId) {
+    pub(crate) fn flush_thread(&mut self, id: ThreadId) {
         let dirty: Vec<ItemId> = self.dirty.iter().filter(|(t, _)| *t == id).map(|(_, i)| *i).collect();
         for item in dirty {
             if let Some(item) = self.item(id, item) {
@@ -813,16 +961,21 @@ impl Orchestrator {
 
     // ── Turns ────────────────────────────────────────────────────────────
 
-    fn send(&mut self, thread_id: ThreadId, text: String, attachments: Vec<Attachment>, steer: bool) -> CommandResult {
+    pub(crate) fn send(&mut self, thread_id: ThreadId, text: String, attachments: Vec<Attachment>, steer: bool) -> CommandResult {
         let thread = self.store.thread(thread_id).cloned().ok_or("That thread no longer exists.")?;
         if text.trim().is_empty() && attachments.is_empty() {
             return Err("Write a message first.".into());
+        }
+        if thread.archived {
+            return Err("This thread is archived. Unarchive it to continue.".into());
         }
         self.store.load_timeline(thread_id).map_err(|e| e.to_string())?;
         let in_turn = self.runtimes.get(&thread_id).is_some_and(|r| r.turn.is_some());
         // Between a turn's end and its snapshot nothing can be steered; new
         // messages queue behind the snapshot instead.
-        let busy = in_turn || self.runtimes.get(&thread_id).is_some_and(|r| r.checkpointing);
+        let busy = in_turn
+            || self.runtimes.get(&thread_id).is_some_and(|r| r.checkpointing)
+            || thread.status == ThreadStatus::Starting;
         let rate_limited = matches!(thread.status, ThreadStatus::RateLimited { .. });
         let item_id = ItemId::new();
         let current_turn = thread.turns;
@@ -838,6 +991,12 @@ impl Orchestrator {
             let title = title_from(&text);
             self.update_thread(thread_id, |t| t.title = title);
         }
+        // Writing to a settled or snoozed thread brings it back.
+        self.update_thread(thread_id, |t| {
+            t.settled_ms = None;
+            t.snoozed_until = None;
+            t.woke = false;
+        });
         if steering {
             let prompt = self.prompt_input(thread_id, item_id, text, &attachments, true);
             if let Some(session) = self.runtimes.get(&thread_id).and_then(|r| r.session.as_ref()) {
@@ -852,7 +1011,7 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn prompt_input(
+    pub(crate) fn prompt_input(
         &self,
         _thread: ThreadId,
         item: ItemId,
@@ -867,7 +1026,7 @@ impl Orchestrator {
         SessionInput::Prompt { uuid: prompt_uuid(item), text, attachments, steer }
     }
 
-    fn workspace_dir(&self, thread: &Thread) -> PathBuf {
+    pub(crate) fn workspace_dir(&self, thread: &Thread) -> PathBuf {
         if let Some(worktree) = &thread.workspace.worktree {
             return PathBuf::from(worktree);
         }
@@ -879,13 +1038,13 @@ impl Orchestrator {
         dir
     }
 
-    fn ensure_session(&mut self, thread_id: ThreadId) -> Result<(), String> {
+    pub(crate) fn ensure_session(&mut self, thread_id: ThreadId) -> Result<(), String> {
         if self.runtimes.get(&thread_id).is_some_and(|r| r.session.is_some()) {
             return Ok(());
         }
         let thread = self.store.thread(thread_id).cloned().ok_or("That thread no longer exists.")?;
         let cwd = self.workspace_dir(&thread);
-        let (binary, mut env) = provider_launch(self.store.settings(), thread.config.provider);
+        let (binary, mut env) = super::settings::provider_launch(self.store.settings(), thread.config.provider);
         if let Some(port) = thread.workspace.port_base {
             env.push(("PORT".to_owned(), port.to_string()));
             env.push(("ORBIT_PORT_BASE".to_owned(), port.to_string()));
@@ -906,7 +1065,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn start_turn(&mut self, thread_id: ThreadId, user_item: ItemId) -> Result<(), String> {
+    pub(crate) fn start_turn(&mut self, thread_id: ThreadId, user_item: ItemId) -> Result<(), String> {
         let thread = self.store.thread(thread_id).cloned().ok_or("That thread no longer exists.")?;
         let number = thread.turns + 1;
         let Some(mut item) = self.item(thread_id, user_item) else {
@@ -935,8 +1094,10 @@ impl Orchestrator {
             runtime.held_prompt = Some(prompt);
             let (git, tx) = (self.git.clone(), self.internal_tx.clone());
             tokio::spawn(async move {
-                let tree = match git.snapshot(&repo).await {
-                    Ok(tree) => Some(tree.as_str().to_owned()),
+                // A checkpoint (not a bare snapshot) is pinned by a ref, so
+                // `git gc` can never take it.
+                let tree = match git.checkpoint(&repo, thread_id).await {
+                    Ok(cp) => Some(cp.tree.as_str().to_owned()),
                     Err(err) => {
                         log::debug!("no baseline for {thread_id}: {err}");
                         None
@@ -963,7 +1124,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn start_next_queued(&mut self, thread_id: ThreadId) {
+    pub(crate) fn start_next_queued(&mut self, thread_id: ThreadId) {
         if self.runtimes.get(&thread_id).is_some_and(|r| r.checkpointing) {
             return; // resumed when the snapshot lands
         }
@@ -974,7 +1135,7 @@ impl Orchestrator {
         }
     }
 
-    fn edit_queued(&mut self, thread: ThreadId, item_id: ItemId, text: String) -> CommandResult {
+    pub(crate) fn edit_queued(&mut self, thread: ThreadId, item_id: ItemId, text: String) -> CommandResult {
         let item = self.item(thread, item_id).ok_or("That message no longer exists.")?;
         if item.status != ItemStatus::Queued {
             return Err("That message was already sent.".into());
@@ -992,7 +1153,7 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn edit_and_resend(&mut self, thread_id: ThreadId, item_id: ItemId, text: String) -> CommandResult {
+    pub(crate) fn edit_and_resend(&mut self, thread_id: ThreadId, item_id: ItemId, text: String) -> CommandResult {
         if self.runtimes.get(&thread_id).is_some_and(|r| r.turn.is_some()) {
             return Err("Stop the current turn before editing an earlier message.".into());
         }
@@ -1031,10 +1192,16 @@ impl Orchestrator {
         self.send(thread_id, text, Vec::new(), false)
     }
 
-    fn interrupt(&mut self, thread: ThreadId) -> CommandResult {
+    pub(crate) fn interrupt(&mut self, thread: ThreadId) -> CommandResult {
         let Some(runtime) = self.runtimes.get_mut(&thread) else { return Ok(Reply::Done) };
         let Some(turn) = runtime.turn.as_mut() else { return Ok(Reply::Done) };
         turn.interrupted = true;
+        // Stopped while the first snapshot was still being taken: the
+        // prompt never left, so the turn simply ends.
+        if runtime.held_prompt.take().is_some() {
+            self.finish_turn(thread, TurnOutcome::Interrupted, Usage::default(), 0);
+            return Ok(Reply::Done);
+        }
         if let Some(session) = runtime.session.as_ref()
             && session.send(SessionInput::Interrupt)
         {
@@ -1044,7 +1211,7 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn resolve(&mut self, thread: ThreadId, request: RequestId, decision: Decision) -> CommandResult {
+    pub(crate) fn resolve(&mut self, thread: ThreadId, request: RequestId, decision: Decision) -> CommandResult {
         let pending = self
             .store
             .thread(thread)
@@ -1063,7 +1230,7 @@ impl Orchestrator {
         Ok(Reply::Done)
     }
 
-    fn settle_request(&mut self, thread: ThreadId, request: RequestId, decision: Decision) {
+    pub(crate) fn settle_request(&mut self, thread: ThreadId, request: RequestId, decision: Decision) {
         let Some(pending) =
             self.store.thread(thread).and_then(|t| t.pending.iter().find(|p| p.request.id == request).cloned())
         else {
@@ -1085,7 +1252,16 @@ impl Orchestrator {
         });
     }
 
-    fn notice(&mut self, thread: ThreadId, level: NoticeLevel, text: String) {
+    /// Ends a snooze and marks the thread as woken, if it was snoozed.
+    pub(crate) fn wake(&mut self, thread: ThreadId) {
+        self.update_thread(thread, |t| {
+            if t.snoozed_until.take().is_some() {
+                t.woke = true;
+            }
+        });
+    }
+
+    pub(crate) fn notice(&mut self, thread: ThreadId, level: NoticeLevel, text: String) {
         if self.store.load_timeline(thread).is_err() {
             return;
         }
@@ -1096,7 +1272,7 @@ impl Orchestrator {
         );
     }
 
-    fn finish_turn(&mut self, thread_id: ThreadId, outcome: TurnOutcome, usage: Usage, duration_ms: u64) {
+    pub(crate) fn finish_turn(&mut self, thread_id: ThreadId, outcome: TurnOutcome, usage: Usage, duration_ms: u64) {
         let Some(runtime) = self.runtimes.get_mut(&thread_id) else { return };
         let Some(turn) = runtime.turn.take() else { return };
         // Settle everything still streaming in this turn.
@@ -1137,7 +1313,7 @@ impl Orchestrator {
             }
             let (git, tx, base) = (self.git.clone(), self.internal_tx.clone(), turn.base.clone());
             tokio::spawn(async move {
-                let (tree, files) = match git.snapshot(&repo).await {
+                let (tree, files) = match git.checkpoint(&repo, thread_id).await.map(|cp| cp.tree) {
                     Ok(tree) => {
                         let files = match &base {
                             Some(base) => git.diff(&repo, &TreeId::new(base.clone()), Some(&tree)).await.ok().map(|d| d.changes()),
@@ -1160,6 +1336,7 @@ impl Orchestrator {
         };
         if let TurnOutcome::Failed { message } = &outcome {
             self.notice(thread_id, NoticeLevel::Error, message.clone());
+            self.wake(thread_id);
         }
         let open = self.open.contains(&thread_id);
         self.update_thread(thread_id, |t| {
@@ -1179,7 +1356,7 @@ impl Orchestrator {
         }
     }
 
-    fn schedule_quota_reset(&self, thread: ThreadId, resets_ms: u64) {
+    pub(crate) fn schedule_quota_reset(&self, thread: ThreadId, resets_ms: u64) {
         if resets_ms == 0 {
             return;
         }
@@ -1199,6 +1376,9 @@ impl Orchestrator {
         }
         if self.store.load_timeline(thread_id).is_err() {
             return;
+        }
+        if let Some(runtime) = self.runtimes.get_mut(&thread_id) {
+            runtime.last_active = Some(Instant::now());
         }
         match event {
             AgentEvent::Ready { session_id, .. } => {
@@ -1322,6 +1502,7 @@ impl Orchestrator {
                     t.requests.insert(provider_ref, (request.id, item.id));
                 }
                 self.put_item(thread_id, item);
+                self.wake(thread_id);
                 self.update_thread(thread_id, |t| {
                     t.pending.push(pending);
                     t.status = ThreadStatus::Waiting;
@@ -1385,16 +1566,16 @@ impl Orchestrator {
         }
     }
 
-    fn active_turn_number(&self, thread: ThreadId) -> Option<u32> {
+    pub(crate) fn active_turn_number(&self, thread: ThreadId) -> Option<u32> {
         self.runtimes.get(&thread)?.turn.as_ref().map(|t| t.number)
     }
 
-    fn tool_item(&self, thread: ThreadId, call_id: &str) -> Option<ItemId> {
+    pub(crate) fn tool_item(&self, thread: ThreadId, call_id: &str) -> Option<ItemId> {
         self.runtimes.get(&thread)?.turn.as_ref()?.tools.get(call_id).copied()
     }
 
     /// The timeline item for a streamed block, created on first use.
-    fn ensure_block(&mut self, thread: ThreadId, block: &str, kind: BlockKind) -> Option<ItemId> {
+    pub(crate) fn ensure_block(&mut self, thread: ThreadId, block: &str, kind: BlockKind) -> Option<ItemId> {
         let turn = self.runtimes.get_mut(&thread)?.turn.as_mut()?;
         if let Some(id) = turn.blocks.get(block) {
             return Some(*id);
@@ -1415,7 +1596,7 @@ impl Orchestrator {
     /// Full-text search over every thread, newest first. Loaded timelines
     /// are searched in memory; the rest are scanned from their logs on the
     /// blocking pool, so a search never stalls streaming.
-    fn search(&mut self, query: String, limit: usize) -> Deferred {
+    pub(crate) fn search(&mut self, query: String, limit: usize) -> Deferred {
         let needle = query.trim().to_lowercase();
         let mut threads: Vec<(ThreadId, u64)> = self.store.threads().map(|t| (t.id, t.updated_ms)).collect();
         threads.sort_by_key(|(_, updated)| std::cmp::Reverse(*updated));
@@ -1527,24 +1708,6 @@ fn merge_file_change(files: &mut Vec<FileChange>, change: FileChange) {
 
 /// `canonicalize` without Windows' `\\?\` prefix, so paths stay readable and
 /// work with tools that do not understand verbatim paths.
-/// The git layer's configuration for `data_dir` under `settings`.
-fn git_config(data_dir: &Path, settings: &Settings) -> GitConfig {
-    let mut cfg = GitConfig::new(data_dir);
-    let path = |s: &str| (!s.is_empty()).then(|| PathBuf::from(s));
-    cfg.worktree_root = path(&settings.workspace.worktree_root);
-    cfg.git = path(&settings.advanced.git_binary);
-    cfg.gh = path(&settings.advanced.gh_binary);
-    cfg.max_untracked_file = u64::from(settings.advanced.checkpoint_file_limit_mb) * 1024 * 1024;
-    cfg
-}
-
-/// The binary override and extra environment a provider is started with.
-fn provider_launch(settings: &Settings, kind: ProviderKind) -> (Option<PathBuf>, Vec<(String, String)>) {
-    let provider = settings.provider(kind);
-    let binary = (!provider.binary.is_empty()).then(|| PathBuf::from(&provider.binary));
-    (binary, provider.env_pairs())
-}
-
 fn dunce_canonical(path: &Path) -> std::io::Result<PathBuf> {
     let canonical = std::fs::canonicalize(path)?;
     #[cfg(windows)]

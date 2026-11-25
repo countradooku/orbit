@@ -75,6 +75,10 @@ pub enum Event {
     Conflicts(Vec<Conflict>),
     /// Ephemeral.
     TerminalOutput { term: TermId, data: Vec<u8> },
+    /// Marks the instant a timeline was read for an `OpenThread` reply:
+    /// events before it are in the reply, events after it are not.
+    /// Ephemeral.
+    TimelineMark { thread: ThreadId, mark: u64 },
     TerminalExited { term: TermId, code: Option<i32> },
 }
 
@@ -89,6 +93,7 @@ impl Event {
                 | Event::Conflicts(_)
                 | Event::Providers(_)
                 | Event::TerminalOutput { .. }
+                | Event::TimelineMark { .. }
         )
     }
 }
@@ -123,6 +128,9 @@ pub struct ThreadPatch {
     pub archived: Option<bool>,
     pub pinned: Option<bool>,
     pub unread: Option<bool>,
+    pub settled: Option<bool>,
+    /// `Some(Some(t))` snoozes until `t` (Unix ms); `Some(None)` wakes now.
+    pub snooze_until: Option<Option<u64>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -160,8 +168,9 @@ pub enum Command {
     Diff { thread: ThreadId, scope: DiffScope },
     /// Reverse-apply a patch (one hunk or file of a diff) to the workspace.
     RevertPatch { thread: ThreadId, patch: String },
-    /// Restore the workspace to the checkpoint after `turn`; the current
-    /// state is checkpointed first so the revert itself can be undone.
+    /// Restore the workspace to how it was before `turn` started (undo the
+    /// turn and everything after it); the current state is snapshotted
+    /// first so the restore itself can be undone.
     RestoreCheckpoint { thread: ThreadId, turn: u32 },
     Commit { thread: ThreadId, message: String, push: bool },
     CreatePullRequest { thread: ThreadId, title: String, body: String },
@@ -189,7 +198,8 @@ pub enum Reply {
     Done,
     Project(ProjectId),
     Thread(ThreadId),
-    Timeline(Vec<Item>),
+    /// A thread's items and the `TimelineMark` emitted when they were read.
+    Timeline { items: Vec<Item>, mark: u64 },
     Diff(String),
     Branches { current: Option<String>, all: Vec<String> },
     SearchHits(Vec<SearchHit>),

@@ -1,3 +1,7 @@
 target/
 /.idea/
 *.pdb
+dist/
+
+# Machine-local cargo settings (e.g. a short target-dir on Windows).
+/.cargo/config.toml

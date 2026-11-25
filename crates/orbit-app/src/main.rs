@@ -21,6 +21,7 @@ mod shell;
 mod sidebar;
 mod theme;
 mod thread;
+mod thread_menu;
 mod ui;
 
 use gpui_kit::component::TitleBar;
@@ -69,9 +70,23 @@ fn main() {
         gpui_kit::init(cx);
         // System notifications need an identity on Windows; harmless elsewhere.
         cx.set_app_identity("dev.orbit.Orbit", "Orbit");
+        orbit_terminal::init(cx);
         theme::install(cx);
         actions::bind(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
+        // Orbit is one window. Windows quits when its last window closes;
+        // macOS and Linux keep the process alive with nothing to show, so
+        // quit there too (and shut the engine down via `on_app_quit`).
+        #[cfg(not(windows))]
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+        // macOS shows an application menu even without one; give it Quit.
+        #[cfg(target_os = "macos")]
+        cx.set_menus([Menu::new("Orbit").items([MenuItem::action("Quit Orbit", actions::Quit)])]);
         cx.on_app_quit(move |cx| {
             settings::flush(cx);
             let backend = shutdown.clone();

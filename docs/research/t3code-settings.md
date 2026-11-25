@@ -42,7 +42,7 @@ keywords.
 
 | T3 key | Default | Status | Orbit |
 | --- | --- | --- | --- |
-| `notificationMode` | off | Changed | Notifications page: one switch per kind (needs you, finished, failed), all on by default. Posted to the OS notification center only while Orbit is in the background; the OS plays its own sound. T3's off-by-default hid the feature users asked for most (T3 #780). |
+| `notificationMode` | off | Changed | Notifications page: one switch per kind (needs you, finished, failed), all on by default. Shown in the window and posted to the OS notification center (which plays its own sound), never for the thread on screen. T3's off-by-default hid the feature users asked for most (T3 #780). |
 | `inAppNotificationsEnabled` | false | Changed | The Inbox is the in-app attention queue, always on; no transient toasts to dismiss. |
 | `diffColorScheme` | red-green | Changed | Diff colors come from the theme's semantic tokens, so a colorblind-friendly palette is a theme choice. |
 | `chatWidth` | comfortable | Implemented | Appearance › Chat width: Narrow, Comfortable, Wide, Full width. Applies to threads, inbox and home; the timeline re-measures. |
@@ -119,9 +119,9 @@ keywords.
 | `defaultRuntimeMode` | full-access | Implemented | General › Access for new threads: Readonly, Ask first (default), Auto-edit. **Full access is not offered**: `Settings::sanitized` lowers it to Auto-edit, so it is always an explicit per-thread choice (T3 defaulted to full access, `providerPolicy.ts:32`). |
 | `projectSettingsOverrides`, `projectSettingsFolded` | {} | Changed | No per-project override layer; per-project data (scripts, base branch) lives on the project. |
 | `enableAgentDeviceAccess`, `enableDeviceSupport`, `deviceOnboardingCompleted`, `deviceHosts`, `easDeviceHosts`, `simlockDeviceHosts`, `simlockDeviceHostsEnabled` | | N/A | No device streaming. |
-| `sidebarAutoSettleAfterDays`, `sidebarAutoSettleOnMerge`, `sidebarAutoSettleKeepPullRequests` | 7 / true / false | Changed | Threads leave attention when read; archive is manual. |
+| `sidebarAutoSettleAfterDays`, `sidebarAutoSettleOnMerge`, `sidebarAutoSettleKeepPullRequests` | 7 / true / false | Changed | Settling is manual (sidebar Settled shelf); a message brings a thread back. |
 | `compactIdleThreads`, `idleCompaction` | | Changed | Storage compacts by itself (dead bytes > live bytes); agent context compaction is the provider's `/compact`. |
-| `snoozeLimitedThreads`, `snoozePresets` | | Changed | Rate-limited threads show the reset time in the Inbox. |
+| `snoozeLimitedThreads`, `snoozePresets` | | Changed | Snooze is per thread from its menu (Snoozed shelf); rate-limited threads show their reset time and resume by themselves. |
 | `autoResumeLimitedThreads` | false | Changed | Always on: a rate-limited thread resumes its queue when the quota resets (T3 asked users to opt in). |
 | `hiddenThreadTags`, `hideTaggedThreads` | | N/A | No thread tags. |
 | `guestSharingEnabled`, `linkedEnvironmentsEnabled`, `workflowsEnabled`, `workflowSkippedRunsKept`, `promptSuggestionsEnabled` | false | N/A | Labs features Orbit does not have. |

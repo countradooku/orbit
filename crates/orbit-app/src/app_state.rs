@@ -79,6 +79,9 @@ impl AppState {
                 self.fetch_timeline(thread, cx);
             }
         }
+        for thread in changes.loaded {
+            cx.emit(AppEvent::Timeline { thread, changes: None });
+        }
         for (thread, item_changes) in changes.timelines {
             cx.emit(AppEvent::Timeline { thread, changes: Some(item_changes) });
         }
@@ -119,12 +122,14 @@ impl AppState {
             if *count == 0 {
                 self.open.remove(&thread);
                 self.state.drop_timeline(thread);
+                self.state.cancel_fetch(thread);
                 self.backend.send(Command::CloseThread { id: thread });
             }
         }
     }
 
     fn fetch_timeline(&mut self, thread: ThreadId, cx: &mut Context<Self>) {
+        self.state.begin_fetch(thread);
         let reply = self.backend.call(Command::OpenThread { id: thread });
         cx.spawn(async move |this, cx| {
             let result = reply.await;
@@ -132,8 +137,9 @@ impl AppState {
                 if !this.open.contains_key(&thread) {
                     return;
                 }
-                if let Ok(Ok(Reply::Timeline(items))) = result {
-                    this.state.set_timeline(thread, items);
+                if let Ok(Ok(Reply::Timeline { items, mark })) = result
+                    && this.state.finish_fetch(thread, items, mark)
+                {
                     cx.emit(AppEvent::Timeline { thread, changes: None });
                 }
             });

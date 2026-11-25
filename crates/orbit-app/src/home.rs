@@ -25,6 +25,10 @@ pub struct HomeView {
     picked: Option<Option<ProjectId>>,
     config_touched: bool,
     sending: bool,
+    /// Start the next thread on a new worktree. Follows Settings ›
+    /// Workspace until the user picks in the composer.
+    worktree: bool,
+    worktree_touched: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -40,6 +44,11 @@ impl HomeView {
                     let config = config.clone();
                     this.app.update(cx, |app, _| app.send(Command::SetDefaults { config }));
                 }
+                ComposerEvent::WorktreeChosen(worktree) => {
+                    this.worktree = *worktree;
+                    this.worktree_touched = true;
+                    this.sync_context(cx);
+                }
                 ComposerEvent::Stop => {}
             }),
             cx.observe(&app, |this, app, cx| {
@@ -48,15 +57,50 @@ impl HomeView {
                     let defaults = new_thread_config(&app, cx);
                     this.composer.update(cx, |c, cx| c.set_config(defaults, cx));
                 }
+                this.sync_context(cx);
+                cx.notify();
+            }),
+            cx.observe_global::<crate::settings::SettingsModel>(|this, cx| {
+                this.sync_context(cx);
                 cx.notify();
             }),
         ];
-        Self { app, workspace, composer, picked: None, config_touched: false, sending: false, _subscriptions: subs }
+        let mut home = Self {
+            app,
+            workspace,
+            composer,
+            picked: None,
+            config_touched: false,
+            sending: false,
+            worktree: crate::settings::get(cx).workspace.worktree_by_default,
+            worktree_touched: false,
+            _subscriptions: subs,
+        };
+        home.sync_context(cx);
+        home
     }
 
     pub fn select_project(&mut self, project: Option<ProjectId>, cx: &mut Context<Self>) {
         self.picked = Some(project);
+        self.sync_context(cx);
         cx.notify();
+    }
+
+    fn sync_context(&mut self, cx: &mut Context<Self>) {
+        if !self.worktree_touched {
+            self.worktree = crate::settings::get(cx).workspace.worktree_by_default;
+        }
+        let project = self.project(cx);
+        let state = self.app.read(cx).state();
+        let project = project.and_then(|id| state.projects.iter().find(|p| p.id == id));
+        let context = Some(project.map(|_| "Current checkout".to_owned()).unwrap_or_else(|| "Scratch folder".into()));
+        let branch = project.and_then(|p| p.base_branch.clone());
+        // Worktrees need a project; the choice only shows when one is picked.
+        let choice = project.map(|_| self.worktree);
+        self.composer.update(cx, |c, cx| {
+            c.set_context(context, branch, cx);
+            c.set_worktree_choice(choice, cx);
+        });
     }
 
     pub fn focus_composer(home: &Entity<Self>, window: &mut Window, cx: &mut App) {
@@ -87,7 +131,7 @@ impl HomeView {
         let project = self.project(cx);
         let config = self.composer.read(cx).config().clone();
         let app = self.app.clone();
-        let worktree = project.is_some() && crate::settings::get(cx).workspace.worktree_by_default;
+        let worktree = self.worktree && project.is_some();
         let create = app.update(cx, |app, cx| app.call(Command::CreateThread { project, config, worktree }, cx));
         cx.spawn_in(window, async move |this, cx| {
             let result = create.await;
@@ -136,7 +180,6 @@ impl Render for HomeView {
             .map(|p| p.name.clone())
             .unwrap_or_else(|| "No project".into());
         let projects: Vec<(ProjectId, String)> = state.projects.iter().map(|p| (p.id, p.name.clone())).collect();
-        let on_worktree = project_id.is_some() && crate::settings::get(cx).workspace.worktree_by_default;
         let mut recent: Vec<&Thread> = state.threads.values().filter(|t| !t.archived).collect();
         recent.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
         let recent: Vec<Thread> = recent.into_iter().take(5).cloned().collect();
@@ -201,8 +244,7 @@ impl Render for HomeView {
                                     .text_sm()
                                     .text_color(theme.muted_foreground)
                                     .child("Working in")
-                                    .child(picker)
-                                    .when(on_worktree, |el| el.child("on a new worktree")),
+                                    .child(picker),
                             ),
                     )
                     .child(self.composer.clone())

@@ -121,6 +121,8 @@ pub struct Changes {
     pub workspace: HashSet<ThreadId>,
     pub terminals: Vec<(TermId, Vec<u8>)>,
     pub exited_terminals: Vec<(TermId, Option<i32>)>,
+    /// Timelines that finished loading in this batch.
+    pub loaded: Vec<ThreadId>,
 }
 
 impl Changes {
@@ -139,6 +141,7 @@ impl Changes {
             && self.workspace.is_empty()
             && self.terminals.is_empty()
             && self.exited_terminals.is_empty()
+            && self.loaded.is_empty()
     }
 
     /// The shell (sidebar, inbox, fleet) needs a render.
@@ -170,6 +173,17 @@ pub struct ClientState {
     /// Working-tree changes of threads with a watched workspace.
     pub workspace: HashMap<ThreadId, Vec<FileChange>>,
     timelines: HashMap<ThreadId, Timeline>,
+    /// Timelines being fetched: the reply and the stream are separate
+    /// channels, so events are held until both the reply and its mark have
+    /// arrived, then the ones after the mark are applied.
+    fetching: HashMap<ThreadId, Fetch>,
+}
+
+#[derive(Default)]
+struct Fetch {
+    reply: Option<(Vec<Item>, u64)>,
+    /// Events for the thread (and marks) in stream order.
+    buffer: Vec<Event>,
 }
 
 impl ClientState {
@@ -177,9 +191,52 @@ impl ClientState {
         self.timelines.get(&thread)
     }
 
-    /// Installs a freshly fetched timeline (reply to `OpenThread`).
+    /// Installs a timeline directly (tests, tools). UIs use
+    /// [`begin_fetch`](Self::begin_fetch) / [`finish_fetch`](Self::finish_fetch).
     pub fn set_timeline(&mut self, thread: ThreadId, items: Vec<Item>) {
         self.timelines.insert(thread, Timeline::new(items));
+    }
+
+    /// Starts holding `thread`'s events: call before sending `OpenThread`.
+    pub fn begin_fetch(&mut self, thread: ThreadId) {
+        self.fetching.insert(thread, Fetch::default());
+    }
+
+    /// The `OpenThread` reply arrived. Returns true when the timeline is now
+    /// installed (its mark had already arrived on the stream).
+    pub fn finish_fetch(&mut self, thread: ThreadId, items: Vec<Item>, mark: u64) -> bool {
+        let Some(fetch) = self.fetching.get_mut(&thread) else { return false };
+        fetch.reply = Some((items, mark));
+        self.try_install(thread)
+    }
+
+    /// Installs a fetched timeline once both its reply and its mark are in:
+    /// events up to the mark are already in the reply and are dropped; the
+    /// rest are applied in order.
+    fn try_install(&mut self, thread: ThreadId) -> bool {
+        let Some(fetch) = self.fetching.get(&thread) else { return false };
+        let Some((_, mark)) = &fetch.reply else { return false };
+        let mark = *mark;
+        let Some(pos) = fetch
+            .buffer
+            .iter()
+            .position(|e| matches!(e, Event::TimelineMark { mark: m, .. } if *m == mark))
+        else {
+            return false;
+        };
+        let mut fetch = self.fetching.remove(&thread).unwrap();
+        let (items, _) = fetch.reply.take().unwrap();
+        self.timelines.insert(thread, Timeline::new(items));
+        let mut ignored = Changes::default();
+        for event in fetch.buffer.drain(pos + 1..) {
+            self.apply_event(event, &mut ignored);
+        }
+        true
+    }
+
+    /// Stops a fetch (the view went away first).
+    pub fn cancel_fetch(&mut self, thread: ThreadId) {
+        self.fetching.remove(&thread);
     }
 
     /// Forgets a timeline the UI no longer shows.
@@ -242,6 +299,17 @@ impl ClientState {
     }
 
     fn apply_event(&mut self, event: Event, changes: &mut Changes) {
+        // Hold a fetching thread's timeline events (and marks) until the
+        // fetch settles; see `try_install`.
+        if let Some(thread) = timeline_thread(&event)
+            && let Some(fetch) = self.fetching.get_mut(&thread)
+        {
+            fetch.buffer.push(event);
+            if self.try_install(thread) {
+                changes.loaded.push(thread);
+            }
+            return;
+        }
         match event {
             Event::ProjectUpserted(project) => {
                 match self.projects.iter_mut().find(|p| p.id == project.id) {
@@ -309,8 +377,20 @@ impl ClientState {
                 changes.workspace.insert(thread);
             }
             Event::TerminalOutput { term, data } => changes.terminals.push((term, data)),
+            Event::TimelineMark { .. } => {}
             Event::TerminalExited { term, code } => changes.exited_terminals.push((term, code)),
         }
+    }
+}
+
+/// The thread whose timeline an event belongs to, if any.
+fn timeline_thread(event: &Event) -> Option<ThreadId> {
+    match event {
+        Event::ItemUpserted { thread, .. }
+        | Event::ItemDelta { thread, .. }
+        | Event::ItemRemoved { thread, .. }
+        | Event::TimelineMark { thread, .. } => Some(*thread),
+        _ => None,
     }
 }
 
@@ -396,5 +476,35 @@ mod tests {
         let changes = state.apply(events(vec![Event::SettingsChanged(settings.clone())]));
         assert!(changes.settings && changes.affects_shell());
         assert_eq!(state.settings.composer.submit, SubmitKey::ModEnter);
+    }
+
+    #[test]
+    fn a_fetch_loses_nothing_and_doubles_nothing_in_either_order() {
+        let thread = ThreadId::new();
+        let first = item("Hel");
+        let delta = |text: &str| Event::ItemDelta { thread, item: first.id, delta: Delta::Text(text.into()) };
+        let snapshot_text = |state: &ClientState| match &state.timeline(thread).unwrap().items()[0].body {
+            ItemBody::Assistant { text } => text.clone(),
+            _ => panic!(),
+        };
+
+        // Stream first: "lo" is before the mark (already in the reply),
+        // ", world" after it (must be applied once).
+        let mut state = ClientState::default();
+        state.begin_fetch(thread);
+        state.apply(events(vec![delta("lo"), Event::TimelineMark { thread, mark: 7 }, delta(", world")]));
+        assert!(state.timeline(thread).is_none());
+        let reply = Item { body: ItemBody::Assistant { text: "Hello".into() }, ..first.clone() };
+        assert!(state.finish_fetch(thread, vec![reply.clone()], 7));
+        assert_eq!(snapshot_text(&state), "Hello, world");
+
+        // Reply first: it waits for its mark; later events then apply live.
+        let mut state = ClientState::default();
+        state.begin_fetch(thread);
+        assert!(!state.finish_fetch(thread, vec![reply], 7));
+        let changes = state.apply(events(vec![delta("lo"), Event::TimelineMark { thread, mark: 7 }, delta(", world")]));
+        assert_eq!(changes.loaded, vec![thread]);
+        state.apply(events(vec![delta("!")]));
+        assert_eq!(snapshot_text(&state), "Hello, world!");
     }
 }

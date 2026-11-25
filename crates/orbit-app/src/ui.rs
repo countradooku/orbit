@@ -85,7 +85,14 @@ impl RenderOnce for StatusGlyph {
                         |icon, t| icon.transform(Transformation::rotate(percentage(t))),
                     ),
             ),
-            Attention::Waiting => slot.child(Icon::new(Lucide::Hand).xsmall().text_color(theme.warning)),
+            // A slow pulse: waiting on you is a call to act, not progress.
+            Attention::Waiting => slot.child(
+                Icon::new(Lucide::Hand).xsmall().text_color(theme.warning).with_animation(
+                    self.id,
+                    Animation::new(Duration::from_millis(1600)).repeat().with_easing(pulsating_between(0.45, 1.0)),
+                    |icon, t| icon.opacity(t),
+                ),
+            ),
             Attention::Failed => slot.child(Icon::new(IconName::CircleAlert).xsmall().text_color(theme.danger)),
             Attention::RateLimited => slot.child(Icon::new(Lucide::Hourglass).xsmall().text_color(theme.warning)),
             Attention::Unread => slot.child(div().size_1p5().rounded_full().bg(theme.primary)),
@@ -162,6 +169,15 @@ pub fn model_label(config: &ThreadConfig, providers: &[ProviderInfo]) -> String 
             .or_else(|| if config.model.is_empty() { p.models.iter().find(|m| m.is_default) } else { None })
     });
     match model {
+        // A provider's "default" entry names the model it resolves to in its
+        // description ("Opus 5.5 · Best for…"); show that model.
+        Some(model) if model.slug == "default" => model
+            .description
+            .as_deref()
+            .and_then(|d| d.split(" · ").next())
+            .filter(|n| !n.is_empty() && n.len() < 40)
+            .map(str::to_owned)
+            .unwrap_or_else(|| model.name.clone()),
         Some(model) => model.name.clone(),
         None if !config.model.is_empty() => config.model.clone(),
         None => config.provider.label().to_owned(),
@@ -209,3 +225,66 @@ pub fn empty_state(
 }
 
 use gpui_kit::component::Size;
+
+/// A project's two-letter mark on a soft tint. The color is derived from the
+/// project id, so each project keeps one recognizable color everywhere.
+#[derive(IntoElement)]
+pub struct Monogram {
+    name: SharedString,
+    seed: u64,
+}
+
+impl Monogram {
+    pub fn new(name: impl Into<SharedString>, seed: u64) -> Self {
+        Self { name: name.into(), seed }
+    }
+}
+
+pub fn initials(name: &str) -> String {
+    let mut words = name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty());
+    let first = words.next().unwrap_or("?");
+    match words.next() {
+        Some(second) => first.chars().take(1).chain(second.chars().take(1)).collect::<String>(),
+        None => first.chars().take(2).collect(),
+    }
+    .to_uppercase()
+}
+
+impl RenderOnce for Monogram {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
+        let palette = [theme.blue, theme.magenta, theme.cyan, theme.green, theme.yellow, theme.red, theme.chart_2, theme.chart_4];
+        let color = palette[(self.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 61) as usize % palette.len()];
+        h_flex()
+            .flex_none()
+            .size_5()
+            .justify_center()
+            .rounded(theme.radius)
+            .bg(color.opacity(0.16))
+            .text_color(color)
+            .text_size(rems(0.6))
+            .font_weight(FontWeight::BOLD)
+            .child(initials(&self.name))
+    }
+}
+
+/// The mark of an agent runtime.
+pub fn provider_icon(kind: ProviderKind, cx: &App) -> Icon {
+    let theme = cx.theme();
+    match kind {
+        ProviderKind::Claude => Icon::new(IconName::Asterisk).text_color(theme.warning),
+        ProviderKind::Codex => Icon::new(IconName::Bot).text_color(theme.foreground),
+    }
+}
+
+#[cfg(test)]
+mod monogram_tests {
+    use super::initials;
+
+    #[test]
+    fn initials_read_like_names() {
+        assert_eq!(initials("Silver Orchard"), "SO");
+        assert_eq!(initials("storefront-web"), "SW");
+        assert_eq!(initials("orbit"), "OR");
+    }
+}

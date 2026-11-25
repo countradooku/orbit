@@ -69,8 +69,25 @@ fn load_token(data: &Path) -> std::io::Result<String> {
     }
     std::fs::create_dir_all(data)?;
     let token = new_token();
-    std::fs::write(&path, &token)?;
+    write_private(&path, &token)?;
     Ok(token)
+}
+
+/// Writes the token so only its owner can read it. On Unix that takes mode
+/// 0600 (the default umask leaves files world-readable, and the token grants
+/// full control of the engine); on Windows the per-user profile's ACL does it.
+fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+        // `mode` applies only to a new file; tighten one left by an older run.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(contents.as_bytes())
+    }
+    #[cfg(not(unix))]
+    std::fs::write(path, contents)
 }
 
 fn main() {

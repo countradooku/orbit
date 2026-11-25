@@ -35,10 +35,12 @@ pub enum Row {
     Request(ItemId),
     Notice(ItemId),
     TurnEnd(ItemId),
+    /// The live "working" line at the end while a turn runs.
+    Working,
 }
 
 impl Row {
-    pub fn build(items: &[Item]) -> Vec<Row> {
+    pub fn build(items: &[Item], busy: bool) -> Vec<Row> {
         let mut rows: Vec<Row> = Vec::with_capacity(items.len());
         for item in items {
             if item.status == ItemStatus::Queued {
@@ -50,6 +52,8 @@ impl Row {
                 ItemBody::Assistant { .. } => Row::Assistant(item.id),
                 ItemBody::Reasoning { text } if text.trim().is_empty() && item.status != ItemStatus::Streaming => continue,
                 ItemBody::Reasoning { .. } => Row::Reasoning(item.id),
+                // Questions and plan approvals are shown as request cards.
+                ItemBody::Tool(call) if matches!(call.name.as_str(), "AskUserQuestion" | "ExitPlanMode") => continue,
                 ItemBody::Tool(_) => {
                     if let Some(Row::Work { turn, items }) = rows.last_mut()
                         && *turn == item.turn
@@ -66,6 +70,9 @@ impl Row {
             };
             rows.push(row);
         }
+        if busy {
+            rows.push(Row::Working);
+        }
         rows
     }
 
@@ -73,6 +80,7 @@ impl Row {
     pub fn key(&self) -> ItemId {
         match self {
             Row::Work { items, .. } => items[0],
+            Row::Working => ItemId(0),
             Row::User(id)
             | Row::Assistant(id)
             | Row::Reasoning(id)
@@ -86,6 +94,7 @@ impl Row {
     pub fn items(&self) -> Vec<ItemId> {
         match self {
             Row::Work { items, .. } => items.clone(),
+            Row::Working => Vec::new(),
             other => vec![other.key()],
         }
     }
@@ -119,7 +128,7 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
             v_flex()
                 .items_end()
                 .gap_1()
-                .pt_4()
+                .pt_5()
                 .group("user-msg")
                 .child(
                     div()
@@ -187,11 +196,34 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
                 .text_sm()
                 .child(TextView::new(&md).selectable(true).stream_fade(streaming))
                 .when(!streaming, |el| {
+                    let (app, thread_id, at, open) = (this.app.clone(), this.id, *id, weak.clone());
                     el.child(
                         h_flex()
+                            .h_6()
+                            .gap_0p5()
                             .opacity(0.)
                             .group_hover("agent-msg", |s| s.opacity(1.))
-                            .child(gpui_kit::component::clipboard::Clipboard::new(("copy-agent", id.0)).value(text)),
+                            .child(gpui_kit::component::clipboard::Clipboard::new(("copy-agent", id.0)).value(text))
+                            .child(
+                                Button::new(("fork", id.0))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Lucide::GitFork)
+                                    .tooltip("Fork from here: a new thread with the history up to this reply")
+                                    .on_click(move |_, window, cx| {
+                                        let task = app.update(cx, |app, cx| app.call(Command::ForkThread { id: thread_id, at }, cx));
+                                        let open = open.clone();
+                                        window
+                                            .spawn(cx, async move |cx| {
+                                                if let Ok(Reply::Thread(fork)) = task.await {
+                                                    let _ = cx.update(|_, cx| {
+                                                        let _ = open.update(cx, |_, cx| cx.emit(super::ThreadViewEvent::Open(fork)));
+                                                    });
+                                                }
+                                            })
+                                            .detach();
+                                    }),
+                            ),
                     )
                 })
                 .into_any_element()
@@ -349,6 +381,28 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
                 .child(div().flex_1().child(text.clone()))
                 .into_any_element()
         }
+        Row::Working => {
+            let thread = thread.cloned();
+            let waiting = thread.as_ref().is_some_and(|t| t.status == ThreadStatus::Waiting);
+            let since = this.turn_started.unwrap_or_else(std::time::Instant::now);
+            let elapsed = format::duration(since.elapsed().as_millis() as u64 / 1000 * 1000);
+            h_flex()
+                .pt_3()
+                .gap_2()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(crate::ui::StatusGlyph::attention(
+                    "working-glyph",
+                    if waiting { crate::ui::Attention::Waiting } else { crate::ui::Attention::Working },
+                ))
+                .child(if waiting {
+                    div().child("Waiting for you").into_any_element()
+                } else {
+                    ShimmerText::new("Working").id("working-shimmer").into_any_element()
+                })
+                .child(elapsed)
+                .into_any_element()
+        }
         Row::TurnEnd(id) => {
             let Some(item) = item(*id) else { return div().into_any_element() };
             let ItemBody::TurnEnd(summary) = &item.body else { return div().into_any_element() };
@@ -366,24 +420,65 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
             }
             let files = summary.files.len();
             let (adds, dels) = summary.files.iter().fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions));
-            h_flex()
-                .mt_3()
-                .mb_1()
-                .gap_2()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(div().h_px().flex_1().bg(theme.border))
-                .child(parts.join(" · "))
+            let restorable = summary.base_checkpoint.is_some() && files > 0 && !busy;
+            let (app, thread_id, turn) = (this.app.clone(), this.id, item.turn);
+            let review = weak.clone();
+            v_flex()
+                .mt_1()
+                .gap_1()
+                .group("turn-end")
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(div().h_px().flex_1().bg(theme.border))
+                        .child(parts.join(" · "))
+                        .when(files > 0, |el| {
+                            el.child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(format!("{files} file{}", if files == 1 { "" } else { "s" }))
+                                    .child(div().text_color(theme.success).child(format!("+{adds}")))
+                                    .child(div().text_color(theme.danger).child(format!("−{dels}"))),
+                            )
+                        })
+                        .child(div().h_px().flex_1().bg(theme.border)),
+                )
                 .when(files > 0, |el| {
                     el.child(
                         h_flex()
+                            .justify_center()
                             .gap_1()
-                            .child(format!("{files} file{}", if files == 1 { "" } else { "s" }))
-                            .child(div().text_color(theme.success).child(format!("+{adds}")))
-                            .child(div().text_color(theme.danger).child(format!("−{dels}"))),
+                            .opacity(0.)
+                            .group_hover("turn-end", |s| s.opacity(1.))
+                            .child(
+                                Button::new(("turn-review", id.0))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Lucide::FileDiff)
+                                    .label("Review changes")
+                                    .on_click(move |_, _, cx| {
+                                        let _ = review.update(cx, |_, cx| cx.emit(super::ThreadViewEvent::Review));
+                                    }),
+                            )
+                            .when(restorable, |el| {
+                                el.child(
+                                    Button::new(("turn-undo", id.0))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(Lucide::RotateCcw)
+                                        .label("Undo turn")
+                                        .tooltip("Put the files back the way they were before this turn. You can undo this too.")
+                                        .on_click(move |_, window, cx| {
+                                            app.update(cx, |app, cx| {
+                                                app.run(Command::RestoreCheckpoint { thread: thread_id, turn }, window, cx)
+                                            })
+                                        }),
+                                )
+                            }),
                     )
                 })
-                .child(div().h_px().flex_1().bg(theme.border))
                 .into_any_element()
         }
     };

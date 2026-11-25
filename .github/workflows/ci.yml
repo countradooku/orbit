@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # `.cargo/config.toml` points the target dir at a path on the main
+  # developer's machine; CI builds inside the checkout instead.
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  # Debug info is most of a debug build's size and nothing here reads it.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUST_BACKTRACE: 1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The union of the package lists in gpui-kit's script/install-linux.sh
+      # and gpui-fast's CI (GTK and WebKitGTK are only needed by their WebView
+      # crate, which Orbit does not use, but are kept to match upstream).
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config gcc g++ clang \
+            libasound2-dev libfontconfig-dev libfreetype-dev libssl-dev \
+            libvulkan1 vulkan-validationlayers libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Tests create repositories, commits and worktrees.
+      - name: Configure git
+        run: |
+          git config --global user.name "Orbit CI"
+          git config --global user.email "ci@orbit.invalid"
+          git config --global init.defaultBranch main
+          git config --global core.autocrlf false
+
+      # `cargo fmt --check` is not run: the code is not formatted with the
+      # default rustfmt settings and the repository has no rustfmt.toml.
+      # Clippy runs without `-D warnings` until the workspace is warning-free
+      # (orbit-app currently has unused-code warnings).
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked
+
+      # `#[ignore]`d tests drive the real Claude Code and Codex CLIs and are
+      # left out (they are run by hand with `-- --ignored`).
+      - name: Test
+        run: cargo test --workspace --locked
+
+  build:
+    name: Release build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            exe: orbit.exe
+          - os: ubuntu-latest
+            exe: orbit
+          - os: macos-latest
+            exe: orbit
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config gcc g++ clang \
+            libasound2-dev libfontconfig-dev libfreetype-dev libssl-dev \
+            libvulkan1 vulkan-validationlayers libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build orbit
+        run: cargo build --release --locked -p orbit-app --bin orbit
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orbit-${{ runner.os }}-${{ runner.arch }}
+          path: target/release/${{ matrix.exe }}
+          if-no-files-found: error

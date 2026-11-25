@@ -354,8 +354,10 @@ fn workspace(cx: &App) -> SettingPage {
 fn notifications() -> SettingPage {
     SettingPage::new("Notifications").icon(Icon::new(IconName::Bell)).group(
         SettingGroup::new()
-            .title("System notifications")
-            .description("Posted while Orbit is in the background. Clicking one opens the thread.")
+            .title("Notifications")
+            .description(
+                "Shown in the window and posted to the system notification center; clicking one opens the thread.                  Nothing is posted for the thread you are looking at.",
+            )
             .items([
                 SettingItem::new(
                     "Agent needs you",
