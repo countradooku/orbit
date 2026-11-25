@@ -266,7 +266,7 @@ fn history_survives_a_restart_and_stays_unloaded_until_opened() {
     let h = Harness::open(dir.path().to_owned());
     assert_eq!(h.thread(id).title, "persist me");
     match h.call(Command::OpenThread { id }) {
-        Reply::Timeline(items) => {
+        Reply::Timeline { items, .. } => {
             let texts: Vec<_> = items
                 .iter()
                 .filter_map(|i| match &i.body {
@@ -463,4 +463,52 @@ fn a_worktree_thread_queues_until_its_worktree_is_ready() {
         assert!(Instant::now() < deadline, "worktree was not removed");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn a_restart_closes_unanswerable_requests_and_sends_queued_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut h = Harness::open(dir.path().to_owned());
+        id = h.new_thread();
+        h.send(id, "ask");
+        h.wait("request", |h| h.thread(id).status == ThreadStatus::Waiting);
+        h.send(id, "after the restart");
+        h.wait("queued", |h| h.thread(id).queued == 1);
+        h.engine.shutdown();
+    }
+    let mut h = Harness::open(dir.path().to_owned());
+    // The request is closed (its session is gone) and the queued message runs.
+    h.wait("queued message ran", |h| {
+        h.thread(id).pending.is_empty() && h.thread(id).queued == 0 && h.thread(id).status == ThreadStatus::Idle && h.thread(id).turns == 2
+    });
+    let Reply::Timeline { items, .. } = h.call(Command::OpenThread { id }) else { panic!() };
+    assert!(items.iter().any(|i| matches!(&i.body, ItemBody::Request(r) if matches!(r.resolution, Some(Decision::Deny { .. })))));
+    assert!(items.iter().any(|i| matches!(&i.body, ItemBody::Assistant { text } if text == "echo: after the restart")));
+}
+
+#[test]
+fn archived_threads_refuse_messages() {
+    let h = Harness::new();
+    let id = h.new_thread();
+    h.call(Command::UpdateThread { id, patch: ThreadPatch { archived: Some(true), ..Default::default() } });
+    let result = h.engine.call(Command::Send { thread: id, text: "hi".into(), attachments: vec![], steer: false }).recv().unwrap();
+    assert!(result.unwrap_err().contains("archived"));
+}
+
+#[test]
+fn switching_provider_starts_a_fresh_session() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "hello");
+    h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+    assert!(h.thread(id).session.is_some());
+    let config = ThreadConfig { provider: ProviderKind::Codex, ..Default::default() };
+    h.call(Command::UpdateThread { id, patch: ThreadPatch { config: Some(config), ..Default::default() } });
+    h.wait("session cleared and the switch explained", |h| {
+        h.thread(id).session.is_none()
+            && h.thread(id).config.provider == ProviderKind::Codex
+            && h.items.values().any(|i| matches!(&i.body, ItemBody::Notice { text, .. } if text.contains("Switched to Codex")))
+    });
 }

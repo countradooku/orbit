@@ -176,6 +176,8 @@ struct OpenTimeline {
 
 /// All durable state of one engine.
 pub struct Store {
+    /// Held for the store's lifetime: one engine per data folder.
+    _lock: File,
     dir: PathBuf,
     meta: Log,
     /// Identifies this process lifetime. Sequence numbers are only comparable
@@ -193,9 +195,17 @@ impl Store {
     pub fn open(dir: impl Into<PathBuf>) -> io::Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(dir.join("threads"))?;
+        let lock = OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("lock"))?;
+        if let Err(err) = lock.try_lock() {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("another Orbit is already using {} ({err})", dir.display()),
+            ));
+        }
         fs::create_dir_all(dir.join("blobs"))?;
         let (meta, records) = Log::open::<Envelope>(&dir.join("meta.log"))?;
         let mut store = Self {
+            _lock: lock,
             dir,
             meta,
             epoch: next_raw_id(),
@@ -598,5 +608,15 @@ mod tests {
         }
         let mut store = Store::open(dir.path()).unwrap();
         assert_eq!(store.load_timeline(id).unwrap().items()[0].status, ItemStatus::Cancelled);
+    }
+
+    #[test]
+    fn a_data_folder_has_one_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = Store::open(dir.path()).unwrap();
+        let second = Store::open(dir.path());
+        assert!(second.is_err(), "a second engine must not share the folder");
+        drop(first);
+        assert!(Store::open(dir.path()).is_ok(), "the lock is released with the store");
     }
 }

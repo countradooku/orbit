@@ -70,6 +70,10 @@ pub enum Event {
     Conflicts(Vec<Conflict>),
     /// Ephemeral.
     TerminalOutput { term: TermId, data: Vec<u8> },
+    /// Marks the instant a timeline was read for an `OpenThread` reply:
+    /// events before it are in the reply, events after it are not.
+    /// Ephemeral.
+    TimelineMark { thread: ThreadId, mark: u64 },
     TerminalExited { term: TermId, code: Option<i32> },
 }
 
@@ -84,6 +88,7 @@ impl Event {
                 | Event::Conflicts(_)
                 | Event::Providers(_)
                 | Event::TerminalOutput { .. }
+                | Event::TimelineMark { .. }
         )
     }
 }
@@ -184,7 +189,8 @@ pub enum Reply {
     Done,
     Project(ProjectId),
     Thread(ThreadId),
-    Timeline(Vec<Item>),
+    /// A thread's items and the `TimelineMark` emitted when they were read.
+    Timeline { items: Vec<Item>, mark: u64 },
     Diff(String),
     Branches { current: Option<String>, all: Vec<String> },
     SearchHits(Vec<SearchHit>),

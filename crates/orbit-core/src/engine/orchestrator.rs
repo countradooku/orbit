@@ -48,6 +48,9 @@ const INLINE_OUTPUT: usize = 64 * 1024;
 const TITLE_CHARS: usize = 72;
 /// Streaming items are persisted at most this often.
 const STREAM_PERSIST: Duration = Duration::from_secs(2);
+/// An idle agent process is stopped after this long; the thread resumes its
+/// session on the next message.
+const IDLE_RELEASE: Duration = Duration::from_secs(15 * 60);
 
 struct ActiveTurn {
     number: u32,
@@ -98,6 +101,8 @@ struct Runtime {
     /// The last turn's snapshot is being taken; queued turns wait for it so
     /// one turn's files never land in another's diff.
     checkpointing: bool,
+    /// Last time the session did anything, for idle release.
+    last_active: Option<Instant>,
 }
 
 pub struct Orchestrator {
@@ -325,6 +330,47 @@ impl Orchestrator {
         self.emit(Event::TerminalExited { term, code });
     }
 
+    /// Reconciles state a crash or quit left behind: requests the agent can
+    /// no longer receive are closed, queued messages are sent, and snooze
+    /// timers are re-armed. Call once after startup.
+    pub fn recover(&mut self) {
+        let threads: Vec<Thread> = self.store.threads().cloned().collect();
+        for thread in threads {
+            let id = thread.id;
+            if !thread.pending.is_empty() {
+                let pending: Vec<RequestId> = thread.pending.iter().map(|p| p.request.id).collect();
+                if self.store.load_timeline(id).is_ok() {
+                    for request in pending {
+                        self.settle_request(id, request, Decision::Deny { feedback: "Orbit restarted before this was answered.".into() });
+                    }
+                    self.notice(id, NoticeLevel::Info, "Orbit restarted while this thread was waiting for you. Send a message to continue.".into());
+                }
+                self.update_thread(id, |t| t.pending.clear());
+            }
+            if let Some(until) = thread.snoozed_until {
+                let wait = Duration::from_millis(until.saturating_sub(now_ms()));
+                let tx = self.internal_tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(wait).await;
+                    let _ = tx.send(Internal::SnoozeEnded { thread: id, until });
+                });
+            }
+            if thread.queued > 0
+                && let Ok(timeline) = self.store.load_timeline(id)
+            {
+                let queued: Vec<ItemId> =
+                    timeline.items().iter().filter(|i| i.status == ItemStatus::Queued).map(|i| i.id).collect();
+                let count = queued.len() as u32;
+                self.runtimes.entry(id).or_default().queue = queued.into();
+                self.update_thread(id, |t| t.queued = count);
+                self.start_next_queued(id);
+            }
+            if !self.open.contains(&id) && self.runtimes.get(&id).is_none_or(|r| r.turn.is_none()) {
+                self.store.unload_timeline(id);
+            }
+        }
+    }
+
     pub fn store(&self) -> &Store {
         &self.store
     }
@@ -406,8 +452,19 @@ impl Orchestrator {
         self.emit(Event::ItemDelta { thread, item: id, delta });
     }
 
-    /// Periodic work: persist streaming items, flush logs.
+    /// Periodic work: persist streaming items, flush logs, release idle
+    /// agent processes.
     pub fn tick(&mut self) {
+        let now = Instant::now();
+        for runtime in self.runtimes.values_mut() {
+            let idle = runtime.turn.is_none() && !runtime.checkpointing && runtime.held_prompt.is_none();
+            if runtime.session.is_some() && idle && runtime.last_active.is_some_and(|t| now - t > IDLE_RELEASE) {
+                // The thread keeps its session id; the next message resumes it.
+                if let Some(session) = runtime.session.take() {
+                    session.send(SessionInput::Shutdown);
+                }
+            }
+        }
         if self.last_persist.elapsed() >= STREAM_PERSIST && !self.dirty.is_empty() {
             for (thread, id) in std::mem::take(&mut self.dirty) {
                 if let Some(item) = self.item(thread, id) {
@@ -745,6 +802,7 @@ impl Orchestrator {
             return Err("That thread no longer exists.".into());
         }
         let config = patch.config.clone();
+        let previous_provider = self.store.thread(id).map(|t| t.config.provider);
         self.update_thread(id, |t| {
             if let Some(title) = patch.title {
                 t.title = title;
@@ -786,7 +844,22 @@ impl Orchestrator {
             });
         }
         if let Some(config) = config {
-            if let Some(session) = self.runtimes.get(&id).and_then(|r| r.session.as_ref()) {
+            if previous_provider.is_some_and(|p| p != config.provider) {
+                // Another agent runtime: its session ids are meaningless to
+                // the new one, so end the old session and start fresh.
+                if let Some(session) = self.runtimes.get_mut(&id).and_then(|r| r.session.take()) {
+                    session.send(SessionInput::Shutdown);
+                }
+                let had_history = self.store.thread(id).is_some_and(|t| t.turns > 0);
+                self.update_thread(id, |t| t.session = None);
+                if had_history {
+                    self.notice(
+                        id,
+                        NoticeLevel::Info,
+                        format!("Switched to {}. It starts a new session and doesn’t see the earlier messages.", config.provider.label()),
+                    );
+                }
+            } else if let Some(session) = self.runtimes.get(&id).and_then(|r| r.session.as_ref()) {
                 session.send(SessionInput::Configure(config.clone()));
             }
             self.emit(Event::DefaultsChanged(config));
@@ -873,8 +946,11 @@ impl Orchestrator {
         }
         self.open.insert(id);
         let items = self.store.load_timeline(id).map_err(|e| e.to_string())?.items().to_vec();
+        // Everything emitted before this mark is in `items`.
+        let mark = next_raw_id();
+        self.emit(Event::TimelineMark { thread: id, mark });
         self.update_thread(id, |t| t.unread = false);
-        Ok(Reply::Timeline(items))
+        Ok(Reply::Timeline { items, mark })
     }
 
     fn flush_thread(&mut self, id: ThreadId) {
@@ -892,6 +968,9 @@ impl Orchestrator {
         let thread = self.store.thread(thread_id).cloned().ok_or("That thread no longer exists.")?;
         if text.trim().is_empty() && attachments.is_empty() {
             return Err("Write a message first.".into());
+        }
+        if thread.archived {
+            return Err("This thread is archived. Unarchive it to continue.".into());
         }
         self.store.load_timeline(thread_id).map_err(|e| e.to_string())?;
         let in_turn = self.runtimes.get(&thread_id).is_some_and(|r| r.turn.is_some());
@@ -1018,8 +1097,10 @@ impl Orchestrator {
             runtime.held_prompt = Some(prompt);
             let (git, tx) = (self.git.clone(), self.internal_tx.clone());
             tokio::spawn(async move {
-                let tree = match git.snapshot(&repo).await {
-                    Ok(tree) => Some(tree.as_str().to_owned()),
+                // A checkpoint (not a bare snapshot) is pinned by a ref, so
+                // `git gc` can never take it.
+                let tree = match git.checkpoint(&repo, thread_id).await {
+                    Ok(cp) => Some(cp.tree.as_str().to_owned()),
                     Err(err) => {
                         log::debug!("no baseline for {thread_id}: {err}");
                         None
@@ -1118,6 +1199,12 @@ impl Orchestrator {
         let Some(runtime) = self.runtimes.get_mut(&thread) else { return Ok(Reply::Done) };
         let Some(turn) = runtime.turn.as_mut() else { return Ok(Reply::Done) };
         turn.interrupted = true;
+        // Stopped while the first snapshot was still being taken: the
+        // prompt never left, so the turn simply ends.
+        if runtime.held_prompt.take().is_some() {
+            self.finish_turn(thread, TurnOutcome::Interrupted, Usage::default(), 0);
+            return Ok(Reply::Done);
+        }
         if let Some(session) = runtime.session.as_ref()
             && session.send(SessionInput::Interrupt)
         {
@@ -1229,7 +1316,7 @@ impl Orchestrator {
             }
             let (git, tx, base) = (self.git.clone(), self.internal_tx.clone(), turn.base.clone());
             tokio::spawn(async move {
-                let (tree, files) = match git.snapshot(&repo).await {
+                let (tree, files) = match git.checkpoint(&repo, thread_id).await.map(|cp| cp.tree) {
                     Ok(tree) => {
                         let files = match &base {
                             Some(base) => git.diff(&repo, &TreeId::new(base.clone()), Some(&tree)).await.ok().map(|d| d.changes()),
@@ -1292,6 +1379,9 @@ impl Orchestrator {
         }
         if self.store.load_timeline(thread_id).is_err() {
             return;
+        }
+        if let Some(runtime) = self.runtimes.get_mut(&thread_id) {
+            runtime.last_active = Some(Instant::now());
         }
         match event {
             AgentEvent::Ready { session_id, .. } => {

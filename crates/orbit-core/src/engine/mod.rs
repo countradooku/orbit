@@ -123,6 +123,7 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
         mpsc::bounded_blocking_async::<(TermId, Vec<u8>)>(crate::terminal::OUTPUT_CAPACITY);
     let (exit_tx, exit_rx) = mpsc::unbounded_async::<(TermId, Option<i32>)>();
     let mut orchestrator = Orchestrator::new(store, agent_tx, internal_tx, launcher, term_tx, exit_tx);
+    orchestrator.recover();
     if probe {
         orchestrator.refresh_providers();
     }
@@ -144,8 +145,10 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
                 }
                 Ok(Call::Shutdown { done }) => {
                     orchestrator.shutdown();
+                    // Release the data folder before saying we are done.
+                    drop(orchestrator);
                     done.send(());
-                    break;
+                    return;
                 }
                 Err(_) => {
                     orchestrator.shutdown();
