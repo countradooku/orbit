@@ -152,7 +152,10 @@ impl Filter {
     fn classify(&self, path: &Path) -> Verdict {
         if let Some(dir) = &self.extra_git_dir
             && let Ok(rel) = path.strip_prefix(dir) {
-                return if rel == Path::new("HEAD") { Verdict::GitRefs } else { Verdict::Ignore };
+                // A commit in a linked worktree moves a ref in the main
+                // repository's git dir, which is not watched; it does
+                // rewrite this worktree's index, so that counts too.
+                return if rel == Path::new("HEAD") || rel == Path::new("index") { Verdict::GitRefs } else { Verdict::Ignore };
             }
         let Ok(rel) = path.strip_prefix(&self.root) else { return Verdict::Ignore };
         let mut comps = rel.components();

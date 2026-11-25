@@ -489,11 +489,12 @@ impl ReviewView {
         };
         let task = self.app.update(cx, |app, cx| app.call(Command::Branches { project: project.id }, cx));
         let preferred = self.base.clone().or_else(|| project.base_branch.clone().map(Into::into));
+        // Comparing the thread's own branch with itself shows nothing.
+        let own: Option<SharedString> = self.thread_record(cx).and_then(|t| t.workspace.branch).map(Into::into);
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Reply::Branches { current, all }) = task.await else { return };
+            let Ok(Reply::Branches { all, .. }) = task.await else { return };
             let _ = this.update_in(cx, |this, window, cx| {
-                let current = current.map(SharedString::from);
-                let mut names: Vec<SharedString> = all.into_iter().map(SharedString::from).filter(|b| Some(b) != current.as_ref()).collect();
+                let mut names: Vec<SharedString> = all.into_iter().map(SharedString::from).filter(|b| Some(b) != own.as_ref()).collect();
                 // Local branches first, then remote ones.
                 names.sort_by_key(|b| (b.contains('/'), b.to_lowercase()));
                 let pick = preferred
@@ -906,7 +907,8 @@ impl ReviewView {
         let branch_picker = (self.scope == Scope::Branch).then(|| match &self.branches {
             Some(select) => Select::new(select)
                 .small()
-                .w(px(200.))
+                .w(px(180.))
+                .flex_shrink_0()
                 .menu_width(px(280.))
                 .search_placeholder("Find a branch")
                 .placeholder("Compare with…")
@@ -915,7 +917,6 @@ impl ReviewView {
         });
         h_flex()
             .gap_2()
-            .flex_wrap()
             .child(
                 TabBar::new("review-scope")
                     .segmented()
@@ -926,7 +927,7 @@ impl ReviewView {
             )
             .children(turn_picker)
             .children(branch_picker)
-            .child(div().flex_1())
+            .child(div().flex_1().min_w_0())
             .when(has_project, |el| el.child(self.render_actions(cx)))
     }
 
@@ -1021,7 +1022,7 @@ impl ReviewView {
                     .small()
                     .icon(Lucide::GitCommitHorizontal)
                     .label("Commit…")
-                    .on_click(cx.listener(|this, _, window, cx| dialogs::commit(this.app.clone(), this.thread, window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| dialogs::commit(this.app.clone(), this.thread, cx.weak_entity(), window, cx))),
             )
             .child(
                 Button::new("pull-request")
@@ -1045,7 +1046,7 @@ impl ReviewView {
                             None => "Merge…".to_owned(),
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            dialogs::merge(this.app.clone(), this.thread, window, cx);
+                            dialogs::merge(this.app.clone(), this.thread, cx.weak_entity(), window, cx);
                         })),
                 )
             })
@@ -1311,11 +1312,11 @@ impl ReviewView {
         for &ix in &self.visible {
             let path = self.data.path(ix);
             for (side, start, end) in self.data.change_runs(ix) {
-                let color = if side == Side::New { added.opacity(0.16) } else { removed.opacity(0.18) };
+                let color = if side == Side::New { added.opacity(0.16) } else { removed.opacity(0.13) };
                 decorations.push(DiffDecoration::new(DiffLineRange::new(path.clone(), side_of(side), start as usize, end as usize)).with_background(color));
             }
             for (side, line, range) in self.data.word_spans(ix) {
-                let color = if side == Side::New { added.opacity(0.4) } else { removed.opacity(0.45) };
+                let color = if side == Side::New { added.opacity(0.4) } else { removed.opacity(0.35) };
                 spans.push(
                     DiffSpanHighlight::new(DiffLinePosition::new(path.clone(), side_of(side), line as usize), range).with_background(color),
                 );
@@ -1541,7 +1542,9 @@ fn render_hunk_marker(
         (IconName::Ellipsis, theme.muted_foreground, "Review this change")
     };
     let _ = data;
-    Button::new(("hunk-marker", hid))
+    // The marker sits in a code row; its menu reads in the interface font.
+    let font = theme.font_family.clone();
+    let button = Button::new(("hunk-marker", hid))
         .ghost()
         .xsmall()
         .compact()
@@ -1552,7 +1555,7 @@ fn render_hunk_marker(
             let v = view.clone();
             menu = menu.item(
                 PopupMenuItem::new(if done { "Mark unreviewed" } else { "Mark reviewed" })
-                    .icon(IconName::Check)
+                    .icon(if done { IconName::Undo2 } else { IconName::CircleCheck })
                     .on_click(move |_, _, cx| {
                         let _ = v.update(cx, |this, cx| this.toggle_hunk_reviewed(hid, cx));
                     }),
@@ -1579,8 +1582,8 @@ fn render_hunk_marker(
                     let _ = v.update(cx, |this, cx| this.revert_hunk(hid, window, cx));
                 })),
             }
-        })
-        .into_any_element()
+        });
+    div().font_family(font).child(button).into_any_element()
 }
 
 impl ReviewView {

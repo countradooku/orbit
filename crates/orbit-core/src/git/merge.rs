@@ -56,7 +56,7 @@ impl Git {
     pub async fn merge_into(&self, repo: &Path, into: &str, commit_message: &str) -> Result<(MergePlan, String)> {
         // Check before committing anything, so a conflict leaves no trace.
         let preview = self.merge_preview(repo, into).await?;
-        if preview.commits == 0 {
+        if preview.commits == 0 && preview.uncommitted == 0 {
             return Err(GitError::Invalid(format!("{} has nothing {into} doesn’t already have", preview.source)));
         }
         if !preview.conflicts.is_empty() {
@@ -134,7 +134,8 @@ impl Git {
         } else {
             head
         };
-        let range = format!("{target_commit}..{source_commit}");
+        // Real commits only: the preview's throwaway commit is not one.
+        let range = format!("{target_commit}..HEAD");
         let count = self.git(root, ["rev-list", "--count", &range]).await?;
         let commits = first_line(&count).parse().unwrap_or(0);
         let fast_forward =

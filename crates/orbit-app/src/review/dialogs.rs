@@ -24,11 +24,11 @@ fn notify_error(window: &mut Window, title: &str, message: String, cx: &mut App)
 }
 
 /// Commit everything in the thread's workspace, optionally pushing.
-pub fn commit(app: Entity<AppState>, thread: ThreadId, window: &mut Window, cx: &mut App) {
+pub fn commit(app: Entity<AppState>, thread: ThreadId, view: WeakEntity<super::ReviewView>, window: &mut Window, cx: &mut App) {
     let message = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 10).default_value(thread_title(&app, thread, cx)));
     let push = std::rc::Rc::new(std::cell::Cell::new(true));
     window.open_dialog(cx, move |dialog, _, _| {
-        let (message, app, push) = (message.clone(), app.clone(), push.clone());
+        let (message, app, push, view) = (message.clone(), app.clone(), push.clone(), view.clone());
         let push_box = push.clone();
         dialog
             .title("Commit changes")
@@ -57,12 +57,16 @@ pub fn commit(app: Entity<AppState>, thread: ThreadId, window: &mut Window, cx: 
                     return false;
                 }
                 let task = app.update(cx, |app, cx| app.call(Command::Commit { thread, message: text, push: push.get() }, cx));
+                let view = view.clone();
                 window
                     .spawn(cx, async move |cx| {
                         let result = task.await;
-                        let _ = cx.update(|window, cx| match result {
-                            Ok(_) => window.push_notification("Committed", cx),
-                            Err(message) => notify_error(window, "Couldn’t commit", message, cx),
+                        let _ = cx.update(|window, cx| {
+                            match result {
+                                Ok(_) => window.push_notification("Committed", cx),
+                                Err(message) => notify_error(window, "Couldn’t commit", message, cx),
+                            }
+                            let _ = view.update(cx, |view, cx| view.load(cx));
                         });
                     })
                     .detach();
@@ -398,7 +402,7 @@ impl MergePanel {
 
 /// Merge the thread's branch into its project's base branch locally, after
 /// a preview that shows the files, the commits and any conflict.
-pub fn merge(app: Entity<AppState>, thread: ThreadId, window: &mut Window, cx: &mut App) {
+pub fn merge(app: Entity<AppState>, thread: ThreadId, view: WeakEntity<super::ReviewView>, window: &mut Window, cx: &mut App) {
     let state = app.read(cx).state();
     let into = state
         .threads
@@ -432,7 +436,7 @@ pub fn merge(app: Entity<AppState>, thread: ThreadId, window: &mut Window, cx: &
         })
         .detach();
     window.open_dialog(cx, move |dialog, _, cx| {
-        let (panel, app) = (panel.clone(), app.clone());
+        let (panel, app, view) = (panel.clone(), app.clone(), view.clone());
         let ready = panel.read(cx).ready();
         let into = panel.read(cx).into.clone();
         dialog
@@ -454,16 +458,20 @@ pub fn merge(app: Entity<AppState>, thread: ThreadId, window: &mut Window, cx: &
                 let message = p.message.read(cx).value().trim().to_owned();
                 let into = p.into.clone();
                 let task = app.update(cx, |app, cx| app.call(Command::MergeLocal { thread, into, message, dry_run: false }, cx));
+                let view = view.clone();
                 window
                     .spawn(cx, async move |cx| {
                         let result = task.await;
-                        let _ = cx.update(|window, cx| match result {
-                            Ok(Reply::Merge(info)) => window.push_notification(
-                                Notification::success(format!("Merged {} into {}", info.source, info.target)),
-                                cx,
-                            ),
-                            Ok(_) => {}
-                            Err(message) => notify_error(window, "Couldn’t merge", message, cx),
+                        let _ = cx.update(|window, cx| {
+                            match result {
+                                Ok(Reply::Merge(info)) => window.push_notification(
+                                    Notification::success(format!("Merged {} into {}", info.source, info.target)),
+                                    cx,
+                                ),
+                                Ok(_) => {}
+                                Err(message) => notify_error(window, "Couldn’t merge", message, cx),
+                            }
+                            let _ = view.update(cx, |view, cx| view.load(cx));
                         });
                     })
                     .detach();
