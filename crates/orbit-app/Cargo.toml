@@ -19,7 +19,14 @@ fast = ["gpui-kit/gpui-fast", "orbit-terminal/fast"]
 [dependencies]
 # `x11` is a gpui-kit default; it is listed so the Linux backends stay on if
 # default features are ever turned off (Wayland is always built on Linux).
-gpui-kit = { version = "0.11", features = ["tree-sitter", "x11"] }
+# Grammars for syntax highlighting in diffs and code blocks: the languages
+# agents most often edit. Each adds a compiled parser to the binary.
+gpui-kit = { version = "0.11", features = [
+    "tree-sitter", "x11",
+    "tree-sitter-rust", "tree-sitter-typescript", "tree-sitter-tsx", "tree-sitter-javascript",
+    "tree-sitter-python", "tree-sitter-go", "tree-sitter-toml", "tree-sitter-yaml",
+    "tree-sitter-markdown", "tree-sitter-css", "tree-sitter-html", "tree-sitter-bash",
+] }
 orbit-proto = { workspace = true }
 orbit-core = { workspace = true }
 orbit-net = { workspace = true }
