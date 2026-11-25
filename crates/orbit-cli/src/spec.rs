@@ -156,6 +156,16 @@ const REFRESH: Arg = arg("refresh", Kind::Flag, "Fetch fresh data instead of a s
 const TRACKER: Arg = arg("tracker", Kind::Choice(TRACKERS), "The tracker; default: the project's host.");
 const KEY: Arg = pos("key", Kind::Str, "The issue (`42`, `ENG-123`, `PROJ-7`).");
 
+pub const AUTOMATION_EVENTS: &[&str] =
+    &["checks-failed", "my-checks-failed", "review-requested", "issue-labeled", "branch-pushed", "watch-pr", "after"];
+pub const CHAIN_WHEN: &[&str] = &["succeeded", "failed", "finished"];
+pub const TARGETS: &[&str] = &["worktree", "project", "pr"];
+pub const NOTIFY: &[&str] = &["always", "failures", "never"];
+/// Built-in recipe ids (checked against the engine's gallery in tests).
+pub const RECIPES: &[&str] =
+    &["nightly-deps", "fix-ci", "triage-issues", "standup", "keep-rebased", "review-requests", "watch-pr"];
+const AUTOMATION: Arg = pos("automation", Kind::Str, "The automation: its id, or its name or a unique part of it.");
+
 const THREAD: Arg = pos("thread", Kind::Thread, "The thread: its id, a unique part of its id or title, `latest`, or `self`.");
 const REQUEST: Arg = arg("request", Kind::Str, "The request id, when the thread has more than one pending.");
 const TIMEOUT: Arg = arg("timeout", Kind::Duration, "Give up after this long (`90s`, `10m`; `0` waits forever).").default("10m");
@@ -572,6 +582,102 @@ pub static SPECS: &[Spec] = &[
         tool: read("ship_status", "Where a thread's work stands"),
         ..spec(&["ship"], "Show where a thread's work stands", &[opt_pos("thread", Kind::Thread, "The thread; default: latest."), REFRESH])
     },
+    // ── Automations (scheduled and event-triggered runs) ────────────────
+    Spec {
+        details: "Every automation with its schedule or events, when it runs next and how its last run went.",
+        tool: read("list_automations", "List automations"),
+        aliases: &["automations"],
+        examples: &["orbit automation list", "orbit automation list --project api --json"],
+        ..spec(&["automation", "list"], "List automations", &[arg("project", Kind::Project, "Only this project's automations.").short('p')])
+    },
+    Spec {
+        details: "Its prompt, triggers, checks, limits, what happens after a run, and its newest runs.",
+        tool: read("get_automation", "Show an automation"),
+        ..spec(&["automation", "show"], "Show an automation", &[AUTOMATION])
+    },
+    Spec {
+        details: "Starts an agent on a schedule (--cron, --rule, --every) or when something happens (--on). Each run is a \
+                  thread: in a new worktree by default, in the project folder (--target project), in the pull request's \
+                  branch (--target pr) or as a new message in one thread (--thread). The prompt can use {date}, {time}, \
+                  {branch}, {pr}, {issue}, {event}, {last_run_summary}, {project} and {name}. --recipe starts from a \
+                  built-in recipe; other options change it.",
+        tool: write("create_automation", "Create an automation"),
+        examples: &[
+            "orbit automation create --name \"Nightly deps\" --cron \"0 2 * * *\" --open-pr \"Update outdated dependencies\"",
+            "orbit automation create --rule \"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9\" --target project \"Standup for {date}\"",
+            "orbit automation create --on my-checks-failed --target pr \"Fix the failing checks on {pr}\"",
+            "orbit automation create --recipe triage-issues --label bug",
+        ],
+        ..spec(
+            &["automation", "create"],
+            "Create an automation",
+            &[
+                Arg { required: false, ..pos("prompt", Kind::Text, "What the agent does each run (`-` reads standard input).") },
+                arg("name", Kind::Str, "Its name; default: the prompt's first words."),
+                PROJECT,
+                arg("recipe", Kind::Choice(RECIPES), "Start from a built-in recipe."),
+                arg("cron", Kind::Str, "A five-field cron schedule (`0 9 * * 1-5`)."),
+                arg("rule", Kind::Str, "A recurrence rule (`FREQ=WEEKLY;BYDAY=MO;BYHOUR=9`)."),
+                arg("every", Kind::Duration, "Run at this interval (`30m`, `2h`)."),
+                arg("tz", Kind::Str, "The schedule's time zone (`Europe/London`); default: this computer's."),
+                arg("on", Kind::Choice(AUTOMATION_EVENTS), "Run when this happens."),
+                arg("label", Kind::Str, "For --on issue-labeled: the label."),
+                arg("branch", Kind::Str, "For --on branch-pushed: the branch."),
+                arg("pr", Kind::Int, "For --on watch-pr: the pull request number."),
+                arg("after", Kind::Str, "For --on after: the automation whose runs start this one."),
+                arg("when", Kind::Choice(CHAIN_WHEN), "For --on after: which endings count.").default("succeeded"),
+                arg("target", Kind::Choice(TARGETS), "Where each run works; default: a new worktree."),
+                arg("thread", Kind::Thread, "Continue this thread on every run instead.").short('t'),
+                arg("provider", Kind::Str, "The agent (`claude`, `codex`, or an instance id); default: your last used."),
+                arg("model", Kind::Str, "The model."),
+                arg("effort", Kind::Str, "Reasoning effort (`low`, `medium`, `high`…)."),
+                arg("mode", Kind::Choice(MODES), "Build or plan."),
+                arg("access", Kind::Choice(ACCESS), "What the agent may do without asking; default: auto-edit."),
+                arg("only-if-changed", Kind::Flag, "Skip runs when the project hasn't changed since the last one."),
+                arg("only-if-clean", Kind::Flag, "Skip runs while the project has uncommitted changes."),
+                arg("check", Kind::Str, "A shell command that must succeed before each run."),
+                arg("overlap", Kind::Flag, "Start a run even while the previous one is still going."),
+                arg("max-per-day", Kind::Int, "At most this many runs a day."),
+                arg("timeout", Kind::Duration, "Stop a run after this long (`0` for never); default: 60m."),
+                arg("grace", Kind::Duration, "Still start a run missed while asleep if it is at most this late; default: 30m."),
+                arg("notify", Kind::Choice(NOTIFY), "When a finished run asks for attention; default: always."),
+                arg("settle-if-unchanged", Kind::Flag, "Settle a run's thread when it changed nothing."),
+                arg("open-pr", Kind::Flag, "Commit, push and open a pull request with a run's changes (worktree runs)."),
+                arg("paused", Kind::Flag, "Create it paused."),
+            ],
+        )
+    },
+    Spec {
+        details: "Starts a run now, without its checks or daily limit. With --wait, waits for the run's thread to finish.",
+        tool: write("run_automation", "Run an automation now"),
+        examples: &["orbit automation run \"Nightly deps\" --wait"],
+        ..spec(&["automation", "run"], "Run an automation now", &[AUTOMATION, WAIT, TIMEOUT])
+    },
+    Spec {
+        details: "Paused automations start no runs; runs waiting to start are dropped.",
+        tool: write("pause_automation", "Pause an automation"),
+        ..spec(&["automation", "pause"], "Pause an automation", &[AUTOMATION])
+    },
+    Spec {
+        details: "Its schedule counts from now: runs it would have had while paused don't happen.",
+        tool: write("resume_automation", "Resume an automation"),
+        ..spec(&["automation", "resume"], "Resume a paused automation", &[AUTOMATION])
+    },
+    Spec {
+        details: "Deletes the automation and its run history. Threads its runs made stay.",
+        tool: Some(Tool { name: "delete_automation", title: "Delete an automation", read_only: false, destructive: true, idempotent: true }),
+        ..spec(&["automation", "delete"], "Delete an automation", &[AUTOMATION])
+    },
+    Spec {
+        details: "Newest first: when each run was due, how it went, how long it took, its tokens, thread and summary.",
+        tool: read("automation_history", "An automation's runs"),
+        examples: &["orbit automation history \"Nightly deps\" --limit 5"],
+        ..spec(
+            &["automation", "history"],
+            "Show an automation's runs",
+            &[AUTOMATION, arg("limit", Kind::Int, "At most this many (0 for all).").default("20")],
+        )
+    },
     Spec {
         tool: read("search", "Search threads"),
         examples: &["orbit search \"rate limit\""],
@@ -690,6 +796,28 @@ mod tests {
                 }
             }
             assert!(!spec.about.ends_with('.'), "{}: about is a phrase", spec.name());
+        }
+    }
+
+    #[test]
+    fn automation_recipes_match_the_engine() {
+        let engine: Vec<&str> = orbit_core::automations::recipes::RECIPES.iter().map(|r| r.id).collect();
+        assert_eq!(RECIPES, engine.as_slice());
+    }
+
+    #[test]
+    fn every_automation_command_is_an_mcp_tool() {
+        let commands: Vec<&Spec> = SPECS.iter().filter(|s| s.path.first() == Some(&"automation")).collect();
+        let names: Vec<&str> = commands.iter().map(|s| s.path[1]).collect();
+        assert_eq!(names, ["list", "show", "create", "run", "pause", "resume", "delete", "history"]);
+        for spec in commands {
+            let tool = spec.tool.as_ref().unwrap_or_else(|| panic!("{} has no tool", spec.name()));
+            assert_eq!(tool.read_only, matches!(spec.path[1], "list" | "show" | "history"), "{}", spec.name());
+            assert_eq!(tool.destructive, spec.path[1] == "delete");
+        }
+        let create = find(&["automation", "create"]).unwrap();
+        for name in ["cron", "rule", "every", "on", "recipe", "target", "open-pr", "only-if-changed", "check", "max-per-day"] {
+            assert!(create.arg(name).is_some(), "create --{name}");
         }
     }
 }

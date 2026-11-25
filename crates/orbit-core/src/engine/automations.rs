@@ -161,6 +161,10 @@ impl Orchestrator {
                 let runs = self.store.automations().runs(id).take(take).cloned().collect();
                 Ok(Reply::Automation(AutomationReply::Runs(runs)))
             }
+            AutomationCommand::Recipe { id, project, config } => {
+                let recipe = auto::recipes::find(&id).ok_or_else(|| format!("There is no recipe “{id}”."))?;
+                Ok(Reply::Automation(AutomationReply::Spec(Box::new(recipe.spec(project, &config)))))
+            }
         }
     }
 

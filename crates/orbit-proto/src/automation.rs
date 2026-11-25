@@ -312,6 +312,9 @@ pub enum AutomationCommand {
     RunNow { id: AutomationId },
     /// The newest runs, newest first. Replies [`AutomationReply::Runs`].
     History { id: AutomationId, limit: u32 },
+    /// A built-in recipe's spec for `project` on the agent `config`.
+    /// Replies [`AutomationReply::Spec`].
+    Recipe { id: String, project: Option<ProjectId>, config: ThreadConfig },
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -319,4 +322,5 @@ pub enum AutomationReply {
     Saved(AutomationId),
     Run(RunId),
     Runs(Vec<AutomationRun>),
+    Spec(Box<AutomationSpec>),
 }
