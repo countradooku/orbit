@@ -22,6 +22,7 @@ pub mod legacy;
 pub mod model;
 pub mod settings;
 pub mod status;
+pub mod teams;
 pub mod wire;
 
 pub use codec::{Codec, FRAME_HEADER, FrameError, FrameReader, decode, encode, write_frame, write_raw_frame};
@@ -33,14 +34,17 @@ pub use ids::*;
 pub use model::*;
 pub use settings::*;
 pub use status::*;
+pub use teams::*;
 pub use wire::*;
 
 /// Bumped on any incompatible wire change. Clients and servers refuse to talk
 /// across versions instead of misreading frames.
 /// Version 3 added live status evidence (`Snapshot::live`,
 /// `Event::ThreadLive`, `Event::TerminalAgent`, `Command::BindTerminal`);
-/// version 4, question options with descriptions and `Command::Push`.
-pub const PROTOCOL_VERSION: u16 = 4;
+/// version 4, question options with descriptions and `Command::Push`;
+/// version 5, agent teams and races (`Snapshot::teams`, `Event::Team`,
+/// `Command::Team`, `Reply::Team`).
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

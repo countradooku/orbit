@@ -18,6 +18,7 @@ mod queue;
 mod sessions;
 mod settings;
 mod status;
+mod teams;
 mod textgen;
 mod timeline;
 

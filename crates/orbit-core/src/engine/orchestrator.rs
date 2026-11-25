@@ -137,6 +137,8 @@ pub struct Orchestrator {
     pub(crate) status: crate::status::StatusState,
     pub(crate) forge: super::forge::ForgeState,
     pub(crate) cli: super::cli::CliState,
+    /// Agent teams and races (`engine/teams.rs`).
+    pub(crate) teams: crate::teams::TeamsState,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -166,6 +168,7 @@ impl Orchestrator {
         terminal_exits: ExitSender,
     ) -> Self {
         let git = Git::new(super::settings::git_config(store.dir(), store.settings()));
+        let teams = crate::teams::TeamsState::load(store.dir());
         let providers = Self::initial_providers(store.settings());
         Self {
             store,
@@ -187,6 +190,7 @@ impl Orchestrator {
             status: Default::default(),
             forge: Default::default(),
             cli: Default::default(),
+            teams,
         }
     }
 
@@ -426,7 +430,7 @@ impl Orchestrator {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot { live: self.live_snapshot(), ..self.store.snapshot(self.providers.clone()) }
+        Snapshot { live: self.live_snapshot(), teams: self.teams.board(), ..self.store.snapshot(self.providers.clone()) }
     }
 
     pub fn subscribe(&mut self, epoch: u64, since: u64) -> (Option<Snapshot>, Vec<Envelope>, EventRx) {
@@ -498,6 +502,7 @@ impl Orchestrator {
     /// agent processes.
     pub fn tick(&mut self) {
         self.status_tick();
+        self.teams_tick();
         let now = Instant::now();
         for runtime in self.runtimes.values_mut() {
             let idle = runtime.turn.is_none() && !runtime.checkpointing && runtime.held_prompt.is_none();
@@ -628,6 +633,7 @@ impl Orchestrator {
     pub fn handle(&mut self, command: Command) -> Outcome {
         match command {
             Command::Forge(command) => self.forge(command),
+            Command::Team(command) => self.team_command(command),
             command if super::forge::pushes(&command) => self.forge_after_push(command),
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
             Command::SearchFiles { thread, project, query, limit } => {
@@ -720,6 +726,10 @@ impl Orchestrator {
             Command::NewSession { thread } => self.new_session(thread),
             // Needs the engine's runtime free; only `handle` runs it.
             Command::GenerateText { .. } => Err("Text generation runs asynchronously.".into()),
+            Command::Team(command) => match self.team_command(command) {
+                Outcome::Ready(result) => result,
+                Outcome::Deferred(future) => futures_block_on(future),
+            },
             Command::Forge(command) => match self.forge(command) {
                 Outcome::Ready(result) => result,
                 Outcome::Deferred(future) => futures_block_on(future),
@@ -814,8 +824,15 @@ impl Orchestrator {
     }
 
     pub(crate) fn create_worktree(&mut self, thread: ThreadId, project: Project) {
+        let base = project.base_branch.clone();
+        self.create_worktree_from(thread, project, base);
+    }
+
+    /// Like [`Self::create_worktree`], branching from `base` (`None`: the
+    /// main checkout's HEAD).
+    pub(crate) fn create_worktree_from(&mut self, thread: ThreadId, project: Project, base: Option<String>) {
         let (git, tx) = (self.git.clone(), self.internal_tx.clone());
-        let short = format!("{:x}", thread.0 & 0xff_ffff);
+        let branch = worktree_branch(thread);
         tokio::spawn(async move {
             let mut log = String::new();
             let mut on_output = |_: crate::git::OutputStream, line: &str| {
@@ -827,8 +844,8 @@ impl Orchestrator {
             let spec = NewWorktree {
                 project_root: PathBuf::from(&project.path),
                 thread,
-                branch: format!("orbit/{short}"),
-                base: project.base_branch.clone(),
+                branch,
+                base,
                 path: None,
                 setup: project.scripts.setup.clone(),
             };
@@ -1104,6 +1121,8 @@ impl Orchestrator {
         // know which thread they act for (never the access token).
         env.push(("ORBIT_THREAD".to_owned(), thread_id.to_string()));
         env.push(("ORBIT_DATA".to_owned(), self.store.dir().display().to_string()));
+        // A team member's Orbit tools, for this session only.
+        let mcp = self.team_session(&thread, &mut env);
         let runtime = self.runtimes.entry(thread_id).or_default();
         let spec = SessionSpec {
             thread: thread_id,
@@ -1115,6 +1134,7 @@ impl Orchestrator {
             args,
             env,
             extra_dirs: vec![self.store.dir().join("blobs")],
+            mcp,
         };
         let session = (self.launcher)(thread.config.provider, spec, self.agent_tx.clone());
         self.runtimes.get_mut(&thread_id).unwrap().session = Some(session);
@@ -1733,6 +1753,13 @@ pub fn prompt_uuid(item: ItemId) -> String {
         (mix >> 52) as u16 & 0xfff,
         mix & 0xffff_ffff_ffff
     )
+}
+
+/// The branch of a thread's new worktree. Ids made in the same millisecond
+/// differ only in their low bits, and ids a few seconds apart share them, so
+/// the id is mixed before it is cut to six hex digits.
+pub(crate) fn worktree_branch(thread: ThreadId) -> String {
+    format!("orbit/{:06x}", thread.0.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40)
 }
 
 fn title_from(text: &str) -> String {

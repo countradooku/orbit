@@ -407,6 +407,7 @@ impl Store {
             drafts: self.drafts.iter().map(|(k, v)| (*k, v.clone())).collect(),
             settings: Box::new(self.settings.clone()),
             live: Vec::new(),
+            teams: Default::default(),
         }
     }
 

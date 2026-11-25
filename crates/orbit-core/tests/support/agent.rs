@@ -56,6 +56,7 @@ impl Fake {
             args: Vec::new(),
             env: Vec::new(),
             extra_dirs: Vec::new(),
+            mcp: Vec::new(),
         }
     }
 

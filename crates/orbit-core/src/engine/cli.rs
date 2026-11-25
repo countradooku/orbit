@@ -102,7 +102,7 @@ impl Orchestrator {
     /// parent, optionally titled, and started with its first message in one
     /// step. Unlike the composer it leaves the user's defaults alone: an
     /// agent's choice of model for a helper is not the user's new default.
-    fn start_thread(&mut self, start: ThreadStart) -> CommandResult {
+    pub(crate) fn start_thread(&mut self, start: ThreadStart) -> CommandResult {
         let ThreadStart { project, config, worktree, parent, title, prompt } = start;
         let project_record = match project {
             Some(id) => Some(self.store.project(id).cloned().ok_or("That project no longer exists.")?),
@@ -217,7 +217,7 @@ impl Orchestrator {
 }
 
 /// The user's shell, set up to run one command and exit with its status.
-fn command_shell(command: &str) -> Shell {
+pub(crate) fn command_shell(command: &str) -> Shell {
     let shell = Shell::user_default();
     let program = shell.program().to_owned();
     let name = program.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();

@@ -66,6 +66,7 @@ pub fn headless_spec(launch: &Launch) -> SessionSpec {
         args: launch.args.clone(),
         env: launch.env.clone(),
         extra_dirs: Vec::new(),
+        mcp: Vec::new(),
     }
 }
 

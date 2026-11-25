@@ -227,10 +227,12 @@ impl Session {
 
     fn open(&mut self, open: Open) {
         let cwd = self.cwd();
+        // The session's own MCP servers (a team member's Orbit tools).
+        let mcp: Value = sonic_rs::from_str(&super::super::McpServer::acp_params(&self.spec.mcp)).unwrap_or_else(|_| json!([]));
         let (method, params) = match (open, self.spec.resume.as_deref()) {
-            (Open::Load, Some(id)) => ("session/load", json!({"sessionId": id, "cwd": cwd, "mcpServers": []})),
-            (Open::Resume, Some(id)) => ("session/resume", json!({"sessionId": id, "cwd": cwd, "mcpServers": []})),
-            _ => ("session/new", json!({"cwd": cwd, "mcpServers": []})),
+            (Open::Load, Some(id)) => ("session/load", json!({"sessionId": id, "cwd": cwd, "mcpServers": mcp})),
+            (Open::Resume, Some(id)) => ("session/resume", json!({"sessionId": id, "cwd": cwd, "mcpServers": mcp})),
+            _ => ("session/new", json!({"cwd": cwd, "mcpServers": mcp})),
         };
         self.replaying = open == Open::Load;
         self.request(method, params, Call::Open(open));

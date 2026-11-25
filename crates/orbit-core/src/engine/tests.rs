@@ -10,6 +10,7 @@ use crate::provider::{AgentEvent, BlockKind, SessionHandle, SessionInput, Sessio
 
 mod review;
 mod status;
+mod teams;
 
 /// A fake agent whose behavior is chosen by the prompt text:
 /// `ask` raises an approval, `crash` exits mid-turn, `slow` streams until

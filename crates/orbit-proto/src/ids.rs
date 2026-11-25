@@ -92,6 +92,10 @@ id_type!(/// A pending approval or question from an agent.
     RequestId, "req");
 id_type!(/// An interactive terminal session.
     TermId, "trm");
+id_type!(/// An agent team: an architect thread and its workers.
+    TeamId, "team");
+id_type!(/// A race: one prompt run by several candidates side by side.
+    RaceId, "race");
 
 #[cfg(test)]
 mod tests {

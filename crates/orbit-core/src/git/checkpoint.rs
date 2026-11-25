@@ -211,6 +211,20 @@ impl Git {
         Ok(())
     }
 
+    /// Applies a patch to the working tree (taking another worktree's
+    /// version of a hunk). Checked first: nothing changes unless all of it
+    /// applies.
+    pub async fn apply_patch(&self, repo: &Path, patch: &str) -> Result<()> {
+        let info = self.repo(repo).await?;
+        let opts = Opts { stdin: Some(patch.as_bytes()), ..Opts::default() };
+        let check = self.git_output(&info.root, ["apply", "--check", "--whitespace=nowarn", "-"], opts).await?;
+        if !check.ok() {
+            return Err(GitError::PatchDoesNotApply(check.stderr_text()));
+        }
+        self.git_with(&info.root, ["-c", "core.safecrlf=false", "apply", "--whitespace=nowarn", "-"], opts).await?;
+        Ok(())
+    }
+
     /// Writes the working tree into `index` and returns its tree. The caller
     /// holds the index's lock.
     async fn write_tree(&self, info: &RepoInfo, index: &Path) -> Result<TreeId> {

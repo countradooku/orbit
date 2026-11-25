@@ -45,6 +45,165 @@ pub struct SessionSpec {
     pub env: Vec<(String, String)>,
     /// Extra directories the agent may read (attachments directory).
     pub extra_dirs: Vec<PathBuf>,
+    /// MCP servers for this session only (the Orbit tools of a team
+    /// member), added to the agent's own through its launch flags or
+    /// session parameters; the user's agent configuration is never touched.
+    pub mcp: Vec<McpServer>,
+}
+
+/// A stdio MCP server to give one session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpServer {
+    pub name: String,
+    pub command: PathBuf,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    /// For Claude Code, which takes the configuration as a file: where it
+    /// was written.
+    pub config_file: Option<PathBuf>,
+}
+
+impl McpServer {
+    fn json_env(&self, pairs: bool) -> String {
+        let items: Vec<String> = self
+            .env
+            .iter()
+            .map(|(k, v)| {
+                if pairs {
+                    format!("{{\"name\":{},\"value\":{}}}", json_str(k), json_str(v))
+                } else {
+                    format!("{}:{}", json_str(k), json_str(v))
+                }
+            })
+            .collect();
+        if pairs { format!("[{}]", items.join(",")) } else { format!("{{{}}}", items.join(",")) }
+    }
+
+    fn json_args(&self) -> String {
+        let args: Vec<String> = self.args.iter().map(|a| json_str(a)).collect();
+        format!("[{}]", args.join(","))
+    }
+
+    /// `{"mcpServers": {...}}`, as Claude Code's `--mcp-config` reads it.
+    pub fn claude_config(servers: &[McpServer]) -> String {
+        let entries: Vec<String> = servers
+            .iter()
+            .map(|s| {
+                format!(
+                    "{}:{{\"type\":\"stdio\",\"command\":{},\"args\":{},\"env\":{}}}",
+                    json_str(&s.name),
+                    json_str(&s.command.display().to_string()),
+                    s.json_args(),
+                    s.json_env(false)
+                )
+            })
+            .collect();
+        format!("{{\"mcpServers\":{{{}}}}}", entries.join(","))
+    }
+
+    /// ACP's `mcpServers` session parameter.
+    pub fn acp_params(servers: &[McpServer]) -> String {
+        let entries: Vec<String> = servers
+            .iter()
+            .map(|s| {
+                format!(
+                    "{{\"name\":{},\"command\":{},\"args\":{},\"env\":{}}}",
+                    json_str(&s.name),
+                    json_str(&s.command.display().to_string()),
+                    s.json_args(),
+                    s.json_env(true)
+                )
+            })
+            .collect();
+        format!("[{}]", entries.join(","))
+    }
+
+    /// Codex `-c` overrides that add the servers to its configuration.
+    pub fn codex_overrides(servers: &[McpServer]) -> Vec<String> {
+        let mut out = Vec::new();
+        for s in servers {
+            let key = format!("mcp_servers.{}", s.name);
+            out.extend(["-c".to_owned(), format!("{key}.command={}", toml_str(&s.command.display().to_string()))]);
+            let args: Vec<String> = s.args.iter().map(|a| toml_str(a)).collect();
+            out.extend(["-c".to_owned(), format!("{key}.args=[{}]", args.join(","))]);
+            if !s.env.is_empty() {
+                let env: Vec<String> = s.env.iter().map(|(k, v)| format!("{k}={}", toml_str(v))).collect();
+                out.extend(["-c".to_owned(), format!("{key}.env={{{}}}", env.join(","))]);
+            }
+        }
+        out
+    }
+
+    /// OpenCode's inline configuration (`OPENCODE_CONFIG_CONTENT`).
+    pub fn opencode_config(servers: &[McpServer]) -> String {
+        let entries: Vec<String> = servers
+            .iter()
+            .map(|s| {
+                let mut command = vec![json_str(&s.command.display().to_string())];
+                command.extend(s.args.iter().map(|a| json_str(a)));
+                format!(
+                    "{}:{{\"type\":\"local\",\"command\":[{}],\"environment\":{},\"enabled\":true}}",
+                    json_str(&s.name),
+                    command.join(","),
+                    s.json_env(false)
+                )
+            })
+            .collect();
+        format!("{{\"mcp\":{{{}}}}}", entries.join(","))
+    }
+}
+
+/// A JSON string literal.
+fn json_str(s: &str) -> String {
+    sonic_rs::to_string(s).unwrap_or_else(|_| "\"\"".to_owned())
+}
+
+/// A TOML basic string (the same escapes as JSON for what paths hold).
+fn toml_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    use super::*;
+    use sonic_rs::JsonValueTrait;
+
+    fn server() -> McpServer {
+        McpServer {
+            name: "orbit".into(),
+            command: PathBuf::from(r"C:\Program Files\Orbit\orbit.exe"),
+            args: vec!["mcp".into()],
+            env: vec![("ORBIT_THREAD".into(), "thr_1".into())],
+            config_file: None,
+        }
+    }
+
+    #[test]
+    fn every_runtime_gets_well_formed_config() {
+        let s = [server()];
+        let claude: sonic_rs::Value = sonic_rs::from_str(&McpServer::claude_config(&s)).unwrap();
+        assert_eq!(claude["mcpServers"]["orbit"]["command"].as_str(), Some(r"C:\Program Files\Orbit\orbit.exe"));
+        assert_eq!(claude["mcpServers"]["orbit"]["env"]["ORBIT_THREAD"].as_str(), Some("thr_1"));
+        let acp: sonic_rs::Value = sonic_rs::from_str(&McpServer::acp_params(&s)).unwrap();
+        assert_eq!(acp[0]["env"][0]["value"].as_str(), Some("thr_1"));
+        let opencode: sonic_rs::Value = sonic_rs::from_str(&McpServer::opencode_config(&s)).unwrap();
+        assert_eq!(opencode["mcp"]["orbit"]["command"][1].as_str(), Some("mcp"));
+        let codex = McpServer::codex_overrides(&s);
+        assert_eq!(codex[1], r#"mcp_servers.orbit.command="C:\\Program Files\\Orbit\\orbit.exe""#);
+        assert_eq!(codex[3], r#"mcp_servers.orbit.args=["mcp"]"#);
+        assert_eq!(codex[5], r#"mcp_servers.orbit.env={ORBIT_THREAD="thr_1"}"#);
+    }
 }
 
 /// An attachment ready to send: its record and the blob's path on disk.

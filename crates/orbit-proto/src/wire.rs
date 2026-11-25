@@ -7,6 +7,7 @@ use crate::ids::*;
 use crate::model::*;
 use crate::settings::Settings;
 use crate::status::*;
+use crate::teams::*;
 
 /// Client → engine.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -49,6 +50,8 @@ pub struct Snapshot {
     pub settings: Box<Settings>,
     /// Live status evidence of threads that have any (see [`ThreadLive`]).
     pub live: Vec<(ThreadId, ThreadLive)>,
+    /// Agent teams and races (see [`crate::teams`]).
+    pub teams: TeamBoard,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -95,6 +98,9 @@ pub enum Event {
     /// An agent started, changed state or ended (`None`) in a terminal,
     /// whether or not the terminal belongs to a thread. Ephemeral.
     TerminalAgent { term: TermId, agent: Option<TerminalAgent> },
+    /// A team or race changed. Ephemeral; the latest state is in the
+    /// snapshot.
+    Team(TeamEvent),
 }
 
 impl Event {
@@ -111,6 +117,7 @@ impl Event {
                 | Event::TimelineMark { .. }
                 | Event::ThreadLive { .. }
                 | Event::TerminalAgent { .. }
+                | Event::Team(_)
         )
     }
 }
@@ -280,6 +287,8 @@ pub enum Command {
     ReadTerminal { term: TermId, max_bytes: u32 },
     /// Returns [`Reply::Terminals`].
     ListTerminals,
+    /// Agent teams and races; see [`TeamCommand`].
+    Team(TeamCommand),
 }
 
 /// Everything needed to start a thread in one step.
@@ -344,6 +353,7 @@ pub enum Reply {
     /// what is kept.
     TerminalTail { info: TerminalInfo, data: Vec<u8>, dropped: u64 },
     Terminals(Vec<TerminalInfo>),
+    Team(TeamReply),
 }
 
 /// A local merge of a thread's branch, previewed or done.
