@@ -1,0 +1,40 @@
+[package]
+name = "orbit-voice"
+description = "On-device dictation for Orbit: Whisper on candle, VAD, model catalog and post-processing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+candle-core = "0.11"
+candle-nn = "0.11"
+realfft = "3.5"
+earshot = "1.2"
+rubato = "5.1"
+sha2 = "0.10"
+serde = { workspace = true }
+sonic-rs = { workspace = true }
+crossfire = { workspace = true }
+log = { workspace = true }
+rayon = "1"
+
+[dev-dependencies]
+tempfile = "3"
+# Reading test recordings (`voice_bench`, the real-model test).
+hound = "3.5"
+
+[target.'cfg(windows)'.dev-dependencies]
+# Peak memory in `voice_bench`.
+windows-sys = { version = "0.61", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[features]
+# Whisper on Apple GPUs. Needs nothing beyond Xcode's command-line tools;
+# orbit-app turns it on for macOS.
+metal = ["candle-core/metal", "candle-nn/metal"]
+# Whisper on NVIDIA GPUs. Needs the CUDA toolkit (nvcc) at build time, so it
+# is off by default.
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
+# The scripted engine and synthetic speech in `engine::fake`, for other
+# crates' tests.
+test-support = []
