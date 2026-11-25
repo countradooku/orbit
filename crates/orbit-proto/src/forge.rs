@@ -537,12 +537,12 @@ pub enum ForgeCommand {
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub enum ForgeReply {
-    Info(ForgeInfo),
+    Info(Box<ForgeInfo>),
     PullRequests(PullRequestList),
     PullRequest(Box<PullRequestDetail>),
     Issues(IssueList),
     Issue(Box<IssueDetail>),
-    Ship(ShipState),
+    Ship(Box<ShipState>),
     Integrations(IntegrationSettings),
 }
 

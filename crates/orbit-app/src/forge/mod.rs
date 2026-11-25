@@ -283,7 +283,7 @@ impl ForgeView {
         let task = self.call(ForgeCommand::Info { project }, cx);
         cx.spawn(async move |this, cx| {
             let result = task.await.and_then(|reply| match reply {
-                Reply::Forge(ForgeReply::Info(info)) => Ok(info),
+                Reply::Forge(ForgeReply::Info(info)) => Ok(*info),
                 _ => Err("Unexpected reply.".into()),
             });
             let _ = this.update(cx, |this, cx| {

@@ -59,7 +59,7 @@ impl Orchestrator {
             ForgeCommand::Info { project } => {
                 let path = self.project_path(project)?;
                 deferred(Box::pin(async move {
-                    Ok(Reply::Forge(ForgeReply::Info(service.info(&config, &git, &path).await)))
+                    Ok(Reply::Forge(ForgeReply::Info(Box::new(service.info(&config, &git, &path).await))))
                 }))
             }
             ForgeCommand::PullRequests { project, filter, refresh } => {
@@ -179,12 +179,12 @@ impl Orchestrator {
             ForgeCommand::Ship { thread, refresh } => {
                 let t = self.store.thread(thread).ok_or("That thread no longer exists.")?;
                 let Some(repo) = self.repo_of(t) else {
-                    return Ok(Outcome::Ready(Ok(Reply::Forge(ForgeReply::Ship(ShipState::default())))));
+                    return Ok(Outcome::Ready(Ok(Reply::Forge(ForgeReply::Ship(Box::default())))));
                 };
                 let default = t.project.and_then(|p| self.store.project(p)).and_then(|p| p.base_branch.clone());
                 deferred(Box::pin(async move {
                     let state = ship_state(&service, &config, &git, &repo, default.as_deref(), refresh).await;
-                    Ok(Reply::Forge(ForgeReply::Ship(state)))
+                    Ok(Reply::Forge(ForgeReply::Ship(Box::new(state))))
                 }))
             }
             ForgeCommand::DraftInput { thread, pull_request } => {

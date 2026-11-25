@@ -23,7 +23,8 @@ fn main() {
     let dir: PathBuf = std::env::current_exe().unwrap().parent().unwrap().to_owned();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut calls = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("fake-forge.calls")).unwrap();
-    writeln!(calls, "{}", sonic_rs::to_string(&args).unwrap()).unwrap();
+    // One write per line: concurrent calls append to the same file.
+    calls.write_all(format!("{}\n", sonic_rs::to_string(&args).unwrap()).as_bytes()).unwrap();
     let script: Value = sonic_rs::from_str(&std::fs::read_to_string(dir.join("fake-forge.json")).unwrap()).unwrap();
     let rules = script.get("rules").and_then(|r| r.as_array()).expect("rules");
     let rule = rules.iter().find(|rule| {

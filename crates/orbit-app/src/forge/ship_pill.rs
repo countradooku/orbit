@@ -76,7 +76,7 @@ pub fn fetch(app: &Entity<AppState>, thread: ThreadId, refresh: bool, cx: &mut A
     let task = app.update(cx, |app, cx| app.call(Command::Forge(ForgeCommand::Ship { thread, refresh }), cx));
     cx.background_spawn(async move {
         match task.await? {
-            Reply::Forge(ForgeReply::Ship(state)) => Ok(state),
+            Reply::Forge(ForgeReply::Ship(state)) => Ok(*state),
             _ => Err("Unexpected reply.".into()),
         }
     })

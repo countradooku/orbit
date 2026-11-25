@@ -194,6 +194,7 @@ const RULES: &str = r#"{"rules":[
 fn info_lists_and_details_come_from_gh_and_are_cached() {
     let w = World::new(RULES);
     let Ok(Reply::Forge(ForgeReply::Info(info))) = w.forge(ForgeCommand::Info { project: w.project }) else { panic!() };
+    let info = *info;
     let repo = info.repo.expect("a GitHub repo");
     assert_eq!((repo.kind, repo.path.as_str()), (ForgeKind::GitHub, "acme/widgets"));
     assert_eq!(info.auth, ForgeAuth::Ready { account: "octo".into() });
@@ -279,6 +280,7 @@ fn failures_say_what_happened_and_how_to_fix_it() {
     ]}"#;
     let w = World::new(signed_out);
     let Ok(Reply::Forge(ForgeReply::Info(info))) = w.forge(ForgeCommand::Info { project: w.project }) else { panic!() };
+    let info = *info;
     assert_eq!(info.auth, ForgeAuth::SignedOut { program: "gh".into(), fix: "gh auth login --hostname github.com".into() });
     let err = w.forge(ForgeCommand::PullRequests { project: w.project, filter: PrFilter::Open, refresh: false }).unwrap_err();
     assert!(err.contains("gh auth login --hostname github.com"), "{err}");
