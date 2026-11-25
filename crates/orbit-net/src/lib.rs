@@ -8,6 +8,7 @@
 
 pub mod client;
 pub mod server;
+pub mod state;
 
 use crossfire::oneshot::{RxOneshot, oneshot};
 use crossfire::{AsyncRx, mpsc};
