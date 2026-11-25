@@ -68,6 +68,7 @@ impl AppState {
         if changes.is_empty() {
             return;
         }
+        let shell = changes.affects_shell() || changes.reset;
         if changes.reset {
             // Everything was replaced: reload every timeline a view shows.
             let open: Vec<ThreadId> = self.open.keys().copied().collect();
@@ -90,7 +91,7 @@ impl AppState {
         for (term, code) in changes.exited_terminals {
             cx.emit(AppEvent::TerminalExited { term, code });
         }
-        if changes.affects_shell() || changes.reset {
+        if shell {
             cx.notify();
         }
     }

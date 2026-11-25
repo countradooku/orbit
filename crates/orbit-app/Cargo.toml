@@ -14,7 +14,14 @@ path = "src/main.rs"
 default = ["fast"]
 # Render on GPUI Fast (retained mode, scroll layers). Build with
 # `--no-default-features` to compare against the pinned upstream GPUI.
-fast = ["gpui-kit/gpui-fast"]
+fast = ["gpui-kit/gpui-fast", "orbit-terminal/fast"]
 
 [dependencies]
 gpui-kit = { version = "0.11", features = ["tree-sitter"] }
+orbit-proto = { workspace = true }
+orbit-core = { workspace = true }
+orbit-net = { workspace = true }
+orbit-terminal = { path = "../orbit-terminal", default-features = false }
+mimalloc = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
