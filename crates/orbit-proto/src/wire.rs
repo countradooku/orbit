@@ -209,6 +209,27 @@ pub enum Command {
     /// applies what affects it (provider binaries and environment, git and
     /// worktree locations) and broadcasts [`Event::SettingsChanged`].
     UpdateSettings { settings: Settings },
+
+    /// One-shot text generation (titles, commit messages, pull request
+    /// text) on the thread's instance in a cheap mode, or on any available
+    /// one when `thread` is `None`. Replies [`Reply::Text`].
+    GenerateText { thread: Option<ThreadId>, task: TextTask, input: String },
+    /// End the thread's agent session; the next message starts a fresh one
+    /// in the same thread (what `/clear` does).
+    NewSession { thread: ThreadId },
+}
+
+/// What [`Command::GenerateText`] writes.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub enum TextTask {
+    /// A short thread title from the conversation in `input`.
+    ThreadTitle,
+    /// A commit message for the changes (diff and context) in `input`.
+    CommitMessage,
+    /// A pull request title on the first line, then its body.
+    PullRequest,
+    /// Free-form: `instructions` applied to `input`.
+    Custom { instructions: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -225,6 +246,7 @@ pub enum Reply {
     Terminal(TermId),
     PullRequest { url: String },
     Files(Vec<FileMatch>),
+    Text(String),
 }
 
 /// A path that more than one thread's worktree changed.

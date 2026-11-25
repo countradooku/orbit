@@ -111,20 +111,24 @@ impl Composer {
         let query = self.model_picker.search.read(cx).value().trim().to_owned();
         let providers = self.app.read(cx).state().providers.clone();
         let matches = filtered(&providers, &query);
-        if let Some((kind, slug)) = matches.get(self.model_picker.selected).map(|(p, m)| (p.kind, m.slug.clone())) {
-            self.choose_model(kind, slug, cx);
+        if let Some((provider, model)) = matches.get(self.model_picker.selected) {
+            let (kind, instance, slug) = (provider.kind, instance_of(provider), model.slug.clone());
+            self.choose_model(kind, instance, slug, cx);
             self.model_picker.open = false;
             self.focus_input(window, cx);
         }
     }
 
-    fn choose_model(&mut self, kind: ProviderKind, slug: String, cx: &mut Context<Self>) {
+    /// Picking a model picks the provider instance that serves it (a
+    /// runtime, or a second account of it).
+    fn choose_model(&mut self, kind: ProviderKind, instance: String, slug: String, cx: &mut Context<Self>) {
         self.update_config(
             |c| {
-                if c.provider != kind {
+                if c.provider != kind || c.instance != instance {
                     c.options.clear();
                 }
                 c.provider = kind;
+                c.instance = instance;
                 c.model = slug;
             },
             cx,
@@ -169,7 +173,7 @@ fn filtered<'a>(providers: &'a [ProviderInfo], query: &str) -> Vec<(&'a Provider
         return all.collect();
     }
     let scored = all.filter_map(|(p, m)| {
-        let haystack = format!("{} {} {}", m.name, m.slug, p.kind.label());
+        let haystack = format!("{} {} {}", m.name, m.slug, p.display_name());
         fuzzy::score(query, &haystack)
             // Descriptions match words, not scattered letters.
             .or_else(|| m.description.as_deref().filter(|d| d.to_lowercase().contains(&query.to_lowercase())).map(|_| -200))
@@ -178,8 +182,14 @@ fn filtered<'a>(providers: &'a [ProviderInfo], query: &str) -> Vec<(&'a Provider
     fuzzy::top(scored, 200)
 }
 
+/// The `instance` a config stores for a provider entry: empty for the
+/// built-in instance of a runtime.
+fn instance_of(provider: &ProviderInfo) -> String {
+    if provider.instance_id() == provider.kind.id() { String::new() } else { provider.instance_id().to_owned() }
+}
+
 pub(super) fn selected_model<'a>(config: &ThreadConfig, providers: &'a [ProviderInfo]) -> Option<&'a ModelInfo> {
-    let provider = providers.iter().find(|p| p.kind == config.provider)?;
+    let provider = providers.iter().find(|p| p.serves(config))?;
     provider
         .models
         .iter()
@@ -235,10 +245,10 @@ fn render_menu(
     let matches = filtered(providers, query);
     let highlighted = (!matches.is_empty()).then(|| selected.min(matches.len() - 1));
     let mut list = v_flex().gap_0p5();
-    let mut shown_provider: Option<ProviderKind> = None;
+    let mut shown_provider: Option<&str> = None;
     for (ix, (provider, model)) in matches.iter().enumerate() {
-        if shown_provider != Some(provider.kind) {
-            shown_provider = Some(provider.kind);
+        if shown_provider != Some(provider.instance_id()) {
+            shown_provider = Some(provider.instance_id());
             list = list.child(
                 h_flex()
                     .px_2()
@@ -249,7 +259,7 @@ fn render_menu(
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.muted_foreground)
                     .child(ui::provider_icon(provider.kind, cx).xsmall())
-                    .child(provider.kind.label())
+                    .child(provider.display_name().to_owned())
                     .when(!provider.installed, |el| el.child(div().flex_1().text_right().child("Not installed"))),
             );
             if !provider.installed && query.is_empty() {
@@ -264,13 +274,12 @@ fn render_menu(
                 );
             }
         }
-        let current =
-            config.provider == provider.kind && (config.model == model.slug || (config.model.is_empty() && model.is_default));
+        let current = provider.serves(config) && (config.model == model.slug || (config.model.is_empty() && model.is_default));
         let is_highlighted = highlighted == Some(ix) && !query.is_empty();
-        let (kind, slug, this) = (provider.kind, model.slug.clone(), this.clone());
+        let (kind, instance, slug, this) = (provider.kind, instance_of(provider), model.slug.clone(), this.clone());
         list = list.child(
             h_flex()
-                .id(SharedString::from(format!("model-{}-{}", provider.kind.label(), model.slug)))
+                .id(SharedString::from(format!("model-{}-{}", provider.instance_id(), model.slug)))
                 .px_2()
                 .py_1p5()
                 .gap_2()
@@ -279,9 +288,9 @@ fn render_menu(
                 .when(current || is_highlighted, |el| el.bg(theme.accent))
                 .when(!current && !is_highlighted, |el| el.hover(|s| s.bg(theme.muted)))
                 .on_click(move |_, window, cx| {
-                    let slug = slug.clone();
+                    let (instance, slug) = (instance.clone(), slug.clone());
                     let _ = this.update(cx, |this, cx| {
-                        this.choose_model(kind, slug, cx);
+                        this.choose_model(kind, instance, slug, cx);
                         this.model_picker.open = false;
                         this.focus_input(window, cx);
                     });

@@ -394,12 +394,12 @@ impl Composer {
         let query = trigger.query.as_str();
         match trigger.kind {
             TriggerKind::Command => {
-                let mut items: Vec<Suggestion> = menu::rank_builtins(query).into_iter().map(Suggestion::Builtin).collect();
-                if let Some(provider) = state.provider(self.config.provider) {
+                let mut items: Vec<Suggestion> = menu::rank_builtins(query, self.thread_id().is_some()).into_iter().map(Suggestion::Builtin).collect();
+                if let Some(provider) = state.provider_for(&self.config) {
                     items.extend(
                         menu::rank_commands(query, &provider.slash_commands, menu::MAX_ROWS)
                             .into_iter()
-                            .filter(|c| !Builtin::ALL.iter().any(|b| b.name() == c.name))
+                            .filter(|c| !Builtin::replaces(&c.name))
                             .map(Suggestion::Command),
                     );
                 }
@@ -407,7 +407,7 @@ impl Composer {
                 items
             }
             TriggerKind::Skill => state
-                .provider(self.config.provider)
+                .provider_for(&self.config)
                 .map(|p| menu::rank_commands(query, &p.slash_commands, menu::MAX_ROWS))
                 .unwrap_or_default()
                 .into_iter()
@@ -501,6 +501,11 @@ impl Composer {
                         let plan = self.config.mode != Mode::Plan;
                         self.update_config(|c| c.mode = if plan { Mode::Plan } else { Mode::Build }, cx);
                     }
+                    Builtin::Clear => {
+                        if let Some(thread) = self.thread_id() {
+                            self.app.update(cx, |app, cx| app.run(Command::NewSession { thread }, window, cx));
+                        }
+                    }
                 }
             }
         }
@@ -525,9 +530,9 @@ impl Composer {
     /// anywhere; Claude Code runs `/name` when it opens the message.
     fn skill_text(&self, name: &str, at_start: bool) -> String {
         match self.config.provider {
-            ProviderKind::Claude if at_start => format!("/{name}"),
-            ProviderKind::Claude => format!("the /{name} skill"),
             ProviderKind::Codex => format!("${name}"),
+            _ if at_start => format!("/{name}"),
+            _ => format!("the /{name} skill"),
         }
     }
 
@@ -703,13 +708,13 @@ impl Composer {
         {
             return Some("This thread is archived. Unarchive it to continue.".into());
         }
-        if let Some(provider) = state.provider(self.config.provider) {
+        if let Some(provider) = state.provider_for(&self.config) {
             let checking = provider.message.as_deref() == Some("Checking…");
             if !provider.installed && !checking {
-                return Some(format!("{} isn’t installed. Pick another agent.", provider.kind.label()));
+                return Some(format!("{} isn’t installed. Pick another agent.", provider.display_name()));
             }
             if provider.signed_in == Some(false) {
-                return Some(format!("Sign in to {} first.", provider.kind.label()));
+                return Some(format!("Sign in to {} first.", provider.display_name()));
             }
         }
         if self.attaching > 0 {
@@ -783,9 +788,9 @@ impl Composer {
                     "Pick a project to mention its files.".into()
                 }
                 TriggerKind::Mention => format!("No files or threads match “{}”", completion.trigger.query).into(),
-                TriggerKind::Skill => match self.app.read(cx).state().provider(self.config.provider) {
+                TriggerKind::Skill => match self.app.read(cx).state().provider_for(&self.config) {
                     Some(p) if p.slash_commands.is_empty() => {
-                        format!("{} hasn’t reported any skills yet.", p.kind.label()).into()
+                        format!("{} hasn’t reported any skills yet.", p.display_name()).into()
                     }
                     _ => format!("No skills match “{}”", completion.trigger.query).into(),
                 },
@@ -930,7 +935,7 @@ impl Composer {
             .app
             .read(cx)
             .state()
-            .provider(self.config.provider)
+            .provider_for(&self.config)
             .is_none_or(|p| p.modes.is_empty() || p.modes.iter().any(|m| m.mode == Mode::Plan));
         if !supports_plan {
             return None;

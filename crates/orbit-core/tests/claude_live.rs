@@ -42,7 +42,7 @@ fn prompt(text: &str) -> SessionInput {
 #[ignore = "runs the real Claude Code CLI (costs a few cents)"]
 async fn real_cli_initialize_prompt_approval_and_interrupt() {
     // Probe: initialize only, no prompt.
-    let info = provider::probe(ProviderKind::Claude, None, Vec::new()).await;
+    let info = provider::probe(provider::Launch::builtin(ProviderKind::Claude, None, Vec::new())).await;
     eprintln!("probe: installed={} version={:?} signed_in={:?} account={:?}", info.installed, info.version, info.signed_in, info.account);
     assert!(info.installed, "{:?}", info.message);
     assert_eq!(info.signed_in, Some(true), "{:?}", info.message);
@@ -59,6 +59,7 @@ async fn real_cli_initialize_prompt_approval_and_interrupt() {
         resume: None,
         resume_at: None,
         binary: None,
+        args: Vec::new(),
         env: Vec::new(),
         extra_dirs: Vec::new(),
     };
@@ -156,4 +157,16 @@ async fn wait_for_exit(rx: &Events) -> Option<String> {
             return error;
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "runs the real Claude Code CLI with Haiku (a fraction of a cent)"]
+async fn real_cli_one_shot_title() {
+    let launch = provider::Launch::builtin(ProviderKind::Claude, None, Vec::new());
+    let prompt = "Write a title for this coding conversation: 3 to 7 words, sentence case, no quotes. Reply with the title only.\n\n\
+                  User: the login form throws a TypeError when the email field is empty";
+    let started = std::time::Instant::now();
+    let title = provider::oneshot::generate(launch, prompt.into()).await.expect("a title");
+    eprintln!("  title {title:?} in {:?}", started.elapsed());
+    assert!(!title.is_empty() && title.len() < 80 && !title.contains('\n'), "{title:?}");
 }

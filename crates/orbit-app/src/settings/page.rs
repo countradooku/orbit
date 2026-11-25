@@ -195,7 +195,8 @@ fn composer(cx: &App) -> SettingPage {
 fn agents(app: &Entity<AppState>, cx: &App) -> SettingPage {
     SettingPage::new("Agents")
         .icon(Icon::new(IconName::Bot))
-        .groups(ProviderKind::ALL.into_iter().map(|kind| provider_group(app, kind, cx)))
+        // ACP agents are instances (presets or configured), not one program.
+        .groups(ProviderKind::ALL.into_iter().filter(|k| *k != ProviderKind::Acp).map(|kind| provider_group(app, kind, cx)))
 }
 
 fn provider_group(app: &Entity<AppState>, kind: ProviderKind, cx: &App) -> SettingGroup {
@@ -203,6 +204,9 @@ fn provider_group(app: &Entity<AppState>, kind: ProviderKind, cx: &App) -> Setti
     let program = match kind {
         ProviderKind::Claude => "claude",
         ProviderKind::Codex => "codex",
+        ProviderKind::OpenCode => "opencode",
+        ProviderKind::Pi => "pi",
+        ProviderKind::Acp => "agent",
     };
     let mut facts = Vec::new();
     if let Some(version) = &info.version {

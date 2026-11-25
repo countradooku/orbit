@@ -31,22 +31,41 @@ pub enum Builtin {
     Model,
     /// Toggle plan mode.
     Plan,
+    /// Start a fresh agent session in this thread; the history stays.
+    /// Also answers to `/new` and `/reset`.
+    Clear,
 }
 
 impl Builtin {
-    pub const ALL: [Builtin; 2] = [Builtin::Model, Builtin::Plan];
+    pub const ALL: [Builtin; 3] = [Builtin::Model, Builtin::Plan, Builtin::Clear];
 
     pub fn name(self) -> &'static str {
         match self {
             Builtin::Model => "model",
             Builtin::Plan => "plan",
+            Builtin::Clear => "clear",
         }
+    }
+
+    /// Every name the command answers to, the main one first.
+    pub fn names(self) -> &'static [&'static str] {
+        match self {
+            Builtin::Clear => &["clear", "new", "reset"],
+            Builtin::Model => &["model"],
+            Builtin::Plan => &["plan"],
+        }
+    }
+
+    /// Whether a provider command of this name is replaced by Orbit's.
+    pub fn replaces(name: &str) -> bool {
+        Builtin::ALL.iter().any(|b| b.names().iter().any(|n| n.eq_ignore_ascii_case(name)))
     }
 
     pub fn description(self) -> &'static str {
         match self {
             Builtin::Model => "Choose the agent, model and effort",
             Builtin::Plan => "Turn plan mode on or off",
+            Builtin::Clear => "Start a fresh agent session here; the conversation stays visible",
         }
     }
 }
@@ -77,9 +96,13 @@ fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
     needle.split_whitespace().all(|term| haystack.contains(&term.to_lowercase()))
 }
 
-/// Orbit's commands matching `query`.
-pub fn rank_builtins(query: &str) -> Vec<Builtin> {
-    let scored = Builtin::ALL.into_iter().filter_map(|b| fuzzy::score(query, b.name()).map(|s| (s, b)));
+/// Orbit's commands matching `query`, by any of their names. `/clear`
+/// needs a thread: Home starts a fresh session anyway.
+pub fn rank_builtins(query: &str, in_thread: bool) -> Vec<Builtin> {
+    let scored = Builtin::ALL
+        .into_iter()
+        .filter(|b| in_thread || *b != Builtin::Clear)
+        .filter_map(|b| b.names().iter().filter_map(|n| fuzzy::score(query, n)).max().map(|s| (s, b)));
     fuzzy::top(scored, Builtin::ALL.len())
 }
 
@@ -176,6 +199,9 @@ mod tests {
         assert_eq!(split_path("src/engine/files.rs"), ("files.rs", "src/engine/"));
         assert_eq!(split_path("src/engine/"), ("engine/", "src/"));
         assert_eq!(split_path("README.md"), ("README.md", ""));
-        assert_eq!(rank_builtins("mod"), vec![Builtin::Model]);
+        assert_eq!(rank_builtins("mod", true), vec![Builtin::Model]);
+        assert_eq!(rank_builtins("reset", true), vec![Builtin::Clear], "aliases find it");
+        assert!(rank_builtins("clear", false).is_empty(), "Home has no session to clear");
+        assert!(Builtin::replaces("new") && Builtin::replaces("CLEAR") && !Builtin::replaces("compact"));
     }
 }
