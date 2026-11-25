@@ -123,6 +123,8 @@ impl Shell {
 
     /// The user's interactive shell: on Windows `pwsh`, then Windows
     /// PowerShell, then `%COMSPEC%` (cmd); on Unix `$SHELL`, then `/bin/sh`.
+    /// On macOS it is a login shell (`-l`), as in Terminal.app and iTerm:
+    /// that is what runs `path_helper` and `~/.zprofile` (Homebrew's PATH).
     pub fn user_default() -> Self {
         #[cfg(windows)]
         {
@@ -139,7 +141,8 @@ impl Shell {
         #[cfg(not(windows))]
         {
             let shell = std::env::var_os("SHELL").filter(|s| !s.is_empty());
-            Shell::new(shell.unwrap_or_else(|| "/bin/sh".into()))
+            let shell = Shell::new(shell.unwrap_or_else(|| "/bin/sh".into()));
+            if cfg!(target_os = "macos") { shell.arg("-l") } else { shell }
         }
     }
 }

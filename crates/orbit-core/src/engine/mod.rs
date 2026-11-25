@@ -48,7 +48,9 @@ pub struct EngineOptions {
 }
 
 impl EngineOptions {
-    /// The platform's per-user data directory (`%APPDATA%\Orbit` on Windows).
+    /// The platform's per-user data directory: `%APPDATA%\Orbit` on Windows,
+    /// `~/Library/Application Support/Orbit` on macOS and
+    /// `$XDG_DATA_HOME/Orbit` (default `~/.local/share/Orbit`) on Linux.
     pub fn default_data_dir() -> PathBuf {
         dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("Orbit")
     }

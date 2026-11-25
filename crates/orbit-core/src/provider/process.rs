@@ -10,6 +10,10 @@
 //!   dropped stderr on Windows and lost every startup diagnostic).
 //! * Binaries resolve through PATH and PATHEXT plus each runtime's known
 //!   install locations, so `.cmd` shims and WinGet installs both work.
+//! * On Unix a GUI launch (Finder, Dock, a desktop launcher) never ran the
+//!   user's shell profile, so PATH lacks Homebrew, nvm, `~/.local/bin`…
+//!   Lookups also search those directories and the login shell's PATH, and
+//!   agents inherit the same extended PATH so `#!/usr/bin/env node` shims run.
 
 use std::collections::VecDeque;
 use std::ffi::OsStr;
@@ -51,6 +55,9 @@ impl AgentProcess {
         for key in env_remove {
             cmd.env_remove(key);
         }
+        // Before `env`, so a caller can still override it.
+        #[cfg(unix)]
+        cmd.env("PATH", unix_path::child_path());
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -127,6 +134,8 @@ impl AgentProcess {
 unsafe extern "C" {
     #[link_name = "kill"]
     fn libc_kill(pid: i32, sig: i32) -> i32;
+    #[link_name = "setsid"]
+    fn libc_setsid() -> i32;
 }
 
 impl Drop for AgentProcess {
@@ -193,7 +202,8 @@ impl JsonlReader {
 }
 
 /// Finds an executable by name on PATH (honoring PATHEXT on Windows), then in
-/// `extra` locations. Returns the first existing file.
+/// `extra` locations, then (Unix only) in the common user and package-manager
+/// bin directories and the login shell's PATH. Returns the first existing file.
 pub fn resolve_binary(name: &str, explicit: Option<&Path>, extra: &[PathBuf]) -> Option<PathBuf> {
     if let Some(path) = explicit {
         let expanded = expand_home(path);
@@ -210,7 +220,10 @@ pub fn resolve_binary(name: &str, explicit: Option<&Path>, extra: &[PathBuf]) ->
         vec![String::new()]
     };
     let path_var = std::env::var_os("PATH").unwrap_or_default();
-    for dir in std::env::split_paths(&path_var).chain(extra.iter().cloned()) {
+    let dirs = std::env::split_paths(&path_var).chain(extra.iter().cloned());
+    #[cfg(unix)]
+    let dirs = dirs.chain(unix_path::fallback_dirs().iter().cloned());
+    for dir in dirs {
         for ext in &exts {
             // Prefer a real executable over a .cmd shim: Rust can spawn
             // .cmd files only through cmd.exe, which mangles arguments.
@@ -227,6 +240,111 @@ fn expand_home(path: &Path) -> PathBuf {
     match path.strip_prefix("~") {
         Ok(rest) => dirs::home_dir().map(|h| h.join(rest)).unwrap_or_else(|| path.to_owned()),
         Err(_) => path.to_owned(),
+    }
+}
+
+#[cfg(unix)]
+mod unix_path {
+    //! The directories a terminal session would have on PATH but a GUI launch
+    //! does not. Computed once per process.
+    use std::ffi::OsString;
+    use std::io::Read as _;
+    use std::os::unix::process::CommandExt as _;
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    /// How long the login shell may take to print its PATH.
+    const SHELL_TIMEOUT: Duration = Duration::from_secs(3);
+    const MARKER: &str = "__ORBIT_PATH__";
+
+    /// Searched after PATH: per-user installs, npm/Volta/Bun globals,
+    /// Homebrew (Apple silicon, Intel, Linux), then the login shell's PATH
+    /// (nvm, asdf, mise and anything else the profile adds).
+    pub fn fallback_dirs() -> &'static [PathBuf] {
+        static DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+        DIRS.get_or_init(|| {
+            let mut out = Vec::new();
+            if let Some(home) = dirs::home_dir() {
+                for dir in [".local/bin", ".npm-global/bin", ".volta/bin", ".bun/bin", ".cargo/bin"] {
+                    out.push(home.join(dir));
+                }
+            }
+            if let Some(prefix) = std::env::var_os("NPM_CONFIG_PREFIX").filter(|p| !p.is_empty()) {
+                out.push(PathBuf::from(prefix).join("bin"));
+            }
+            for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin"] {
+                out.push(PathBuf::from(dir));
+            }
+            out.extend(login_shell_path());
+            let mut seen = std::collections::HashSet::new();
+            out.retain(|d| seen.insert(d.clone()));
+            out
+        })
+    }
+
+    /// PATH for agent processes: Orbit's own PATH, then every fallback
+    /// directory that exists and is not on it yet.
+    pub fn child_path() -> &'static OsString {
+        static PATH: OnceLock<OsString> = OnceLock::new();
+        PATH.get_or_init(|| {
+            let current = std::env::var_os("PATH").unwrap_or_default();
+            let mut dirs: Vec<PathBuf> = std::env::split_paths(&current).collect();
+            for dir in fallback_dirs() {
+                if dir.is_dir() && !dirs.contains(dir) {
+                    dirs.push(dir.clone());
+                }
+            }
+            std::env::join_paths(dirs).unwrap_or(current)
+        })
+    }
+
+    /// `$SHELL -l -i -c 'printenv PATH'`, bounded by [`SHELL_TIMEOUT`].
+    /// Empty when there is no `$SHELL` or it fails. `printenv` keeps fish's
+    /// list-valued `$PATH` colon-separated; the marker skips profile chatter.
+    fn login_shell_path() -> Vec<PathBuf> {
+        let Some(shell) = std::env::var_os("SHELL").filter(|s| !s.is_empty()) else {
+            return Vec::new();
+        };
+        let mut cmd = Command::new(&shell);
+        cmd.args(["-l", "-i", "-c", &format!("echo {MARKER}; printenv PATH")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        // SAFETY: setsid is async-signal-safe. A new session has no
+        // controlling terminal, so the interactive shell cannot take over
+        // the terminal Orbit was started from; it also leads its own process
+        // group, which is killed below.
+        unsafe {
+            cmd.pre_exec(|| {
+                super::libc_setsid();
+                Ok(())
+            });
+        }
+        let Ok(mut child) = cmd.spawn() else {
+            return Vec::new();
+        };
+        let stdout = child.stdout.take();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            if let Some(mut stdout) = stdout {
+                let _ = stdout.read_to_string(&mut text);
+            }
+            let _ = tx.send(text);
+        });
+        let text = rx.recv_timeout(SHELL_TIMEOUT).unwrap_or_default();
+        // SAFETY: plain syscall on the group the shell leads (see setsid).
+        unsafe {
+            super::libc_kill(-(child.id() as i32), 9);
+        }
+        let _ = child.wait();
+        let mut lines = text.lines().skip_while(|l| l.trim() != MARKER).skip(1);
+        match lines.next() {
+            Some(path) => std::env::split_paths(path.trim()).filter(|p| p.is_absolute()).collect(),
+            None => Vec::new(),
+        }
     }
 }
 
