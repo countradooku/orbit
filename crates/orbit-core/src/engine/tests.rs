@@ -294,3 +294,19 @@ fn editing_an_earlier_message_replaces_the_rest_of_the_thread() {
     assert_eq!(h.texts(2), vec!["user: rewritten", "agent: echo: rewritten"]);
     assert_eq!(h.texts(1), vec!["user: first", "agent: echo: first"]);
 }
+
+#[test]
+fn search_finds_text_in_loaded_and_unloaded_threads() {
+    let mut h = Harness::new();
+    let a = h.new_thread();
+    h.send(a, "needle in thread a");
+    h.wait("turn a", |h| h.thread(a).turns == 1 && h.thread(a).status == ThreadStatus::Idle);
+    h.call(Command::CloseThread { id: a });
+    let b = h.new_thread();
+    h.send(b, "another NEEDLE");
+    h.wait("turn b", |h| h.thread(b).turns == 1 && h.thread(b).status == ThreadStatus::Idle);
+    let Reply::SearchHits(hits) = h.call(Command::Search { query: "needle".into(), limit: 10 }) else { panic!() };
+    let threads: std::collections::HashSet<ThreadId> = hits.iter().map(|h| h.thread).collect();
+    assert!(threads.contains(&a) && threads.contains(&b), "{hits:?}");
+    assert!(hits.iter().any(|h| h.excerpt.contains("needle in thread a")));
+}

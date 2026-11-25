@@ -96,6 +96,21 @@ pub struct Orchestrator {
 
 pub type CommandResult = Result<Reply, String>;
 
+/// Work a command hands off so the engine thread stays responsive.
+pub type Deferred = std::pin::Pin<Box<dyn std::future::Future<Output = CommandResult> + Send>>;
+
+/// A command's result: now, or later from a task.
+pub enum Outcome {
+    Ready(CommandResult),
+    Deferred(Deferred),
+}
+
+impl From<CommandResult> for Outcome {
+    fn from(result: CommandResult) -> Self {
+        Outcome::Ready(result)
+    }
+}
+
 impl Orchestrator {
     pub fn new(
         store: Store,
@@ -269,6 +284,15 @@ impl Orchestrator {
 
     // ── Commands ─────────────────────────────────────────────────────────
 
+    /// Applies a command. Slow commands return [`Outcome::Deferred`]; the
+    /// engine loop runs the future in a task and replies when it finishes.
+    pub fn handle(&mut self, command: Command) -> Outcome {
+        match command {
+            Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
+            command => Outcome::Ready(self.handle_command(command)),
+        }
+    }
+
     pub fn handle_command(&mut self, command: Command) -> CommandResult {
         match command {
             Command::AddProject { path } => self.add_project(&path),
@@ -307,7 +331,11 @@ impl Orchestrator {
             Command::EditAndResend { thread, item, text } => self.edit_and_resend(thread, item, text),
             Command::Interrupt { thread } => self.interrupt(thread),
             Command::Resolve { thread, request, decision } => self.resolve(thread, request, decision),
-            Command::Search { query, limit } => self.search(&query, limit as usize),
+            Command::Search { query, limit } => {
+                // Synchronous callers (tests) get a blocking scan.
+                let future = self.search(query, limit as usize);
+                futures_block_on(future)
+            }
             Command::PutBlob { name, mime, data } => self
                 .store
                 .put_blob(name, mime, &data)
@@ -1027,41 +1055,66 @@ impl Orchestrator {
 
     // ── Search ───────────────────────────────────────────────────────────
 
-    fn search(&mut self, query: &str, limit: usize) -> CommandResult {
+    /// Full-text search over every thread, newest first. Loaded timelines
+    /// are searched in memory; the rest are scanned from their logs on the
+    /// blocking pool, so a search never stalls streaming.
+    fn search(&mut self, query: String, limit: usize) -> Deferred {
         let needle = query.trim().to_lowercase();
-        if needle.is_empty() {
-            return Ok(Reply::SearchHits(Vec::new()));
-        }
-        let mut hits = Vec::new();
         let mut threads: Vec<(ThreadId, u64)> = self.store.threads().map(|t| (t.id, t.updated_ms)).collect();
         threads.sort_by_key(|(_, updated)| std::cmp::Reverse(*updated));
-        for (id, _) in threads {
-            let loaded = self.store.timeline(id).is_some();
-            if let Ok(timeline) = self.store.load_timeline(id) {
-                for item in timeline.items() {
-                    let text = match &item.body {
-                        ItemBody::User(m) => m.text.as_str(),
-                        ItemBody::Assistant { text } => text.as_str(),
-                        ItemBody::Tool(call) => call.title.as_str(),
-                        _ => continue,
+        let mut loaded: HashMap<ThreadId, Vec<(ItemId, String)>> = HashMap::new();
+        for (id, _) in &threads {
+            if let Some(timeline) = self.store.timeline(*id) {
+                loaded.insert(*id, timeline.items().iter().filter_map(searchable).collect());
+            }
+        }
+        let dir = self.store.dir().to_owned();
+        Box::pin(async move {
+            if needle.is_empty() {
+                return Ok(Reply::SearchHits(Vec::new()));
+            }
+            tokio::task::spawn_blocking(move || {
+                let mut hits = Vec::new();
+                for (id, _) in threads {
+                    let items = match loaded.remove(&id) {
+                        Some(items) => items,
+                        None => Store::scan_timeline(&dir, id).iter().filter_map(searchable).collect(),
                     };
-                    if let Some(excerpt) = excerpt(text, &needle) {
-                        hits.push(SearchHit { thread: id, item: item.id, excerpt });
-                        if hits.len() >= limit {
-                            break;
+                    for (item, text) in items {
+                        if let Some(excerpt) = excerpt(&text, &needle) {
+                            hits.push(SearchHit { thread: id, item, excerpt });
+                            if hits.len() >= limit {
+                                return Ok(Reply::SearchHits(hits));
+                            }
                         }
                     }
                 }
-            }
-            if !loaded && !self.open.contains(&id) && !self.runtimes.get(&id).is_some_and(|r| r.turn.is_some()) {
-                self.store.unload_timeline(id);
-            }
-            if hits.len() >= limit {
-                break;
-            }
-        }
-        Ok(Reply::SearchHits(hits))
+                Ok(Reply::SearchHits(hits))
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("Search failed: {e}")))
+        })
     }
+}
+
+fn searchable(item: &Item) -> Option<(ItemId, String)> {
+    let text = match &item.body {
+        ItemBody::User(m) => m.text.clone(),
+        ItemBody::Assistant { text } => text.clone(),
+        ItemBody::Tool(call) => call.title.clone(),
+        ItemBody::Plan { steps } => steps.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n"),
+        _ => return None,
+    };
+    Some((item.id, text))
+}
+
+/// Runs a future to completion on a throwaway runtime (synchronous callers).
+fn futures_block_on(future: Deferred) -> CommandResult {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?
+        .block_on(future)
 }
 
 /// A stable UUID-shaped id for a prompt, derived from its item id, so the

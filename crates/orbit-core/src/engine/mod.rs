@@ -21,7 +21,7 @@ use crossfire::{BlockingTxTrait, MTx, mpsc};
 use orbit_proto::*;
 
 pub use bus::EventRx;
-pub use orchestrator::{Internal, Launcher, Orchestrator, prompt_uuid};
+pub use orchestrator::{Deferred, Internal, Launcher, Orchestrator, Outcome, prompt_uuid};
 
 use crate::provider;
 use crate::store::Store;
@@ -127,7 +127,12 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
         tokio::select! {
             biased;
             call = calls.recv() => match call {
-                Ok(Call::Command { command, reply }) => reply.send(orchestrator.handle_command(command)),
+                Ok(Call::Command { command, reply }) => match orchestrator.handle(command) {
+                    Outcome::Ready(result) => reply.send(result),
+                    Outcome::Deferred(future) => {
+                        tokio::spawn(async move { reply.send(future.await) });
+                    }
+                },
                 Ok(Call::Subscribe { epoch, since, reply }) => {
                     let (snapshot, replay, events) = orchestrator.subscribe(epoch, since);
                     reply.send(Subscribed { snapshot, replay, events });

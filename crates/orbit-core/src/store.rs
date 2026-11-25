@@ -363,6 +363,19 @@ impl Store {
         self.open.get_mut(&id).map(|o| &mut o.timeline)
     }
 
+    /// Reads a thread's timeline straight from disk without loading it into
+    /// the store (search). Safe to call from any thread.
+    pub fn scan_timeline(dir: &Path, id: ThreadId) -> Vec<Item> {
+        let path = dir.join("threads").join(format!("{id}.log"));
+        let Ok(bytes) = fs::read(&path) else { return Vec::new() };
+        let mut reader = FrameReader::new(&bytes);
+        let mut timeline = Timeline::default();
+        while let Ok(record) = reader.read::<TimelineRecord>() {
+            timeline.apply(record);
+        }
+        timeline.items
+    }
+
     /// Releases a timeline's memory. Busy threads stay loaded.
     pub fn unload_timeline(&mut self, id: ThreadId) {
         if self.threads.get(&id).is_some_and(|t| !t.status.is_busy()) {
