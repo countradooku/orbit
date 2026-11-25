@@ -129,10 +129,31 @@ impl HomeView {
         if self.sending {
             return;
         }
-        self.sending = true;
         let project = self.project(cx);
         let config = self.composer.read(cx).config().clone();
         let app = self.app.clone();
+        // A race runs the prompt in several worktrees and opens the compare
+        // view instead of one thread.
+        if let Some(race) = self.composer.read(cx).race().cloned()
+            && race.read(cx).is_racing()
+        {
+            use gpui_kit::component::notification::Notification;
+            let Some(project) = project else {
+                Composer::restore(&self.composer.clone(), &text, attachments, window, cx);
+                window.push_notification(Notification::warning("Pick a project to race in."), cx);
+                return;
+            };
+            if !attachments.is_empty() {
+                Composer::restore(&self.composer.clone(), &text, attachments, window, cx);
+                window.push_notification(Notification::warning("Races don’t take attachments yet."), cx);
+                return;
+            }
+            if let Some(request) = race.update(cx, |race, cx| race.take(&config, cx)) {
+                crate::teams::start_race(&app, self.workspace.clone(), project, text, request, window, cx);
+            }
+            return;
+        }
+        self.sending = true;
         let worktree = self.worktree && project.is_some();
         let create = app.update(cx, |app, cx| app.call(Command::CreateThread { project, config, worktree }, cx));
         cx.spawn_in(window, async move |this, cx| {

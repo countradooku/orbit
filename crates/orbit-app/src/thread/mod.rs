@@ -103,6 +103,10 @@ struct Find {
 pub struct ThreadView {
     id: ThreadId,
     app: Entity<AppState>,
+    workspace: WeakEntity<crate::shell::Workspace>,
+    /// The crew of the team this thread leads, made the first time it leads
+    /// one.
+    crew: Option<Entity<crate::teams::CrewStrip>>,
     scroller: Entity<MessageScrollerState>,
     rows: Rc<Vec<Row>>,
     item_row: HashMap<ItemId, usize>,
@@ -166,7 +170,13 @@ pub enum ThreadViewEvent {
 impl EventEmitter<ThreadViewEvent> for ThreadView {}
 
 impl ThreadView {
-    pub fn new(id: ThreadId, app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        id: ThreadId,
+        app: Entity<AppState>,
+        workspace: WeakEntity<crate::shell::Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let config = app.read(cx).state().threads.get(&id).map(|t| t.config.clone()).unwrap_or_default();
         let composer = cx.new(|cx| Composer::for_thread(id, app.clone(), config, window, cx));
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
@@ -196,6 +206,8 @@ impl ThreadView {
         let mut view = Self {
             id,
             app,
+            workspace,
+            crew: None,
             scroller,
             rows: Rc::new(Vec::new()),
             item_row: HashMap::new(),
@@ -1152,6 +1164,7 @@ impl ThreadView {
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let browser_button = self.render_browser_button(cx);
+        let team_button = self.render_team_button(cx);
         let state = self.app.read(cx).state();
         let Some(thread) = state.threads.get(&self.id) else { return h_flex() };
         let project = thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p));
@@ -1204,6 +1217,7 @@ impl ThreadView {
                     .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx))),
             )
             .child(browser_button)
+            .children(team_button)
             .child(
                 Button::new("review")
                     .ghost()
@@ -1256,6 +1270,48 @@ impl ThreadView {
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx)))
                 .into_any_element(),
         }
+    }
+
+    /// The crew strip above the composer while this thread leads a team.
+    fn crew_strip(&mut self, cx: &mut Context<Self>) -> Option<Entity<crate::teams::CrewStrip>> {
+        if self.crew.is_none() && crate::teams::team_led_by(self.app.read(cx).state(), self.id).is_some() {
+            let (app, workspace, id) = (self.app.clone(), self.workspace.clone(), self.id);
+            self.crew = Some(cx.new(|cx| crate::teams::CrewStrip::new(app, workspace, id, cx)));
+        }
+        self.crew.clone()
+    }
+
+    /// For a team's architect or worker: the notes board and the team page.
+    fn render_team_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.app.read(cx).state();
+        let id = self.id;
+        let team = state.teams.values().find(|t| t.architect == id || t.worker_of(id).is_some())?;
+        let (team_id, notes) = (team.id, team.notes.len());
+        let (app, workspace) = (self.app.clone(), self.workspace.clone());
+        let tooltip = if team.architect == id { "Your team" } else { "This worker’s team" };
+        Some(
+            Button::new("team")
+                .ghost()
+                .small()
+                .icon(Icon::new(Lucide::Layers))
+                .label("Team")
+                .tooltip(tooltip)
+                .dropdown_menu(move |menu, _, _| {
+                    let (app, workspace) = (app.clone(), workspace.clone());
+                    let notes_label = if notes == 0 { "Notes board".to_string() } else { format!("Notes board ({notes})") };
+                    menu.item(PopupMenuItem::new(notes_label).on_click(move |_, window, cx| {
+                        let app = app.clone();
+                        let board = cx.new(|cx| crate::teams::NotesBoard::new(app, team_id, window, cx));
+                        window.open_sheet_at(gpui_kit::component::Placement::Right, cx, move |sheet, _, _| {
+                            sheet.size(rems(30.)).resizable(true).title("Team notes").child(board.clone())
+                        });
+                    }))
+                    .item(PopupMenuItem::new("Open team page").on_click(move |_, window, cx| {
+                        crate::teams::open_team(&workspace, team_id, window, cx);
+                    }))
+                })
+                .into_any_element(),
+        )
     }
 
     fn render_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1339,6 +1395,7 @@ impl Render for ThreadView {
                         v_flex()
                             .w_full()
                             .max_w(column)
+                            .children(self.crew_strip(cx))
                             .children(self.questions.as_ref().map(|q| q.render(cx)))
                             .children(self.render_banner(cx))
                             .child(crate::composer::QueuePanel::new(self.id, &self.composer))

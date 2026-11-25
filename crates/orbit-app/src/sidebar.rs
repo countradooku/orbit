@@ -207,6 +207,8 @@ impl Selection {
 pub struct Sidebar {
     app: Entity<AppState>,
     workspace: WeakEntity<Workspace>,
+    /// The live-agent mini-map above the footer.
+    constellation: Entity<crate::teams::Constellation>,
     by_project: bool,
     closed_sections: HashSet<Section>,
     opened_shelves: HashSet<Section>,
@@ -265,9 +267,14 @@ impl Sidebar {
         let prefs = prefs::get(cx).clone();
         let toggled = |s: Section| prefs.toggled_sections.iter().any(|name| name == s.label());
         let all = [Section::Pinned, Section::NeedsYou, Section::Working, Section::Recent, Section::Snoozed, Section::Settled];
+        let constellation = {
+            let (app, workspace) = (app.clone(), workspace.clone());
+            cx.new(|cx| crate::teams::Constellation::new(app, workspace, crate::teams::ConstellationMode::Mini, cx))
+        };
         let mut sidebar = Self {
             app,
             workspace,
+            constellation,
             by_project: prefs.group_by_project,
             closed_sections: all.into_iter().filter(|s| s.open_by_default() && toggled(*s)).collect(),
             opened_shelves: all.into_iter().filter(|s| !s.open_by_default() && toggled(*s)).collect(),
@@ -1169,6 +1176,7 @@ impl Render for Sidebar {
                     .into_any_element()
             })
             .when(selecting, |el| el.child(self.render_selection_bar(cx)))
+            .child(div().px_1().py_1p5().border_t_1().border_color(theme.sidebar_border).child(self.constellation.clone()))
             .child(
                 h_flex()
                     .h_10()

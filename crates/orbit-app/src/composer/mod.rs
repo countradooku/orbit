@@ -116,6 +116,9 @@ struct Completion {
 pub struct Composer {
     app: Entity<AppState>,
     target: DraftTarget,
+    /// Home only: race the prompt across several agents instead of
+    /// starting one thread.
+    race: Option<Entity<crate::teams::RaceControl>>,
     input: Entity<TextareaState>,
     config: ThreadConfig,
     attachments: Vec<Attachment>,
@@ -244,9 +247,14 @@ impl Composer {
             cx.notify();
         });
         let model_picker = model_picker::ModelPicker::new(window, cx);
+        let race = matches!(target, DraftTarget::Home).then(|| {
+            let app = app.clone();
+            cx.new(|cx| crate::teams::RaceControl::new(app, cx))
+        });
         let mut composer = Self {
             app,
             target,
+            race,
             input,
             config,
             attachments: Vec::new(),
@@ -280,6 +288,11 @@ impl Composer {
 
     pub fn config(&self) -> &ThreadConfig {
         &self.config
+    }
+
+    /// Home only: the race control, to ask at send whether this prompt races.
+    pub fn race(&self) -> Option<&Entity<crate::teams::RaceControl>> {
+        self.race.as_ref()
     }
 
     pub fn set_config(&mut self, config: ThreadConfig, cx: &mut Context<Self>) {
@@ -1327,6 +1340,7 @@ impl Render for Composer {
                                     .on_click(cx.listener(|this, _, window, cx| this.attach_files(window, cx))),
                             )
                             .children(self.render_plan_toggle(cx))
+                            .children(self.race.clone())
                             .child(div().flex_1())
                             .children(self.render_status(blocker.as_deref(), cx))
                             .child(pill)

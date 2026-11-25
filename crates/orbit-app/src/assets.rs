@@ -17,6 +17,8 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     CircleDashed, OctagonAlert, LayoutGrid, Reply, ScanSearch, OctagonX, BellRing, MessageCircleQuestionMark, CheckCheck,
     Columns2, Maximize2, Minimize2, SquareX, MousePointerClick, ListFilter, BellOff, Volume2,
     MessageSquarePlus,
+    // Teams: mail between teammates.
+    Mail,
     // Automations.
     CalendarClock, Package, Sunrise, CircleMinus,
 ]);

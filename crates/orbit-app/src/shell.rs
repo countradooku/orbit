@@ -240,6 +240,13 @@ impl Workspace {
                 let (view, editing) = (self.automations.clone(), route == "automation-editor");
                 window.defer(cx, move |window, cx| view.update(cx, |view, cx| view.debug_open_editor(editing, window, cx)));
             }
+            // A team architect's thread: crew strip, Team button.
+            "architect" => {
+                let lead = state.teams.values().max_by_key(|t| t.workers.len()).map(|t| t.architect);
+                if let Some(id) = lead {
+                    self.navigate(Route::Thread(id), window, cx);
+                }
+            }
             "teams" | "team" | "compare" | "galaxy" | "race" => {
                 self.teams.update(cx, |page, cx| page.debug_show(&route, cx));
                 self.navigate(Route::Teams, window, cx);
@@ -494,8 +501,8 @@ impl Workspace {
             let entry = self.threads.remove(ix);
             self.threads.push(entry);
         } else {
-            let app = self.app.clone();
-            let view = cx.new(|cx| ThreadView::new(id, app, window, cx));
+            let (app, workspace) = (self.app.clone(), cx.entity().downgrade());
+            let view = cx.new(|cx| ThreadView::new(id, app, workspace, window, cx));
             let sub = cx.subscribe_in(&view, window, |this, _, event: &ThreadViewEvent, window, cx| match event {
                 ThreadViewEvent::Review => this.toggle_review(&ToggleReview, window, cx),
                 ThreadViewEvent::Open(id) => this.navigate(Route::Thread(*id), window, cx),

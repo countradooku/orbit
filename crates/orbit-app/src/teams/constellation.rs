@@ -117,12 +117,33 @@ pub fn stars(state: &ClientState) -> (Vec<Star>, Vec<Link>) {
         .iter()
         .filter_map(|s| s.lead.filter(|l| present.contains(l)).map(|l| Link::Crew(l, s.thread)))
         .collect();
+    // Editing the same file is expected, not a clash, for candidates of one
+    // race (they solve the same task) and for a lead and its worker (the
+    // lead's branch takes in the worker's merged changes).
+    let race_of: HashMap<ThreadId, RaceId> =
+        state.races.values().flat_map(|r| r.candidates.iter().map(move |c| (c.thread, r.id))).collect();
+    let expected = |a: &ThreadId, b: &ThreadId| {
+        race_of.get(a).is_some_and(|r| race_of.get(b) == Some(r))
+            || lead_of.get(a) == Some(b)
+            || lead_of.get(b) == Some(a)
+    };
+    // Teammates' worktrees all branch off the architect's, so a comparison
+    // with the project's base sees them all "change" what the architect
+    // committed. Between teammates, only the team's own overlaps (measured
+    // against the architect's branch) count.
+    let team_of: HashMap<ThreadId, TeamId> = state
+        .teams
+        .values()
+        .flat_map(|t| std::iter::once(t.architect).chain(t.workers.iter().filter_map(|w| w.thread)).map(move |m| (m, t.id)))
+        .collect();
+    let teammates = |a: &ThreadId, b: &ThreadId| team_of.get(a).is_some_and(|t| team_of.get(b) == Some(t));
     let mut clashes: HashSet<(ThreadId, ThreadId)> = HashSet::new();
-    let overlaps = state.conflicts.iter().map(|c| &c.threads).chain(state.teams.values().flat_map(|t| t.overlaps.iter().map(|o| &o.threads)));
-    for threads in overlaps {
+    let base = state.conflicts.iter().map(|c| (&c.threads, false));
+    let team = state.teams.values().flat_map(|t| t.overlaps.iter().map(|o| (&o.threads, true)));
+    for (threads, from_team) in base.chain(team) {
         for (i, a) in threads.iter().enumerate() {
             for b in &threads[i + 1..] {
-                if present.contains(a) && present.contains(b) {
+                if present.contains(a) && present.contains(b) && !expected(a, b) && (from_team || !teammates(a, b)) {
                     clashes.insert(((*a).min(*b), (*a).max(*b)));
                 }
             }

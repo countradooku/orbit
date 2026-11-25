@@ -360,7 +360,12 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
         Row::User(id) => {
             let Some(item) = item(*id) else { return empty() };
             let ItemBody::User(message) = &item.body else { return empty() };
-            render_user(this, &weak, item, message, busy, now, &theme).into_any_element()
+            // Team mail Orbit delivered between turns: show who wrote what,
+            // not the envelope the agent reads.
+            match team_mail(&message.text) {
+                Some(mail) => render_team_mail(item.id, &mail, &theme),
+                None => render_user(this, &weak, item, message, busy, now, &theme).into_any_element(),
+            }
         }
         Row::Assistant(id) => {
             let Some(item) = item(*id) else { return empty() };
@@ -594,6 +599,79 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
         }
     };
     column(content, crate::settings::chat_column(cx)).into_any_element()
+}
+
+/// One letter in a delivery of team mail.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TeamMail {
+    pub from: String,
+    pub kind: String,
+    pub urgent: bool,
+    pub text: String,
+}
+
+/// The letters in an `<orbit-team-mail>` delivery, or `None` when `text` is
+/// an ordinary message.
+pub(crate) fn team_mail(text: &str) -> Option<Vec<TeamMail>> {
+    let body = text.strip_prefix("<orbit-team-mail")?;
+    let body = &body[..body.find("</orbit-team-mail>")?];
+    let attr = |tag: &str, name: &str| -> Option<String> {
+        let start = tag.find(&format!(" {name}=\""))? + name.len() + 3;
+        let end = start + tag[start..].find('"')?;
+        Some(tag[start..end].replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
+    };
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(open) = rest.find("<mail ") {
+        let after = &rest[open..];
+        let tag_end = after.find('>')?;
+        let tag = &after[..tag_end];
+        let content = &after[tag_end + 1..];
+        let close = content.find("</mail>")?;
+        out.push(TeamMail {
+            from: attr(tag, "from").unwrap_or_default(),
+            kind: attr(tag, "kind").unwrap_or_default(),
+            urgent: attr(tag, "urgent").is_some_and(|v| v == "true"),
+            text: content[..close].trim().to_owned(),
+        });
+        rest = &content[close + "</mail>".len()..];
+    }
+    Some(out)
+}
+
+fn render_team_mail(id: ItemId, mail: &[TeamMail], theme: &gpui_kit::component::Theme) -> AnyElement {
+    v_flex()
+        .id(("team-mail", id.0))
+        .mt_2()
+        .gap_1p5()
+        .px_3()
+        .py_2()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.muted.opacity(0.35))
+        .child(
+            h_flex()
+                .gap_1p5()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(Icon::new(Lucide::Mail).xsmall())
+                .child(if mail.len() == 1 { "Team mail".to_owned() } else { format!("Team mail · {}", mail.len()) }),
+        )
+        .children(mail.iter().map(|m| {
+            v_flex()
+                .gap_0p5()
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .text_xs()
+                        .child(div().font_weight(FontWeight::MEDIUM).text_color(theme.foreground).child(m.from.clone()))
+                        .when(!m.kind.is_empty(), |el| el.child(div().text_color(theme.muted_foreground).child(m.kind.clone())))
+                        .when(m.urgent, |el| el.child(div().text_color(theme.warning).child("urgent"))),
+                )
+                .child(div().text_sm().text_color(theme.foreground).child(m.text.clone()))
+        }))
+        .into_any_element()
 }
 
 fn render_user(
@@ -1311,6 +1389,24 @@ fn render_request(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn team_mail_is_read_from_its_envelope() {
+        let text = "<orbit-team-mail team=\"7\" count=\"2\">
+<mail id=\"1\" from=\"w1 &quot;API&quot;\" kind=\"done\">
+w1 finished.
+</mail>
+<mail id=\"2\" from=\"architect\" kind=\"message\" urgent=\"true\">
+Stop editing users.rs
+</mail>
+</orbit-team-mail>
+Team mail, delivered by Orbit.";
+        let mail = super::team_mail(text).unwrap();
+        assert_eq!(mail.len(), 2);
+        assert_eq!((mail[0].from.as_str(), mail[0].kind.as_str(), mail[0].text.as_str()), ("w1 \"API\"", "done", "w1 finished."));
+        assert!(mail[1].urgent && !mail[0].urgent);
+        assert!(super::team_mail("Hello <mail>").is_none());
+    }
+
     use std::collections::HashSet;
 
     use super::{Fold, FoldKind, Layout, Row, build, output_peek, splice};
