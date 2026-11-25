@@ -58,6 +58,7 @@ fn commands() -> Vec<CommandDef> {
         command("Inbox", IconName::Inbox, "needs you deck approvals questions", GoInbox),
         command("Next thread that needs you", Lucide::BellRing, "attention waiting", NextAttention),
         command("Fleet", IconName::LayoutDashboard, "status board all threads", GoFleet),
+        command("Pull requests", Lucide::GitPullRequest, "forge issues github pr", crate::forge::GoPullRequests),
         command("Add project…", Lucide::FolderPlus, "folder open repository", AddProject),
         command("Open beside", Lucide::Columns2, "tile split side by side", OpenBeside),
         command("Maximize or restore the tile", Lucide::Maximize2, "tile zoom", MaximizeTile),

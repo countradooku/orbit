@@ -1,0 +1,8 @@
+{"id": 83, "iid": 13, "project_id": 3, "title": "Speed up the search index", "description": "## Why\n\nSearch is slow.", "state": "opened",
+ "created_at": "2026-11-22T08:00:00Z", "updated_at": "2026-11-23T08:30:00Z", "target_branch": "main", "source_branch": "search-index",
+ "author": {"id": 1, "username": "alice", "name": "Alice"}, "source_project_id": 3, "target_project_id": 3, "labels": ["perf"],
+ "draft": false, "work_in_progress": false, "merge_when_pipeline_succeeds": true, "squash": true,
+ "merge_status": "can_be_merged", "detailed_merge_status": "ci_still_running",
+ "sha": "b83d6e391c22777fca1ed3012fce84f633d7fed0", "changes_count": "4",
+ "head_pipeline": {"id": 401, "sha": "b83d6e391c22777fca1ed3012fce84f633d7fed0", "status": "failed", "web_url": "https://gitlab.com/acme/platform/api/-/pipelines/401"},
+ "web_url": "https://gitlab.com/acme/platform/api/-/merge_requests/13"}

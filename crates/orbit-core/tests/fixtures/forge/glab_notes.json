@@ -1,0 +1,5 @@
+[
+  {"id": 1, "body": "added 1 commit", "author": {"username": "alice"}, "created_at": "2026-11-22T08:05:00Z", "system": true},
+  {"id": 2, "body": "Could this **reuse** the old index?", "author": {"username": "bob"}, "created_at": "2026-11-22T09:00:00Z", "system": false,
+   "type": "DiffNote", "position": {"new_path": "src/lib.rs", "new_line": 42, "old_line": null}}
+]

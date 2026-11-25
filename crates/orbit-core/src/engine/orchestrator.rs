@@ -41,6 +41,8 @@ pub enum Internal {
     Review(super::review::ReviewInternal),
     /// A generated title for a thread still titled `seed`.
     TitleGenerated { thread: ThreadId, seed: String, title: String },
+    /// Work to apply on the engine thread once a task has finished.
+    Run(Box<dyn FnOnce(&mut Orchestrator) + Send>),
 }
 
 /// Starts provider sessions. Tests replace it with scripted fakes.
@@ -129,6 +131,7 @@ pub struct Orchestrator {
     /// How one-shot text is generated.
     pub(crate) generator: super::textgen::Generator,
     pub(crate) seeded_titles: super::textgen::SeededTitles,
+    pub(crate) forge: super::forge::ForgeState,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -176,6 +179,7 @@ impl Orchestrator {
             files: Default::default(),
             generator: super::textgen::Generator::Native,
             seeded_titles: Default::default(),
+            forge: Default::default(),
         }
     }
 
@@ -583,6 +587,7 @@ impl Orchestrator {
                 }
             }
             Internal::TitleGenerated { thread, seed, title } => self.on_title_generated(thread, seed, title),
+            Internal::Run(work) => work(self),
             Internal::QuotaReset(thread) => self.quota_reset(thread),
             Internal::Review(msg) => self.handle_review(msg),
         }
@@ -594,6 +599,8 @@ impl Orchestrator {
     /// engine loop runs the future in a task and replies when it finishes.
     pub fn handle(&mut self, command: Command) -> Outcome {
         match command {
+            Command::Forge(command) => self.forge(command),
+            command if super::forge::pushes(&command) => self.forge_after_push(command),
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
             Command::SearchFiles { thread, project, query, limit } => {
                 Outcome::Deferred(self.search_files(thread, project, query, limit))
@@ -684,6 +691,10 @@ impl Orchestrator {
             Command::NewSession { thread } => self.new_session(thread),
             // Needs the engine's runtime free; only `handle` runs it.
             Command::GenerateText { .. } => Err("Text generation runs asynchronously.".into()),
+            Command::Forge(command) => match self.forge(command) {
+                Outcome::Ready(result) => result,
+                Outcome::Deferred(future) => futures_block_on(future),
+            },
             Command::Diff { .. }
             | Command::RevertPatch { .. }
             | Command::RestoreCheckpoint { .. }

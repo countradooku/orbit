@@ -2,6 +2,7 @@
 
 use bitcode::{Decode, Encode};
 
+use crate::forge::{ForgeCommand, ForgeReply};
 use crate::ids::*;
 use crate::model::*;
 use crate::settings::Settings;
@@ -236,6 +237,10 @@ pub enum Command {
     /// End the thread's agent session; the next message starts a fresh one
     /// in the same thread (what `/clear` does).
     NewSession { thread: ThreadId },
+    /// Pull requests, checks, merges, issues and tracker settings; see
+    /// [`ForgeCommand`]. Replies [`Reply::Forge`] (or `Thread`, `Text` or
+    /// `Done`, per command).
+    Forge(ForgeCommand),
 }
 
 /// What [`Command::GenerateText`] writes.
@@ -268,6 +273,7 @@ pub enum Reply {
     Merge(MergeInfo),
     Files(Vec<FileMatch>),
     Text(String),
+    Forge(ForgeReply),
 }
 
 /// A local merge of a thread's branch, previewed or done.

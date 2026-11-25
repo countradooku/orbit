@@ -14,7 +14,7 @@ use std::time::Instant;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, TitleBar, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, TitleBar, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use orbit_proto::*;
@@ -23,6 +23,7 @@ use crate::actions::*;
 use crate::app_state::AppState;
 use crate::assets::Lucide;
 use crate::fleet::FleetView;
+use crate::forge::{ForgeView, GoPullRequests};
 use crate::home::HomeView;
 use crate::inbox::InboxView;
 use crate::instance::{Intent, Launch};
@@ -39,6 +40,8 @@ pub enum Route {
     Thread(ThreadId),
     Inbox,
     Fleet,
+    /// Pull requests and issues.
+    Forge,
     /// Full-window settings, with their own navigation in place of the
     /// sidebar.
     Settings,
@@ -65,6 +68,7 @@ pub struct Workspace {
     home: Entity<HomeView>,
     inbox: Entity<InboxView>,
     fleet: Entity<FleetView>,
+    forge: Entity<ForgeView>,
     threads: Vec<(ThreadId, Entity<ThreadView>)>,
     /// Threads shown side by side, in grid order; empty or two or more.
     tiles: Vec<ThreadId>,
@@ -96,6 +100,7 @@ impl Workspace {
         let home = cx.new(|cx| HomeView::new(app.clone(), weak.clone(), window, cx));
         let inbox = cx.new(|cx| InboxView::new(app.clone(), weak.clone(), window, cx));
         let fleet = cx.new(|cx| FleetView::new(app.clone(), weak.clone(), cx));
+        let forge = cx.new(|cx| ForgeView::new(app.clone(), weak.clone(), window, cx));
         let split = cx.new(|_| ResizableState::default());
         let subs = vec![
             cx.observe_window_appearance(window, |_, window, cx| {
@@ -160,6 +165,7 @@ impl Workspace {
             home,
             inbox,
             fleet,
+            forge,
             threads: Vec::new(),
             tiles: Vec::new(),
             tile_recency: Vec::new(),
@@ -203,6 +209,7 @@ impl Workspace {
         match route.as_str() {
             "inbox" => self.navigate(Route::Inbox, window, cx),
             "fleet" => self.navigate(Route::Fleet, window, cx),
+            "forge" => self.navigate(Route::Forge, window, cx),
             "latest" | "terminal" => {
                 if let Some(id) = recent.first() {
                     self.navigate(Route::Thread(*id), window, cx);
@@ -397,6 +404,9 @@ impl Workspace {
             self.settings_focus.focus(window, cx);
         } else if route != Route::Settings && self.route == Route::Settings {
             self.focus.focus(window, cx);
+        }
+        if route == Route::Forge {
+            self.forge.update(cx, |forge, cx| forge.shown(window, cx));
         }
         match route {
             Route::Home => {
@@ -631,6 +641,10 @@ impl Workspace {
 
     fn go_inbox(&mut self, _: &GoInbox, window: &mut Window, cx: &mut Context<Self>) {
         self.navigate(Route::Inbox, window, cx);
+    }
+
+    fn go_pull_requests(&mut self, _: &GoPullRequests, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate(Route::Forge, window, cx);
     }
 
     fn go_fleet(&mut self, _: &GoFleet, window: &mut Window, cx: &mut Context<Self>) {
@@ -881,6 +895,18 @@ impl Workspace {
                         .child(Icon::new(Lucide::Orbit).small().text_color(theme.primary))
                         .child("Orbit"),
                 )
+                .when(!in_settings, |el| {
+                    el.child(
+                        Button::new("title-forge")
+                            .ghost()
+                            .small()
+                            .icon(Lucide::GitPullRequest)
+                            .label("Pull requests")
+                            .selected(self.route == Route::Forge)
+                            .tooltip_with_action("Pull requests and issues", &GoPullRequests, None)
+                            .on_click(|_, window, cx| window.dispatch_action(Box::new(GoPullRequests), cx)),
+                    )
+                })
                 .when(in_settings, |el| {
                     el.child(
                         Button::new("close-settings")
@@ -986,6 +1012,7 @@ impl Workspace {
             Route::Home => self.home.clone().into_any_element(),
             Route::Inbox => self.inbox.clone().into_any_element(),
             Route::Fleet => self.fleet.clone().into_any_element(),
+            Route::Forge => self.forge.clone().into_any_element(),
             Route::Settings => div().into_any_element(),
             Route::Thread(_) if self.tiled() => self.render_tiles(window, cx),
             Route::Thread(_) => match self.current_thread_view() {
@@ -1062,6 +1089,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_thread_in))
             .on_action(cx.listener(Self::go_inbox))
             .on_action(cx.listener(Self::go_fleet))
+            .on_action(cx.listener(Self::go_pull_requests))
             .on_action(cx.listener(Self::go_home))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_review))
