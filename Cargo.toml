@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/orbit-proto", "crates/orbit-core", "crates/orbit-net", "crates/orbitd", "crates/orbit-bench", "crates/orbit-app"]
+members = ["crates/orbit-proto", "crates/orbit-core", "crates/orbit-net", "crates/orbitd", "crates/orbit-bench", "crates/orbit-terminal", "crates/orbit-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -31,6 +31,7 @@ log = "0.4"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 dirs = "6"
 memchr = "2"
+parking_lot = "0.12"
 similar = { version = "2", features = ["inline"] }
 
 [profile.release]
