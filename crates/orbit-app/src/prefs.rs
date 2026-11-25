@@ -29,6 +29,9 @@ pub struct ShellPrefs {
     /// The custom editor command, with `{file}`, `{line}`, `{column}` and
     /// `{folder}`.
     pub editor_command: String,
+    /// Dictation: the model, the microphone, the shortcut's mode (Settings ›
+    /// Voice). This computer's, like the microphone it names.
+    pub voice: crate::voice::VoicePrefs,
 }
 
 impl Default for ShellPrefs {
@@ -39,6 +42,7 @@ impl Default for ShellPrefs {
             toggled_sections: Vec::new(),
             editor: String::new(),
             editor_command: String::new(),
+            voice: crate::voice::VoicePrefs::default(),
         }
     }
 }

@@ -154,6 +154,7 @@ struct Search {
 
 pub fn open(workspace: Entity<Workspace>, initial: &'static str, window: &mut Window, cx: &mut App) {
     let state = cx.new(|cx| CommandState::new(window, cx));
+    crate::voice::register_field(crate::voice::Field::command(&state), cx);
     let app = workspace.read(cx).app().clone();
     let targets: Rc<RefCell<Vec<Vec<Target>>>> = Rc::default();
     let search: Rc<RefCell<Search>> = Rc::new(RefCell::new(Search { query: String::new(), hits: Vec::new(), generation: 0 }));

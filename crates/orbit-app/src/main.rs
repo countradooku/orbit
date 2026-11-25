@@ -53,6 +53,7 @@ mod tiles;
 mod ui;
 mod usage;
 mod update;
+mod voice;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
@@ -234,6 +235,7 @@ fn main() {
         // With the background host, an update restarts the window only.
         host::install_restart(&app, cx);
         onboarding::init(&startup.data_dir, app.clone(), cx);
+        voice::init(&startup.data_dir, app.clone(), cx);
         settings::init(app.clone(), startup, cx);
         forge::init(app.clone(), cx);
         bots::init(app.clone(), cx);
@@ -286,6 +288,7 @@ fn main() {
                     }
                     diagnostics::on_window_open(window, cx);
                     update::on_window_open(window, cx);
+                    voice::on_window_open(window, cx);
                 });
                 cx.spawn(async move |cx| {
                     use futures::StreamExt as _;

@@ -114,6 +114,7 @@ fn groups() -> Vec<(&'static str, Vec<Row>)> {
 /// Opens the sheet.
 pub fn open(window: &mut Window, cx: &mut App) {
     let search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter shortcuts"));
+    crate::voice::register_field(crate::voice::Field::input(&search), cx);
     let query: Rc<std::cell::RefCell<String>> = Rc::default();
     {
         let query = query.clone();

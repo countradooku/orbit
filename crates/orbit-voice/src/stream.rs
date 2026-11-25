@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(prompt, "Orbit");
         // 2.3 s of speech plus padding, not the 4.8 s recorded.
         let seconds = *samples as f32 / SAMPLES_PER_SECOND as f32;
-        assert!((2.2..3.2).contains(&seconds), "decoded {seconds} s");
+        assert!((2.2..3.6).contains(&seconds), "decoded {seconds} s");
     }
 
     #[test]

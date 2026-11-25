@@ -65,6 +65,7 @@ case "$target" in
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Orbit transcribes your dictation on this Mac. Audio never leaves the computer.</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
 </dict>
 </plist>
@@ -72,8 +73,21 @@ EOF
     printf 'APPL????' > "$app/Contents/PkgInfo"
     if command -v codesign >/dev/null; then
       if [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
-        # Hardened runtime and a timestamp: what notarization requires.
-        codesign --force --deep --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" "$app"
+        # Hardened runtime and a timestamp: what notarization requires. The
+        # hardened runtime blocks the microphone unless the app is entitled
+        # to audio input (dictation).
+        entitlements="$out/orbit.entitlements"
+        cat > "$entitlements" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.device.audio-input</key><true/>
+</dict>
+</plist>
+PLIST
+        codesign --force --deep --options runtime --timestamp --entitlements "$entitlements" --sign "$MACOS_SIGN_IDENTITY" "$app"
+        rm -f "$entitlements"
       else
         codesign --force --deep --sign - "$app"
       fi

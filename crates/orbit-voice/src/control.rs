@@ -86,6 +86,11 @@ impl Controller {
         matches!(self.state, State::Recording { .. })
     }
 
+    /// Whether the shortcut is down and recording depends on its release.
+    pub fn is_held(&self) -> bool {
+        matches!(self.state, State::Recording { pressed: Some(_), .. })
+    }
+
     /// Time recorded, at `now`.
     pub fn elapsed(&self, now: Instant) -> Duration {
         match self.state {

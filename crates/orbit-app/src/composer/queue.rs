@@ -134,6 +134,7 @@ impl Composer {
             state.set_value(text.to_owned(), window, cx);
             state
         });
+        crate::voice::register_field(crate::voice::Field::textarea(&input), cx);
         let subscription = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
             if let InputEvent::PressEnter { shift: false, .. } = event {
                 this.save_queue_edit(window, cx);

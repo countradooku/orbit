@@ -82,7 +82,7 @@ pub mod fake {
                 seed ^= seed << 13;
                 seed ^= seed >> 7;
                 seed ^= seed << 17;
-                *s += ((seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 2e-4;
+                *s += ((seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 2e-3;
             }
             Self { audio: Arc::new(audio), words }
         }
@@ -144,9 +144,11 @@ pub mod fake {
             }
         }
 
+        /// Where `audio` starts in the utterance, allowing for a round trip
+        /// through 16-bit samples (as from a microphone).
         fn locate(&self, audio: &[f32]) -> Option<usize> {
             let probe = audio.get(..64)?;
-            self.utterance.windows(64).position(|w| w == probe)
+            self.utterance.windows(64).position(|w| w.iter().zip(probe).all(|(a, b)| (a - b).abs() < 1e-4))
         }
     }
 

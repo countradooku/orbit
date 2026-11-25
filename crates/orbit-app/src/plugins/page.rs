@@ -17,7 +17,7 @@ use crate::app_state::AppState;
 use crate::assets::Lucide;
 
 /// Where Settings › Plugins is among the pages.
-pub const PAGE: usize = 12;
+pub const PAGE: usize = 13;
 
 #[derive(Default)]
 struct Request(bool);

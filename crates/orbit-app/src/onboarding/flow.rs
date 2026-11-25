@@ -84,6 +84,7 @@ impl OnboardingView {
     pub fn new(app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let clone_url = cx.new(|cx| InputState::new(window, cx).placeholder("https://github.com/owner/repository"));
         let prompt = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 8));
+        crate::voice::register_field(crate::voice::Field::textarea(&prompt), cx);
         let subscriptions = vec![
             cx.subscribe_in(&clone_url, window, |this, _, event: &InputEvent, window, cx| match event {
                 InputEvent::PressEnter { .. } => this.start_clone(window, cx),

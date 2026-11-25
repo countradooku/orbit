@@ -13,6 +13,7 @@
 //!   and dropped when idle.
 //! - [`postprocess`], [`prompt`], [`insert`]: the text: cleanup, the
 //!   vocabulary prompt and placing it where the user is typing.
+//! - [`address`]: which agent a spoken instruction is for (voice steering).
 //! - [`control`]: the shortcut's modes, the five-minute cap and the silence
 //!   timeout.
 //! - [`catalog`], [`store`], [`convert`]: the pinned model list, verified
@@ -20,6 +21,7 @@
 //!
 //! [candle]: https://github.com/huggingface/candle
 
+pub mod address;
 pub mod audio;
 pub mod catalog;
 pub mod control;

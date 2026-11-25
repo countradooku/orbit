@@ -27,7 +27,7 @@ use crate::assets::Lucide;
 use crate::theme;
 
 /// Where Settings › Projects is among the pages.
-const PROJECTS_PAGE: usize = 5;
+const PROJECTS_PAGE: usize = 6;
 
 pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoElement {
     let view = SettingsView::new("orbit-settings");
@@ -43,6 +43,8 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         Some(gpui_kit::component::setting::SelectIndex { page_ix: PROJECTS_PAGE, group_ix: None })
     } else if crate::hosts::page::take_request(cx) {
         Some(gpui_kit::component::setting::SelectIndex { page_ix: crate::hosts::page::PAGE, group_ix: None })
+    } else if crate::voice::settings::take_request(cx) {
+        Some(gpui_kit::component::setting::SelectIndex { page_ix: crate::voice::settings::PAGE, group_ix: None })
     } else if crate::plugins::page::take_request(cx) {
         Some(gpui_kit::component::setting::SelectIndex { page_ix: crate::plugins::page::PAGE, group_ix: None })
     } else {
@@ -56,6 +58,7 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         general(),
         appearance(cx),
         composer(cx),
+        crate::voice::settings::page(cx),
         agents(&app, cx),
         workspace(cx),
         crate::project::settings::page(&app, cx),
@@ -757,6 +760,9 @@ fn text_field(
             move |window, cx| {
                 let input =
                     cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).default_value(current).masked(masked));
+                if !masked {
+                    crate::voice::register_field(crate::voice::Field::input(&input), cx);
+                }
                 let _change = cx.subscribe(&input, move |_, input, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Change) {
                         let text = input.read(cx).value().to_string();
