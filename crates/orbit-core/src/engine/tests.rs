@@ -58,6 +58,11 @@ fn fake_launcher() -> Launcher {
                                 emit(AgentEvent::Exited { error: Some("boom".into()) });
                                 return;
                             }
+                            t if t.starts_with("Write a title") => {
+                                // No title from this fake: threads keep the
+                                // first line of their first message.
+                                finish(&emit);
+                            }
                             "slow" => {
                                 emit(AgentEvent::Delta { block: block.clone(), kind: BlockKind::Text, text: "working".into() });
                                 while let Ok(msg) = rx.recv().await {
@@ -70,6 +75,24 @@ fn fake_launcher() -> Launcher {
                                         break;
                                     }
                                 }
+                            }
+                            "stuck" => {
+                                // Ignores Stop; only shutting it down ends it.
+                                emit(AgentEvent::Delta { block: block.clone(), kind: BlockKind::Text, text: "busy".into() });
+                                while let Ok(msg) = rx.recv().await {
+                                    if matches!(msg, SessionInput::Shutdown) {
+                                        return;
+                                    }
+                                }
+                            }
+                            t if (t.starts_with("flaky") || t.starts_with("limited")) && first_time(t) => {
+                                let outcome = if t.starts_with("flaky") {
+                                    TurnOutcome::Failed { message: "The model is overloaded.".into() }
+                                } else {
+                                    TurnOutcome::RateLimited { resets_ms: 0 }
+                                };
+                                emit(AgentEvent::BlockDone { block: block.clone(), kind: BlockKind::Text, text: "partial".into() });
+                                emit(AgentEvent::TurnFinished { outcome, usage: Usage::default(), duration_ms: 1 });
                             }
                             _ => {
                                 for piece in ["echo", ": ", &text] {
@@ -88,6 +111,18 @@ fn fake_launcher() -> Launcher {
         });
         SessionHandle { input }
     })
+}
+
+/// True the first time a prompt is seen in this test process; prompts are
+/// unique per test, so parallel tests do not interfere.
+fn first_time(prompt: &str) -> bool {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap();
+    if seen.iter().any(|p| p == prompt) {
+        return false;
+    }
+    seen.push(prompt.to_owned());
+    true
 }
 
 fn finish(emit: &impl Fn(AgentEvent)) {
@@ -558,9 +593,225 @@ fn switching_provider_starts_a_fresh_session() {
     assert!(h.thread(id).session.is_some());
     let config = ThreadConfig { provider: ProviderKind::Codex, ..Default::default() };
     h.call(Command::UpdateThread { id, patch: ThreadPatch { config: Some(config), ..Default::default() } });
-    h.wait("session cleared and the switch explained", |h| {
+    h.wait("session cleared and the context handed off", |h| {
         h.thread(id).session.is_none()
             && h.thread(id).config.provider == ProviderKind::Codex
-            && h.items.values().any(|i| matches!(&i.body, ItemBody::Notice { text, .. } if text.contains("Switched to Codex")))
+            && h.items.values().any(|i| matches!(&i.body, ItemBody::Handoff(x) if x.from == "Claude Code" && x.to == "Codex"))
     });
+    // The new session's first prompt carries the earlier conversation.
+    h.send(id, "next");
+    h.wait("the handoff reaches the new agent", |h| {
+        h.texts(2).iter().any(|t| {
+            t.starts_with("agent: echo: [Context handed off from Claude Code]")
+                && t.contains("User: hello")
+                && t.ends_with("The user's new message:\n\nnext")
+        })
+    });
+    // Only once.
+    h.send(id, "again");
+    h.wait("a plain third prompt", |h| h.texts(3).iter().any(|t| t == "agent: echo: again"));
+}
+
+/// A launcher that answers every prompt with `answer(prompt)` and records
+/// each session's spec.
+fn scripted_launcher(
+    answer: fn(&str) -> String,
+    specs: std::sync::Arc<std::sync::Mutex<Vec<SessionSpec>>>,
+) -> Launcher {
+    Box::new(move |_kind, spec, events| {
+        let (input, rx) = mpsc::bounded_blocking_async::<SessionInput>(64);
+        let thread = spec.thread;
+        specs.lock().unwrap().push(spec);
+        tokio::spawn(async move {
+            let emit = |e: AgentEvent| {
+                let _ = events.send((thread, e));
+            };
+            emit(AgentEvent::Ready { session_id: format!("s-{}", thread.0), model: None });
+            while let Ok(msg) = rx.recv().await {
+                match msg {
+                    SessionInput::Prompt { text, .. } => {
+                        emit(AgentEvent::TurnStarted { prompt: Some("p".into()) });
+                        emit(AgentEvent::BlockDone { block: "b".into(), kind: BlockKind::Text, text: answer(&text) });
+                        finish(&emit);
+                    }
+                    SessionInput::Shutdown => return,
+                    _ => {}
+                }
+            }
+        });
+        SessionHandle { input }
+    })
+}
+
+fn titles(prompt: &str) -> String {
+    if prompt.starts_with("Write a title") { "Title: \"Fix the login bug.\"".into() } else { format!("echo: {prompt}") }
+}
+
+#[test]
+fn the_first_turn_earns_a_generated_title_unless_renamed() {
+    let specs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Harness::open_with(dir.path().to_owned(), scripted_launcher(titles, specs.clone()));
+    let id = h.new_thread();
+    h.send(id, "the login form throws on submit");
+    h.wait("a generated title", |h| h.thread(id).title == "Fix the login bug");
+    // The title run was a throwaway read-only session, not the thread's.
+    let specs = specs.lock().unwrap();
+    assert!(specs.iter().any(|s| s.thread != id && s.config.access == Access::Readonly));
+    drop(specs);
+
+    // A thread the user renamed before the turn ended keeps its name.
+    let other = h.new_thread();
+    h.send(other, "second thread");
+    h.call(Command::UpdateThread { id: other, patch: ThreadPatch { title: Some("Mine".into()), ..Default::default() } });
+    h.wait("turn", |h| h.thread(other).turns == 1 && h.thread(other).status == ThreadStatus::Idle);
+    std::thread::sleep(Duration::from_millis(100));
+    h.wait("events", |_| true);
+    while let Ok(env) = h.events.try_recv() {
+        h.apply(env.event);
+    }
+    assert_eq!(h.thread(other).title, "Mine");
+}
+
+#[test]
+fn generate_text_writes_commit_messages_with_the_threads_agent() {
+    let specs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dir = tempfile::tempdir().unwrap();
+    let h = Harness::open_with(dir.path().to_owned(), scripted_launcher(|p| format!("```\n{}\n```", p.lines().next().unwrap_or("")), specs));
+    let id = h.new_thread();
+    let reply = h.call(Command::GenerateText { thread: Some(id), task: TextTask::CommitMessage, input: "diff --git a/x b/x".into() });
+    let Reply::Text(text) = reply else { panic!("{reply:?}") };
+    assert!(text.starts_with("Write a git commit message"), "{text}");
+    assert!(!text.contains("```"), "fences are stripped: {text}");
+}
+
+#[test]
+fn clear_starts_a_fresh_session_in_the_same_thread() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "hello");
+    h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+    assert!(h.thread(id).session.is_some());
+    h.send(id, "  /clear ");
+    h.wait("fresh session", |h| {
+        h.thread(id).session.is_none()
+            && h.items.values().any(|i| matches!(&i.body, ItemBody::Notice { text, .. } if text.starts_with("New session")))
+    });
+    assert!(!h.items.values().any(|i| matches!(&i.body, ItemBody::User(m) if m.text.contains("/clear"))), "/clear never reaches the agent");
+    assert_eq!(h.thread(id).turns, 1, "no turn was started");
+    h.send(id, "after");
+    h.wait("the next message starts a new session", |h| h.thread(id).session.is_some() && h.thread(id).turns == 2);
+}
+
+#[test]
+fn a_second_account_runs_with_its_own_config_dir_and_hands_off() {
+    let specs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Harness::open_with(dir.path().to_owned(), scripted_launcher(|p| format!("echo: {p}"), specs.clone()));
+    let mut settings = h.settings.clone();
+    settings.provider_mut(ProviderKind::Claude).env.push(EnvVar::new("HTTPS_PROXY", "http://proxy"));
+    settings.agents.instances.push(ProviderInstance {
+        id: "claude-work".into(),
+        kind: ProviderKind::Claude,
+        name: "Claude (work)".into(),
+        enabled: true,
+        config_dir: "/home/u/.claude-work".into(),
+        ..Default::default()
+    });
+    settings.agents.generate_titles = false;
+    h.call(Command::UpdateSettings { settings });
+    let id = h.new_thread();
+    h.send(id, "hello");
+    h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+    let work = ThreadConfig { instance: "claude-work".into(), ..Default::default() };
+    h.call(Command::UpdateThread { id, patch: ThreadPatch { config: Some(work), ..Default::default() } });
+    h.wait("handoff to the work account", |h| {
+        h.items.values().any(|i| matches!(&i.body, ItemBody::Handoff(x) if x.to == "Claude (work)"))
+    });
+    h.send(id, "next");
+    h.wait("second turn", |h| h.thread(id).turns == 2 && h.thread(id).status == ThreadStatus::Idle);
+    let specs = specs.lock().unwrap();
+    let last = specs.iter().rev().find(|s| s.thread == id).unwrap();
+    assert_eq!(last.config.instance_id(), "claude-work");
+    assert!(last.env.contains(&("CLAUDE_CONFIG_DIR".into(), "/home/u/.claude-work".into())), "{:?}", last.env);
+    assert!(last.env.contains(&("HTTPS_PROXY".into(), "http://proxy".into())), "the runtime's settings apply too");
+    assert!(last.resume.is_none(), "another account cannot resume the first one's session");
+    let first = specs.iter().find(|s| s.thread == id).unwrap();
+    assert!(!first.env.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"));
+}
+
+impl Harness {
+    /// The turn-end records of `turn`, in order.
+    fn turn_ends(&self, turn: u32) -> Vec<TurnSummary> {
+        let mut items: Vec<&Item> = self.items.values().filter(|i| i.turn == turn).collect();
+        items.sort_by_key(|i| i.id);
+        items
+            .iter()
+            .filter_map(|i| match &i.body {
+                ItemBody::TurnEnd(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_failed_turn_retries_under_the_same_number_and_keeps_the_failed_attempt() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "flaky-retry");
+    h.wait("failure", |h| matches!(h.thread(id).status, ThreadStatus::Failed { .. }));
+    let err = h.engine.call(Command::Send { thread: id, text: String::new(), attachments: vec![], steer: false });
+    assert!(err.recv().unwrap().is_err());
+    h.call(Command::Retry { thread: id });
+    h.wait("retried turn", |h| h.thread(id).status == ThreadStatus::Idle && h.turn_ends(1).len() == 2);
+    assert_eq!(h.thread(id).turns, 1, "a retry is the same turn, not a new one");
+    // The message is shown once; both attempts' replies stay, in order.
+    assert_eq!(h.texts(1), vec!["user: flaky-retry", "agent: partial", "agent: echo: flaky-retry"]);
+    // Only failed turns can be retried.
+    let again = h.engine.call(Command::Retry { thread: id }).recv().unwrap();
+    assert!(again.unwrap_err().contains("failed"));
+}
+
+#[test]
+fn a_rate_limited_turn_can_be_retried_now() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "limited-now");
+    h.wait("limit", |h| matches!(h.thread(id).status, ThreadStatus::RateLimited { .. }));
+    h.call(Command::Retry { thread: id });
+    h.wait("retried turn", |h| h.thread(id).status == ThreadStatus::Idle && h.turn_ends(1).len() == 2);
+    assert_eq!(h.texts(1).last().unwrap(), "agent: echo: limited-now");
+}
+
+#[test]
+fn force_stop_ends_a_turn_the_agent_will_not_stop() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.send(id, "stuck");
+    h.wait("turn to start", |h| h.thread(id).status == ThreadStatus::Running);
+    h.call(Command::Interrupt { thread: id });
+    std::thread::sleep(Duration::from_millis(50));
+    h.wait("stop to be ignored", |h| h.thread(id).status == ThreadStatus::Running);
+    h.call(Command::ForceStop { thread: id });
+    h.wait("forced stop", |h| h.thread(id).status == ThreadStatus::Idle && !h.turn_ends(1).is_empty());
+    assert!(h.turn_ends(1)[0].interrupted);
+    // The thread takes the next message on a fresh process.
+    h.send(id, "after");
+    h.wait("next turn", |h| h.thread(id).turns == 2 && h.thread(id).status == ThreadStatus::Idle);
+    assert_eq!(h.texts(2), vec!["user: after", "agent: echo: after"]);
+}
+
+#[test]
+fn blobs_read_back_and_bad_hashes_are_refused() {
+    let h = Harness::new();
+    let data = b"full output".to_vec();
+    let Reply::Blob(blob) = h.call(Command::PutBlob { name: "out.txt".into(), mime: "text/plain".into(), data: data.clone() })
+    else {
+        panic!()
+    };
+    assert_eq!(h.call(Command::ReadBlob { hash: blob.hash }), Reply::Bytes(data));
+    for bad in ["../token", "", &"z".repeat(64)] {
+        assert!(h.engine.call(Command::ReadBlob { hash: bad.into() }).recv().unwrap().is_err(), "{bad}");
+    }
 }

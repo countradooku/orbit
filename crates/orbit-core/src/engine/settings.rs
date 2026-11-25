@@ -4,12 +4,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crossfire::BlockingTxTrait;
 use orbit_proto::*;
 
-use super::orchestrator::{CommandResult, Internal, Orchestrator};
+use super::orchestrator::{CommandResult, Orchestrator};
 use crate::git::{Git, GitConfig};
-use crate::provider;
 
 impl Orchestrator {
     /// Replaces the settings and applies what changed. Sessions already
@@ -34,19 +32,33 @@ impl Orchestrator {
         }
         let changed: Vec<ProviderKind> =
             ProviderKind::ALL.into_iter().filter(|&kind| old.provider(kind) != new.provider(kind)).collect();
-        for kind in changed {
+        for &kind in &changed {
             self.probe_provider(kind);
         }
-    }
-
-    /// Probes one provider with its configured binary and environment.
-    pub(crate) fn probe_provider(&self, kind: ProviderKind) {
-        let (binary, env) = provider_launch(self.store.settings(), kind);
-        let tx = self.internal_tx.clone();
-        tokio::spawn(async move {
-            let info = provider::probe(kind, binary, env).await;
-            let _ = tx.send(Internal::Probed(info));
-        });
+        // Instances added or changed (of runtimes not re-probed above), and
+        // instances removed, which leave the provider list.
+        let new_i = self.store.settings().agents.instances.clone();
+        let (old_i, new_i) = (&old.agents.instances, &new_i);
+        if old_i != new_i {
+            let added: Vec<ProviderInstance> = new_i
+                .iter()
+                .filter(|i| !changed.contains(&i.kind) && !old_i.contains(i))
+                .cloned()
+                .collect();
+            for instance in &added {
+                if let Some(effective) = crate::provider::presets::find(new_i, &instance.id) {
+                    self.probe_instance(&effective);
+                }
+            }
+            let gone: Vec<String> = old_i.iter().filter(|o| !new_i.iter().any(|n| n.id == o.id)).map(|o| o.id.clone()).collect();
+            for id in gone {
+                // A removed override of a preset goes back to the preset.
+                match crate::provider::presets::find(new_i, &id) {
+                    Some(preset) => self.probe_instance(&preset),
+                    None => self.set_provider(ProviderInfo { instance: id, ..Default::default() }),
+                }
+            }
+        }
     }
 }
 
@@ -61,9 +73,4 @@ pub(crate) fn git_config(data_dir: &Path, settings: &Settings) -> GitConfig {
     cfg
 }
 
-/// The binary override and extra environment a provider is started with.
-pub(crate) fn provider_launch(settings: &Settings, kind: ProviderKind) -> (Option<PathBuf>, Vec<(String, String)>) {
-    let provider = settings.provider(kind);
-    let binary = (!provider.binary.is_empty()).then(|| PathBuf::from(&provider.binary));
-    (binary, provider.env_pairs())
-}
+

@@ -37,21 +37,61 @@ pub struct RunScript {
     pub command: String,
 }
 
-/// Which agent runtime a thread talks to.
+/// Which agent runtime (driver) a thread talks to. A thread names a
+/// configured [`crate::settings::ProviderInstance`] of one of these; most users only have the
+/// built-in instance of each, whose id is [`ProviderKind::id`].
+///
+/// New runtimes are appended. Records on disk hold exactly one kind per
+/// frame, and logs written before this enum grew are read through
+/// [`crate::legacy`], so old data stays readable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Encode, Decode)]
 pub enum ProviderKind {
     #[default]
     Claude,
     Codex,
+    /// Any Agent Client Protocol agent (Gemini CLI, Grok, Kiro, Cursor…),
+    /// launched by its instance's command and arguments.
+    Acp,
+    /// `opencode serve`, over HTTP and server-sent events.
+    OpenCode,
+    /// `pi --mode rpc`, over JSON lines.
+    Pi,
 }
 
 impl ProviderKind {
-    pub const ALL: [ProviderKind; 2] = [ProviderKind::Claude, ProviderKind::Codex];
+    pub const ALL: [ProviderKind; 5] =
+        [ProviderKind::Claude, ProviderKind::Codex, ProviderKind::Acp, ProviderKind::OpenCode, ProviderKind::Pi];
 
     pub fn label(self) -> &'static str {
         match self {
             ProviderKind::Claude => "Claude Code",
             ProviderKind::Codex => "Codex",
+            ProviderKind::Acp => "ACP agent",
+            ProviderKind::OpenCode => "OpenCode",
+            ProviderKind::Pi => "Pi",
+        }
+    }
+
+    /// The id of this runtime's built-in instance.
+    pub fn id(self) -> &'static str {
+        match self {
+            ProviderKind::Claude => "claude",
+            ProviderKind::Codex => "codex",
+            ProviderKind::Acp => "acp",
+            ProviderKind::OpenCode => "opencode",
+            ProviderKind::Pi => "pi",
+        }
+    }
+
+    /// The environment variable that points the runtime at another
+    /// configuration (and so another signed-in account), if it has one.
+    pub fn config_dir_env(self) -> Option<&'static str> {
+        match self {
+            ProviderKind::Claude => Some("CLAUDE_CONFIG_DIR"),
+            ProviderKind::Codex => Some("CODEX_HOME"),
+            ProviderKind::OpenCode => Some("OPENCODE_CONFIG_DIR"),
+            ProviderKind::Pi => Some("PI_CODING_AGENT_DIR"),
+            ProviderKind::Acp => None,
         }
     }
 }
@@ -175,6 +215,21 @@ pub struct ThreadConfig {
     pub options: Vec<OptionValue>,
     pub mode: Mode,
     pub access: Access,
+    /// The [`crate::settings::ProviderInstance`] the thread runs on; empty means the
+    /// built-in instance of `provider`.
+    pub instance: String,
+}
+
+impl ThreadConfig {
+    /// The id of the instance this config runs on.
+    pub fn instance_id(&self) -> &str {
+        if self.instance.is_empty() { self.provider.id() } else { &self.instance }
+    }
+
+    /// Whether two configs run on the same instance.
+    pub fn same_instance(&self, other: &ThreadConfig) -> bool {
+        self.provider == other.provider && self.instance_id() == other.instance_id()
+    }
 }
 
 /// Where the thread's agent works.
@@ -321,6 +376,26 @@ pub enum ItemBody {
     Request(AgentRequest),
     Notice { level: NoticeLevel, text: String },
     TurnEnd(TurnSummary),
+    /// The thread moved to another agent, which received this summary of
+    /// the conversation so far.
+    Handoff(Handoff),
+}
+
+/// The context handed to a new agent when a thread switches provider or
+/// account mid-conversation.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+pub struct Handoff {
+    /// Display names of the previous and the new instance.
+    pub from: String,
+    pub to: String,
+    /// Turns the summary covers in full, and turns condensed or left out to
+    /// stay within the budget.
+    pub turns: u32,
+    pub condensed: u32,
+    /// Estimated size of `context` in tokens.
+    pub tokens: u32,
+    /// Exactly what the new agent receives before the next message.
+    pub context: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
@@ -355,6 +430,40 @@ pub enum ToolKind {
     Other,
 }
 
+/// Bytes of tool output kept on an item; the full output is a blob.
+pub const INLINE_OUTPUT: usize = 64 * 1024;
+
+/// Appends streamed tool output, keeping only the last [`INLINE_OUTPUT`]
+/// bytes: the end of a long build log is what explains it. Engine and
+/// clients apply the same rule to the same deltas, so they agree on the text.
+pub fn append_output_tail(output: &mut String, delta: &str) {
+    output.push_str(delta);
+    if output.len() > INLINE_OUTPUT {
+        output.replace_range(..tail_start(output, INLINE_OUTPUT), "");
+    }
+}
+
+/// The last `max` bytes of `text`, starting at a line break when one is
+/// near, else at a character boundary.
+pub fn output_tail(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    &text[tail_start(text, max)..]
+}
+
+fn tail_start(text: &str, max: usize) -> usize {
+    let mut cut = text.len() - max;
+    while !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    // Start on a whole line when one begins within the next 512 bytes.
+    match text[cut..].bytes().take(512).position(|b| b == b'\n') {
+        Some(nl) => cut + nl + 1,
+        None => cut,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct ToolCall {
     /// The provider's id for the call, used to match its result.
@@ -365,7 +474,8 @@ pub struct ToolCall {
     pub title: String,
     /// The raw input as compact JSON.
     pub input: String,
-    /// Output, truncated to a bounded size; the full output is a blob.
+    /// Output, cut to its last [`INLINE_OUTPUT`] bytes; when it was cut,
+    /// the full output is the blob `output_blob`.
     pub output: String,
     pub output_blob: Option<String>,
     pub exit_code: Option<i32>,
@@ -476,6 +586,24 @@ pub struct ProviderInfo {
     pub message: Option<String>,
     /// Account quota windows, latest known state.
     pub quota: Vec<QuotaWindow>,
+    /// The [`crate::settings::ProviderInstance`] this describes, and its display name.
+    pub instance: String,
+    pub name: String,
+}
+
+impl ProviderInfo {
+    /// Whether this is the instance `config` runs on.
+    pub fn serves(&self, config: &ThreadConfig) -> bool {
+        self.kind == config.provider && self.instance_id() == config.instance_id()
+    }
+
+    pub fn instance_id(&self) -> &str {
+        if self.instance.is_empty() { self.kind.id() } else { &self.instance }
+    }
+
+    pub fn display_name(&self) -> &str {
+        if self.name.is_empty() { self.kind.label() } else { &self.name }
+    }
 }
 
 /// One rate-limit window of an account (for example the five-hour or
@@ -522,6 +650,21 @@ pub struct SlashCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_output_keeps_its_tail_on_line_boundaries() {
+        let mut out = String::new();
+        for i in 0..20_000 {
+            append_output_tail(&mut out, &format!("line {i}\n"));
+        }
+        assert!(out.len() <= INLINE_OUTPUT);
+        assert!(out.ends_with("line 19999\n"));
+        assert!(out.starts_with("line "), "starts on a whole line: {:?}", &out[..12]);
+        // Multi-byte text never splits a character.
+        let wide = "é".repeat(INLINE_OUTPUT);
+        assert!(output_tail(&wide, 1001).chars().all(|c| c == 'é'));
+        assert_eq!(output_tail("short", 10), "short");
+    }
 
     #[test]
     fn provider_ids_become_sentence_case_copy() {

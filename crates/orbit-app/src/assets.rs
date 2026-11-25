@@ -14,7 +14,7 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     GitFork, Hourglass, FilePen, FileSearch, Plug, ListTodo, RotateCcw, GitMerge, Orbit,
     CirclePause, Sparkle, AppWindow, SearchCode, Trash, Keyboard,
     // Shell: status glyphs, the deck, tiles, peek.
-    CircleDashed, OctagonAlert, LayoutGrid, Reply, BellRing, MessageCircleQuestionMark, CheckCheck,
+    CircleDashed, OctagonAlert, LayoutGrid, Reply, ScanSearch, OctagonX, BellRing, MessageCircleQuestionMark, CheckCheck,
     Columns2, Maximize2, Minimize2, SquareX, MousePointerClick, ListFilter, BellOff, Volume2,
 ]);
 

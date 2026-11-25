@@ -37,13 +37,13 @@ pub enum Internal {
     SnoozeEnded { thread: ThreadId, until: u64 },
     /// A thread's worktree finished setting up (or failed to).
     WorktreeReady { thread: ThreadId, result: Result<Workspace, String>, setup_log: Option<String> },
+    /// A generated title for a thread still titled `seed`.
+    TitleGenerated { thread: ThreadId, seed: String, title: String },
 }
 
 /// Starts provider sessions. Tests replace it with scripted fakes.
 pub type Launcher = Box<dyn FnMut(ProviderKind, SessionSpec, EventSender) -> SessionHandle + Send>;
 
-/// Bytes of tool output kept inline on an item; the rest goes to a blob.
-const INLINE_OUTPUT: usize = 64 * 1024;
 /// Thread titles taken from the first message are cut to this many chars.
 const TITLE_CHARS: usize = 72;
 /// Streaming items are persisted at most this often.
@@ -103,6 +103,8 @@ pub(crate) struct Runtime {
     pub(crate) checkpointing: bool,
     /// Last time the session did anything, for idle release.
     pub(crate) last_active: Option<Instant>,
+    /// Context from the previous provider, sent with the next prompt.
+    pub(crate) handoff: Option<String>,
 }
 
 pub struct Orchestrator {
@@ -120,6 +122,9 @@ pub struct Orchestrator {
     pub(crate) open: HashSet<ThreadId>,
     pub(crate) git: Git,
     pub(crate) terminals: Terminals,
+    /// How one-shot text is generated.
+    pub(crate) generator: super::textgen::Generator,
+    pub(crate) seeded_titles: super::textgen::SeededTitles,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -149,10 +154,7 @@ impl Orchestrator {
         terminal_exits: ExitSender,
     ) -> Self {
         let git = Git::new(super::settings::git_config(store.dir(), store.settings()));
-        let providers = ProviderKind::ALL
-            .iter()
-            .map(|&kind| ProviderInfo { kind, message: Some("Checking…".into()), ..Default::default() })
-            .collect();
+        let providers = Self::initial_providers(store.settings());
         Self {
             store,
             bus: Bus::new(),
@@ -166,6 +168,8 @@ impl Orchestrator {
             open: HashSet::new(),
             git,
             terminals: Terminals::new(terminal_output, terminal_exits),
+            generator: super::textgen::Generator::Native,
+            seeded_titles: Default::default(),
         }
     }
 
@@ -369,6 +373,7 @@ impl Orchestrator {
                 self.store.unload_timeline(id);
             }
         }
+        self.rearm_quota_resets();
     }
 
     pub fn store(&self) -> &Store {
@@ -436,11 +441,7 @@ impl Orchestrator {
             (ItemBody::Assistant { text } | ItemBody::Reasoning { text }, Delta::Text(d) | Delta::Reasoning(d)) => {
                 text.push_str(d)
             }
-            (ItemBody::Tool(call), Delta::ToolOutput(d)) => {
-                if call.output.len() < INLINE_OUTPUT {
-                    call.output.push_str(d);
-                }
-            }
+            (ItemBody::Tool(call), Delta::ToolOutput(d)) => append_output_tail(&mut call.output, d),
             (ItemBody::Tool(call), Delta::ToolInput(d)) => {
                 if call.input.len() < INLINE_OUTPUT {
                     call.input.push_str(d);
@@ -490,26 +491,6 @@ impl Orchestrator {
             }
         }
         let _ = self.store.sync();
-    }
-
-    // ── Providers ────────────────────────────────────────────────────────
-
-    pub fn refresh_providers(&self) {
-        for kind in ProviderKind::ALL {
-            self.probe_provider(kind);
-        }
-    }
-
-    pub(crate) fn set_provider(&mut self, mut info: ProviderInfo) {
-        if let Some(slot) = self.providers.iter_mut().find(|p| p.kind == info.kind) {
-            if info.quota.is_empty() {
-                info.quota = std::mem::take(&mut slot.quota);
-            }
-            *slot = info;
-        } else {
-            self.providers.push(info);
-        }
-        self.emit(Event::Providers(self.providers.clone()));
     }
 
     pub fn handle_internal(&mut self, msg: Internal) {
@@ -587,17 +568,8 @@ impl Orchestrator {
                     self.emit(Event::ProjectUpserted(p));
                 }
             }
-            Internal::QuotaReset(thread) => {
-                let limited = matches!(
-                    self.store.thread(thread).map(|t| &t.status),
-                    Some(ThreadStatus::RateLimited { .. })
-                );
-                if limited {
-                    self.update_thread(thread, |t| t.status = ThreadStatus::Idle);
-                    self.notice(thread, NoticeLevel::Info, "Your quota has reset.".into());
-                    self.start_next_queued(thread);
-                }
-            }
+            Internal::TitleGenerated { thread, seed, title } => self.on_title_generated(thread, seed, title),
+            Internal::QuotaReset(thread) => self.quota_reset(thread),
         }
     }
 
@@ -608,6 +580,8 @@ impl Orchestrator {
     pub fn handle(&mut self, command: Command) -> Outcome {
         match command {
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
+            Command::ReadBlob { hash } => Outcome::Deferred(self.read_blob(hash)),
+            Command::GenerateText { thread, task, input } => Outcome::Deferred(self.generate_text(thread, task, input)),
             command @ (Command::Diff { .. }
             | Command::RevertPatch { .. }
             | Command::RestoreCheckpoint { .. }
@@ -655,6 +629,9 @@ impl Orchestrator {
             Command::EditQueued { thread, item, text } => self.edit_queued(thread, item, text),
             Command::EditAndResend { thread, item, text } => self.edit_and_resend(thread, item, text),
             Command::Interrupt { thread } => self.interrupt(thread),
+            Command::ForceStop { thread } => self.force_stop(thread),
+            Command::Retry { thread } => self.retry(thread),
+            Command::ReadBlob { hash } => futures_block_on(self.read_blob(hash)),
             Command::Resolve { thread, request, decision } => self.resolve(thread, request, decision),
             Command::Search { query, limit } => {
                 // Synchronous callers (tests) get a blocking scan.
@@ -675,6 +652,9 @@ impl Orchestrator {
                 Ok(Reply::Done)
             }
             Command::UpdateSettings { settings } => self.update_settings(settings),
+            Command::NewSession { thread } => self.new_session(thread),
+            // Needs the engine's runtime free; only `handle` runs it.
+            Command::GenerateText { .. } => Err("Text generation runs asynchronously.".into()),
             Command::Diff { .. }
             | Command::RevertPatch { .. }
             | Command::RestoreCheckpoint { .. }
@@ -799,7 +779,7 @@ impl Orchestrator {
             return Err("That thread no longer exists.".into());
         }
         let config = patch.config.clone();
-        let previous_provider = self.store.thread(id).map(|t| t.config.provider);
+        let previous = self.store.thread(id).map(|t| t.config.clone()).unwrap_or_default();
         self.update_thread(id, |t| {
             if let Some(title) = patch.title {
                 t.title = title;
@@ -841,24 +821,9 @@ impl Orchestrator {
             });
         }
         if let Some(config) = config {
-            if previous_provider.is_some_and(|p| p != config.provider) {
-                // Another agent runtime: its session ids are meaningless to
-                // the new one, so end the old session and start fresh.
-                if let Some(session) = self.runtimes.get_mut(&id).and_then(|r| r.session.take()) {
-                    session.send(SessionInput::Shutdown);
-                }
-                let had_history = self.store.thread(id).is_some_and(|t| t.turns > 0);
-                self.update_thread(id, |t| t.session = None);
-                if had_history {
-                    self.notice(
-                        id,
-                        NoticeLevel::Info,
-                        format!("Switched to {}. It starts a new session and doesn’t see the earlier messages.", config.provider.label()),
-                    );
-                }
-            } else if let Some(session) = self.runtimes.get(&id).and_then(|r| r.session.as_ref()) {
-                session.send(SessionInput::Configure(config.clone()));
-            }
+            // Another instance ends the session and hands the conversation
+            // off; the same one applies the change live.
+            self.apply_config_change(id, &previous, &config);
             self.emit(Event::DefaultsChanged(config));
         }
         Ok(Reply::Done)
@@ -969,6 +934,9 @@ impl Orchestrator {
         if thread.archived {
             return Err("This thread is archived. Unarchive it to continue.".into());
         }
+        if let Some(result) = self.intercept_clear(thread_id, &text, &attachments) {
+            return result;
+        }
         self.store.load_timeline(thread_id).map_err(|e| e.to_string())?;
         let in_turn = self.runtimes.get(&thread_id).is_some_and(|r| r.turn.is_some());
         // Between a turn's end and its snapshot nothing can be steered; new
@@ -989,6 +957,7 @@ impl Orchestrator {
         self.put_item(thread_id, item);
         if thread.title.is_empty() {
             let title = title_from(&text);
+            self.note_seeded_title(thread_id, title.clone());
             self.update_thread(thread_id, |t| t.title = title);
         }
         // Writing to a settled or snoozed thread brings it back.
@@ -1044,7 +1013,8 @@ impl Orchestrator {
         }
         let thread = self.store.thread(thread_id).cloned().ok_or("That thread no longer exists.")?;
         let cwd = self.workspace_dir(&thread);
-        let (binary, mut env) = super::settings::provider_launch(self.store.settings(), thread.config.provider);
+        let launch = self.launch_of(&self.instance_of(&thread.config));
+        let (binary, args, mut env) = (launch.binary, launch.args, launch.env);
         if let Some(port) = thread.workspace.port_base {
             env.push(("PORT".to_owned(), port.to_string()));
             env.push(("ORBIT_PORT_BASE".to_owned(), port.to_string()));
@@ -1057,6 +1027,7 @@ impl Orchestrator {
             resume: thread.session.clone(),
             resume_at: runtime.resume_at.take(),
             binary,
+            args,
             env,
             extra_dirs: vec![self.store.dir().join("blobs")],
         };
@@ -1081,7 +1052,8 @@ impl Orchestrator {
             self.put_item(thread_id, item);
         }
         self.ensure_session(thread_id)?;
-        let prompt = self.prompt_input(thread_id, user_item, text, &attachments, false);
+        let mut prompt = self.prompt_input(thread_id, user_item, text, &attachments, false);
+        self.attach_handoff(thread_id, &mut prompt);
         let base = self.last_checkpoint(thread_id);
         let repo = self.repo_of(&thread);
         let runtime = self.runtimes.get_mut(&thread_id).unwrap();
@@ -1384,13 +1356,18 @@ impl Orchestrator {
             AgentEvent::Ready { session_id, .. } => {
                 self.update_thread(thread_id, |t| t.session = Some(session_id));
             }
-            AgentEvent::Catalog(info) => self.set_provider(info),
-            AgentEvent::TurnStarted { prompt } => {
+            AgentEvent::Catalog(info) => {
+                let info = self.tag_with_instance(thread_id, info);
+                self.set_provider(info)
+            }
+            AgentEvent::TurnStarted { .. } => {
                 let thread = self.store.thread(thread_id).cloned().unwrap();
                 let runtime = self.runtimes.entry(thread_id).or_default();
-                if runtime.turn.is_none() && prompt.is_none() {
+                if runtime.turn.is_none() {
                     // The agent started a turn on its own (background work
-                    // finished): track it like any other turn.
+                    // finished), or one the adapter queued (a steer the
+                    // runtime could not take mid-turn): track it like any
+                    // other turn.
                     runtime.turn = Some(ActiveTurn::new(thread.turns + 1));
                     self.update_thread(thread_id, |t| {
                         t.turns += 1;
@@ -1453,16 +1430,12 @@ impl Orchestrator {
                 let Some(mut item) = self.item(thread_id, id) else { return };
                 if let ItemBody::Tool(call) = &mut item.body {
                     if output.len() > INLINE_OUTPUT {
-                        let mut cut = INLINE_OUTPUT;
-                        while !output.is_char_boundary(cut) {
-                            cut -= 1;
-                        }
                         call.output_blob = self
                             .store
                             .put_blob(format!("{call_id}.txt"), "text/plain".into(), output.as_bytes())
                             .ok()
                             .map(|a| a.hash);
-                        call.output = output[..cut].to_owned();
+                        call.output = output_tail(&output, INLINE_OUTPUT).to_owned();
                     } else if !output.is_empty() {
                         call.output = output;
                     }
@@ -1530,8 +1503,8 @@ impl Orchestrator {
                 self.emit(Event::UsageChanged { thread: thread_id, usage: live });
             }
             AgentEvent::Quota { window, utilization, resets_ms, rejected } => {
-                let kind = self.store.thread(thread_id).map(|t| t.config.provider).unwrap_or_default();
-                if let Some(info) = self.providers.iter().find(|p| p.kind == kind).cloned() {
+                let config = self.store.thread(thread_id).map(|t| t.config.clone()).unwrap_or_default();
+                if let Some(info) = self.providers.iter().find(|p| p.serves(&config)).cloned() {
                     let mut info = info;
                     let entry = QuotaWindow { window: window.clone(), utilization, resets_ms, rejected };
                     match info.quota.iter_mut().find(|q| q.window == window) {
@@ -1548,7 +1521,9 @@ impl Orchestrator {
                 }
             }
             AgentEvent::TurnFinished { outcome, usage, duration_ms } => {
-                self.finish_turn(thread_id, outcome, usage, duration_ms)
+                let completed = outcome == TurnOutcome::Completed;
+                self.finish_turn(thread_id, outcome, usage, duration_ms);
+                self.after_turn_for_title(thread_id, completed);
             }
             AgentEvent::TitleChanged(title) => self.update_thread(thread_id, |t| t.title = title),
             AgentEvent::Exited { error } => {

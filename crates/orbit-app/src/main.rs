@@ -76,6 +76,9 @@ fn main() {
         orbit_terminal::init(cx);
         theme::install(cx);
         keymap::install(&startup.data_dir, cx);
+        thread::init(cx);
+        // The user's bindings go last so they win over every default.
+        keymap::reload(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         // Orbit is one window. Windows quits when its last window closes;
         // macOS and Linux keep the process alive with nothing to show, so

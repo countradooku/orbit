@@ -1,0 +1,2 @@
+# Data folders written by older Orbit versions: bytes, never text.
+*.log binary

@@ -35,3 +35,12 @@ path = "tests/support/fake_codex.rs"
 test = false
 doc = false
 bench = false
+
+# A scripted stand-in for ACP agents, `pi --mode rpc` and `opencode serve`,
+# used only by those adapters' tests (`CARGO_BIN_EXE_orbit-fake-agent`).
+[[bin]]
+name = "orbit-fake-agent"
+path = "tests/support/fake_agent.rs"
+test = false
+doc = false
+bench = false

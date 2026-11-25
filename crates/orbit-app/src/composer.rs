@@ -167,6 +167,23 @@ impl Composer {
         input.update(cx, |input, cx| input.set_value(text, window, cx));
     }
 
+    /// Adds `markdown` (a quotation the reader is replying to) to the end of
+    /// the draft, keeps what was already written, and puts the caret after
+    /// it with focus in the box. Used by the timeline's Reply and Quote.
+    pub fn append_to_draft(composer: &Entity<Self>, markdown: &str, window: &mut Window, cx: &mut App) {
+        let input = composer.read(cx).input.clone();
+        input.update(cx, |input, cx| {
+            let draft = input.value();
+            let text = match draft.trim_end() {
+                "" => format!("{markdown}\n\n"),
+                draft => format!("{draft}\n\n{markdown}\n\n"),
+            };
+            input.set_value("", window, cx);
+            input.insert(text, window, cx);
+            input.focus(window, cx);
+        });
+    }
+
     /// The provider's slash commands matching the word being typed, while
     /// the text is a lone `/word`.
     fn slash_matches(&self, cx: &App) -> Vec<SlashCommand> {
@@ -179,7 +196,7 @@ impl Composer {
             return Vec::new();
         }
         let word = word.to_lowercase();
-        let Some(provider) = self.app.read(cx).state().provider(self.config.provider) else { return Vec::new() };
+        let Some(provider) = self.app.read(cx).state().provider_for(&self.config) else { return Vec::new() };
         let mut hits: Vec<SlashCommand> = provider
             .slash_commands
             .iter()
@@ -448,7 +465,7 @@ impl Composer {
             .app
             .read(cx)
             .state()
-            .provider(self.config.provider)
+            .provider_for(&self.config)
             .is_none_or(|p| p.modes.is_empty() || p.modes.iter().any(|m| m.mode == Mode::Plan));
         if !supports_plan {
             return None;
@@ -569,7 +586,7 @@ impl Composer {
 }
 
 fn selected_model<'a>(config: &ThreadConfig, providers: &'a [ProviderInfo]) -> Option<&'a ModelInfo> {
-    let provider = providers.iter().find(|p| p.kind == config.provider)?;
+    let provider = providers.iter().find(|p| p.serves(config))?;
     provider
         .models
         .iter()
@@ -602,7 +619,7 @@ fn render_model_menu(
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.muted_foreground)
                 .child(ui::provider_icon(provider.kind, cx).xsmall())
-                .child(provider.kind.label())
+                .child(provider.display_name().to_owned())
                 .when(!provider.installed, |el| el.child(div().flex_1().text_right().child("Not installed"))),
         );
         if !provider.installed {
@@ -617,12 +634,15 @@ fn render_model_menu(
             );
         }
         for model in &provider.models {
-            let selected = config.provider == provider.kind
+            // WP9 hook: a provider entry is an instance (a runtime, or a
+            // second account of it); picking a model picks the instance.
+            let selected = provider.serves(config)
                 && (config.model == model.slug || (config.model.is_empty() && model.is_default));
             let (kind, slug, this) = (provider.kind, model.slug.clone(), this.clone());
+            let instance = if provider.instance_id() == kind.id() { String::new() } else { provider.instance_id().to_owned() };
             list = list.child(
                 h_flex()
-                    .id(SharedString::from(format!("model-{}-{}", provider.kind.label(), model.slug)))
+                    .id(SharedString::from(format!("model-{}-{}", provider.instance_id(), model.slug)))
                     .px_2()
                     .py_1p5()
                     .gap_2()
@@ -631,14 +651,15 @@ fn render_model_menu(
                     .when(selected, |el| el.bg(theme.accent))
                     .when(!selected, |el| el.hover(|s| s.bg(theme.muted)))
                     .on_click(move |_, _, cx| {
-                        let slug = slug.clone();
+                        let (slug, instance) = (slug.clone(), instance.clone());
                         let _ = this.update(cx, |this, cx| {
                             this.update_config(
                                 |c| {
-                                    if c.provider != kind {
+                                    if c.provider != kind || c.instance != instance {
                                         c.options.clear();
                                     }
                                     c.provider = kind;
+                                    c.instance = instance;
                                     c.model = slug;
                                 },
                                 cx,

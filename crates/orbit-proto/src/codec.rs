@@ -96,6 +96,15 @@ pub fn write_frame<T: Encode + ?Sized>(value: &T, out: &mut Vec<u8>) -> usize {
     out.len() - start
 }
 
+/// Appends one frame around raw `payload` bytes (headers that are not a
+/// `bitcode` value).
+pub fn write_raw_frame(payload: &[u8], out: &mut Vec<u8>) {
+    out.reserve(FRAME_HEADER + payload.len());
+    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    out.extend_from_slice(&crc32fast::hash(payload).to_le_bytes());
+    out.extend_from_slice(payload);
+}
+
 /// Reads framed values out of a byte buffer without copying payloads.
 pub struct FrameReader<'a> {
     buf: &'a [u8],

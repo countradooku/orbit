@@ -20,6 +20,7 @@ fn main() {
             ItemBody::Plan { steps } => format!("plan {} steps", steps.len()),
             ItemBody::Notice { level, text } => format!("notice {level:?} {text:?}"),
             ItemBody::TurnEnd(s) => format!("turn-end {:?}", s.duration_ms),
+            ItemBody::Handoff(h) => format!("handoff {} -> {} ({} tokens)", h.from, h.to, h.tokens),
         };
         println!("  t{} {:?} {}", item.turn, item.status, summary);
     }

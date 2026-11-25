@@ -58,8 +58,8 @@ struct KeymapState {
 
 impl Global for KeymapState {}
 
-/// Binds Orbit's defaults and the user's file. Call once at start, before
-/// any menu is built.
+/// Binds Orbit's defaults. Call once at start; call [`reload`] after every
+/// other module has bound its keys, so the user's rules come last and win.
 pub fn install(data_dir: &Path, cx: &mut App) {
     let defaults: Vec<KeyBinding> = actions::defaults()
         .into_iter()
@@ -72,7 +72,6 @@ pub fn install(data_dir: &Path, cx: &mut App) {
         .collect();
     cx.bind_keys(defaults);
     cx.set_global(KeymapState { path: data_dir.join(FILE_NAME), modified: None, last: Report::default() });
-    reload(cx);
 }
 
 /// The user's keybindings file.
