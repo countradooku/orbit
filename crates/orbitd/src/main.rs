@@ -121,6 +121,10 @@ fn main() {
     let endpoint = orbit_net::endpoint::start(engine.clone(), &args.data, "orbitd")
         .inspect_err(|err| log::warn!("no local control endpoint: {err}"))
         .ok();
+    // Chat bots (Telegram, Slack, Discord), outbound connections only.
+    let bots = orbit_bots::Bots::start(engine.clone(), &args.data)
+        .inspect_err(|err| log::warn!("no chat bots: {err}"))
+        .ok();
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
     let shutdown_engine = engine.clone();
     runtime.block_on(async move {
@@ -135,6 +139,9 @@ fn main() {
     });
     if let Some(endpoint) = endpoint {
         endpoint.close();
+    }
+    if let Some(bots) = bots {
+        bots.stop();
     }
     shutdown_engine.shutdown();
 }

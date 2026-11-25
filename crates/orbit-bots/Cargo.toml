@@ -1,0 +1,28 @@
+[package]
+name = "orbit-bots"
+description = "Chat bots for Orbit: drive agents from Telegram, Slack and Discord over outbound connections only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+orbit-proto = { workspace = true }
+orbit-core = { workspace = true }
+orbit-net = { workspace = true }
+bitcode = { workspace = true }
+crossfire = { workspace = true }
+tokio = { workspace = true }
+sockudo-ws = { workspace = true }
+sonic-rs = { workspace = true }
+serde = { workspace = true }
+log = { workspace = true }
+bytes = "1"
+# TLS for the Slack and Discord websockets: the rustls (ring) stack the
+# engine's HTTP client already links, with the operating system's roots.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-native-certs = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
