@@ -204,7 +204,12 @@ impl Harness {
 
     /// Applies events until `done` holds or two seconds pass.
     fn wait(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        self.wait_for(what, Duration::from_secs(2), done);
+    }
+
+    /// [`Self::wait`] with its own limit, for steps that run git.
+    fn wait_for(&mut self, what: &str, limit: Duration, done: impl Fn(&Self) -> bool) {
+        let deadline = Instant::now() + limit;
         while !done(self) {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             match self.events.try_recv() {
@@ -398,8 +403,11 @@ fn a_project_without_git_gets_checkpoints_diffs_and_undo() {
         panic!()
     };
     h.send(id, "write");
-    h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
-    h.wait("checkpoint", |h| {
+    // The first turn creates the shadow repository and two snapshots: real
+    // git work, slow on a loaded machine.
+    let git = Duration::from_secs(20);
+    h.wait_for("turn", git, |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
+    h.wait_for("checkpoint", git, |h| {
         h.items.values().any(|i| matches!(&i.body, ItemBody::TurnEnd(s) if s.checkpoint.is_some() && s.base_checkpoint.is_some()))
     });
     let Reply::Diff(patch) = h.call(Command::Diff { thread: id, scope: DiffScope::Turn(1) }) else { panic!() };

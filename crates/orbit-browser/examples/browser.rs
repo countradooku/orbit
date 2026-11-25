@@ -1,6 +1,6 @@
 //! A window with one preview browser.
 //!
-//! `cargo run -p orbit-browser --example standalone [-- [ADDRESS] [--dark] [--overlay dialog|popover|notification]]`
+//! `cargo run -p orbit-browser --example browser [-- [ADDRESS] [--dark] [--overlay dialog|popover|notification]]`
 //!
 //! Loads `https://example.com` unless an address (a URL, `localhost:3000`
 //! or a port) is given. The title bar's Popover button and Overlays menu

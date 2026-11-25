@@ -1825,7 +1825,7 @@ impl Render for ReviewView {
             v_flex().flex_1().items_center().justify_center().child(Spinner::new()).into_any_element()
         } else if self.data.is_empty() {
             let help = match self.scope {
-                Scope::Uncommitted => "Everything is committed.",
+                Scope::Uncommitted => "Everything is committed. When the agent edits files, each change shows here to keep or revert.",
                 Scope::Branch => "This branch has nothing the other one doesn’t.",
                 _ => "This scope didn’t change any files.",
             };

@@ -142,7 +142,7 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | Dropped files on the sidebar rejected with guidance | web/components/sidebar/SidebarFolderDrop.tsx | Missing | | Offer to attach to the hovered thread instead of only refusing. | P2 |
 | Welcome-page import: scan Claude Code / Codex / Pi history for active repos | web/components/onboarding/WelcomePage.tsx, srv/project/AgentSessionScanner.ts:85-92 | Missing | | Import is the top migration path (#330, #207 import existing sessions). | P1 |
 | Import review: pre-checked candidates, Select all / none, clones grouped, 200 messages per conversation | srv/project/AgentSessionImporter.ts, doc/welcome-page.md | Missing | | Keep full history by reference to the provider's own files instead of truncating to 200 messages. | P2 |
-| Reopen the welcome page from Settings / About | web/components/onboarding/FirstRunGate.tsx | Missing | | | P2 |
+| Reopen the welcome page from Settings / About | web/components/onboarding/FirstRunGate.tsx | Done | app/onboarding/mod.rs, app/onboarding/flow.rs | First run detects agents (exact install and sign-in steps), theme with a live preview, a project by folder or clone, and a first task; Settings › About › Run setup again; an activation checklist on Home. | P2 |
 | Native fork of imported Claude sessions (history worker) | srv/claudeHistoryWorker.ts | Missing | | | P2 |
 | Import T3 Code's own threads (statev2.sqlite) | doc/thread-migration.md | Missing | | Lets T3 users switch without losing history. | P2 |
 
@@ -910,11 +910,11 @@ Depends on: WP7 (palette and menu entries) and WP8 (settings pages).
 | Relay traces and mobile crash reports | srv/telemetry/* | N/A | | Hosted T3 services and mobile app. | P2 |
 | Agent feedback modes (send to the T3 team) | ct/settings.ts (`agentFeedback.mode`) | N/A | | Hosted T3 feedback. | P2 |
 | User OTLP export (traces, metrics, logs, Test) | web/components/settings/TelemetryExportSettings.tsx | Missing | | Opt-in, local endpoint only. | P2 |
-| One update flow for providers, hosts and the app (progress, retry, Later) | web/components/ServerUpdateAction.tsx | Missing | | | P2 |
-| Update channels (Stable, Nightly) | desk/updates/updateChannels.ts | Missing | | Quit fully before replacing files (#25450). | P2 |
+| One update flow for providers, hosts and the app (progress, retry, Later) | web/components/ServerUpdateAction.tsx | Partial | app/update/ | The app: background download with progress, Try again, Restart to update or Later. Providers and hosts not yet. | P2 |
+| Update channels (Stable, Nightly) | desk/updates/updateChannels.ts | Done | app/update/, docs/RELEASING.md | Stable, Beta, Nightly; minisign-verified; a helper swaps files only after the old process released its lock, and rolls back a version that doesn't start. | P2 |
 | Storage maintenance (Delete now, last-run stats) | web/components/settings/StorageSettings.tsx | Partial | core/store.rs:386-452 | Logs compact and blobs are collected automatically; no UI. | P2 |
-| Diagnostics (process tree with CPU and memory, signals, resource history, open logs, copy trace id) | web/components/settings/DiagnosticsSettings.tsx | Partial | app/settings.rs:107-126 | Data folder path and "Show in Explorer". | P2 |
-| About (version, licences, privacy) | Settings → About | Missing | | | P2 |
+| Diagnostics (process tree with CPU and memory, signals, resource history, open logs, copy trace id) | web/components/settings/DiagnosticsSettings.tsx | Partial | app/diagnostics/ | Log file, crash reports offered on the next start, a redacted diagnostics zip. No process tree yet. | P2 |
+| About (version, licences, privacy) | Settings → About | Done | app/diagnostics/about.rs | Version, commit, build, renderer, system; shortcuts, What's new, docs. No licence list yet. | P2 |
 
 ### Desktop app
 
@@ -1096,7 +1096,7 @@ Not T3 features, so they are not in the counts above, but the design commits to 
 | #980, #4182, #12689 "Not responding", CPU, typing lag | Yes | Native UI; engine on its own thread; no polling. |
 | #9650 `_MEI*` folders left in `%TEMP%` | Yes | No PyInstaller helpers. |
 | #8341, #15001, #4750 corrupt or undecryptable state files brick the app | Yes | No encrypted catalog; logs are append-only with CRC frames; compaction and blobs write a temp file and rename (core/store.rs:96-112, :436-438). |
-| #25450 update fails while the old process lives on | Not yet | No updater. |
+| #25450 update fails while the old process lives on | Yes | The update helper waits for the data folder's instance lock before swapping files (app/update/install.rs). |
 | #192, #14393, #13738, #19735, #17090 WSL support and connection | Partly | orbitd can run in WSL by hand. |
 | #40498 duplicate `git log` per turn diff | Yes | One diff per tree pair, cached and shared (core/git/mod.rs:14-16). |
 | #731 Ctrl+W does not close the terminal | Not yet | |

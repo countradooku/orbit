@@ -25,6 +25,8 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     FolderTree, FileCode, FileImage, FileSpreadsheet, Braces, ListCollapse, AtSign, FlaskConical,
     // Usage: the page, failover, export.
     ChartColumn, ArrowLeftRight, Download,
+    // First run, updates and diagnostics.
+    Circle, CircleArrowUp, Monitor, LifeBuoy,
 ]);
 
 /// Orbit's icons first, then GPUI Kit's defaults.

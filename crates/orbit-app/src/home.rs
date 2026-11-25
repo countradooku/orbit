@@ -112,6 +112,15 @@ impl HomeView {
         });
     }
 
+    /// Sets the next send up as a two-agent race (the checklist's "Try a
+    /// race") and puts the cursor in the composer.
+    pub fn arm_race(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(race) = self.composer.read(cx).race().cloned() {
+            race.update(cx, |race, cx| race.set_count(2, cx));
+        }
+        Composer::focus(&self.composer.clone(), window, cx);
+    }
+
     pub fn focus_composer(home: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let composer = home.read(cx).composer.clone();
         Composer::focus(&composer, window, cx);
@@ -300,6 +309,7 @@ impl Render for HomeView {
                             .child(shortcut("Inbox", &GoInbox))
                             .child(shortcut("Add project", &AddProject)),
                     )
+                    .children(crate::onboarding::checklist::render(cx))
                     .when(!recent.is_empty(), |el| {
                         el.child(
                             v_flex()
