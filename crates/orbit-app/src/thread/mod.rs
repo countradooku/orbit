@@ -52,6 +52,7 @@ use minimap::{Mark, Minimap};
 use questions::Questions;
 use terminal::{TerminalPanel, TerminalPanelEvent};
 use crate::actions::ToggleBrowser;
+use crate::forge::{ShipAction, ShipPill};
 use crate::{format, ui};
 
 pub use rows::Row;
@@ -134,6 +135,11 @@ pub struct ThreadView {
     shown: bool,
     /// Releases a hidden page after a while.
     browser_suspend: Task<()>,
+    /// Where the thread's work stands for shipping (the header's pill).
+    ship: Option<ShipState>,
+    /// A ship step (push) is running.
+    ship_busy: bool,
+    ship_fetch: Task<()>,
     /// When the running turn started (as seen here), for the elapsed time.
     turn_started: Option<Instant>,
     /// When the reader pressed Stop on the running turn.
@@ -212,6 +218,9 @@ impl ThreadView {
             urls: browser::Suggestions::default(),
             shown: true,
             browser_suspend: Task::ready(()),
+            ship: None,
+            ship_busy: false,
+            ship_fetch: Task::ready(()),
             turn_started: None,
             stop_requested: None,
             dismissed: None,
@@ -226,6 +235,14 @@ impl ThreadView {
         if browser::remembered(id, cx).open {
             view.set_browser_open(true, window, cx);
         }
+        // The ship pill reads git and the host again when the user comes back
+        // to the window (they may have pushed or merged elsewhere).
+        view._subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() && this.shown {
+                this.refresh_ship(true, Duration::ZERO, cx);
+            }
+        }));
+        view.refresh_ship(false, Duration::ZERO, cx);
         view
     }
 
@@ -274,6 +291,55 @@ impl ThreadView {
         window.defer(cx, move |window, cx| TerminalPanel::focus(&focus, window, cx));
         self.terminal = Some(panel);
         cx.notify();
+    }
+
+    // ── Ship pill ────────────────────────────────────────────────────────
+
+    /// Reads where the work stands, after `delay` (file changes come in
+    /// bursts; a newer request replaces a waiting one). `refresh` asks the
+    /// host again instead of its cache.
+    fn refresh_ship(&mut self, refresh: bool, delay: Duration, cx: &mut Context<Self>) {
+        let (app, thread) = (self.app.clone(), self.id);
+        self.ship_fetch = cx.spawn(async move |this, cx| {
+            if !delay.is_zero() {
+                cx.background_executor().timer(delay).await;
+            }
+            let task = cx.update(|cx| crate::forge::ship_pill::fetch(&app, thread, refresh, cx));
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.ship_busy = false;
+                match result {
+                    Ok(state) => this.ship = Some(state),
+                    Err(err) => log::debug!("ship state: {err}"),
+                }
+                cx.notify();
+            });
+        });
+    }
+
+    /// The pill's next step: the host's steps run in the forge module; commit,
+    /// push and the pull request use the review's dialogs.
+    fn ship_action(&mut self, action: ShipAction, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.ship.clone() else { return };
+        let (app, thread) = (self.app.clone(), self.id);
+        if crate::forge::ship_pill::perform(&app, thread, &state, action, window, cx) {
+            self.refresh_ship(true, Duration::from_secs(2), cx);
+            return;
+        }
+        let view = cx.weak_entity();
+        let after: crate::review::AfterGit = Rc::new(move |_, cx| {
+            let _ = view.update(cx, |this, cx| this.refresh_ship(true, Duration::ZERO, cx));
+        });
+        match action {
+            ShipAction::Commit => crate::review::commit_changes(app, thread, after, window, cx),
+            ShipAction::Push => {
+                self.ship_busy = true;
+                cx.notify();
+                crate::review::push(app, thread, after, window, cx);
+            }
+            ShipAction::CreatePullRequest => crate::review::create_pull_request(app, thread, after, window, cx),
+            ShipAction::FixChecks | ShipAction::Merge | ShipAction::View => {}
+        }
     }
 
     // ── Preview browser ──────────────────────────────────────────────────
@@ -411,6 +477,7 @@ impl ThreadView {
                 None => self.rebuild(true, cx),
                 Some(changes) => self.apply_changes(changes, cx),
             },
+            AppEvent::Workspace(thread) if *thread == self.id => self.refresh_ship(false, Duration::from_millis(800), cx),
             AppEvent::Usage(thread) if *thread == self.id => {
                 let usage = self.app.read(cx).state().usage(self.id);
                 self.composer.update(cx, |composer, cx| composer.set_usage(Some(usage), cx));
@@ -1093,6 +1160,12 @@ impl ThreadView {
                             .child(model),
                     ),
             )
+            .when_some(self.ship.clone(), |el, state| {
+                let view = view.clone();
+                el.child(ShipPill::new(("ship-pill", id.0), state).loading(self.ship_busy).on_action(move |action, window, cx| {
+                    let _ = view.update(cx, |this, cx| this.ship_action(action, window, cx));
+                }))
+            })
             .child(ui::ContextMeter::new(("header-meter", id.0), usage))
             .when(!format::cost(usage.cost_micros).is_empty(), |el| {
                 el.child(div().text_xs().text_color(theme.muted_foreground).child(format::cost(usage.cost_micros)))
