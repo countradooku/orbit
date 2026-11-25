@@ -1,0 +1,13 @@
+# A data plugin: one theme set with a dark and a light theme. No code, no
+# capabilities, installs in one click.
+id = "midnight-theme"
+name = "Midnight"
+version = "1.0.0"
+description = "A calm blue-black theme for long sessions, with a matching light variant."
+publisher = "Orbit examples"
+license = "MIT"
+categories = ["themes"]
+engines = { orbit = ">=0.1.0" }
+
+[[themes]]
+path = "themes/midnight.json"

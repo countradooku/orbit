@@ -943,6 +943,113 @@ pub static SPECS: &[Spec] = &[
         )
     },
     // ── End of usage ─────────────────────────────────────────────────────
+    // ── Plugins ──────────────────────────────────────────────────────────
+    // `new`, `validate` and `pack` work on a folder here and need no
+    // engine; the rest act on the host's installed plugins. Installing is
+    // not an MCP tool: an agent must not grant itself capabilities.
+    Spec {
+        details: "Writes <dir>/<id>/orbit-plugin.toml to start from. See docs/PLUGINS.md for every contribution.",
+        connects: false,
+        examples: &["orbit plugin new my-theme", "orbit plugin new guard --name \"My guard\" --dir ~/plugins"],
+        ..spec(
+            &["plugin", "new"],
+            "Start a plugin in a new folder",
+            &[
+                pos("id", Kind::Str, "The plugin's id: lowercase letters, digits and hyphens."),
+                arg("name", Kind::Str, "Its display name; default: the id."),
+                arg("dir", Kind::Path, "Where to create the folder; default: the current folder."),
+            ],
+        )
+    },
+    Spec {
+        details: "Checks the manifest (unknown keys are errors) and every file it names: themes (contrast), panels, \
+                  prompts, templates and the WebAssembly module. Prints what it contributes, its capabilities and its \
+                  content hash (what catalogs pin).",
+        connects: false,
+        examples: &["orbit plugin validate", "orbit plugin validate ./my-theme --json"],
+        ..spec(&["plugin", "validate"], "Check a plugin folder", &[opt_pos("path", Kind::Path, "The plugin folder; default: the current folder.")])
+    },
+    Spec {
+        details: "Writes a .orbitplugin archive (a zip of the folder, without .git and target) to install or publish.",
+        connects: false,
+        examples: &["orbit plugin pack ./my-theme --out my-theme-1.0.0.orbitplugin"],
+        ..spec(
+            &["plugin", "pack"],
+            "Pack a plugin folder into a .orbitplugin archive",
+            &[
+                opt_pos("path", Kind::Path, "The plugin folder; default: the current folder."),
+                arg("out", Kind::Path, "The archive to write; default: <id>-<version>.orbitplugin here.").short('o'),
+            ],
+        )
+    },
+    Spec {
+        details: "Installs from a folder or a .orbitplugin archive (sent to the host, so this works with remote hosts \
+                  too), a git repository at a pinned commit (--commit, optionally --hash), or a catalog (--catalog). \
+                  A plugin that asks for capabilities is shown first; --yes grants them. An update keeps the \
+                  capabilities it had and asks for new ones.",
+        examples: &[
+            "orbit plugin install ./midnight-theme",
+            "orbit plugin install guard-rm.orbitplugin --yes",
+            "orbit plugin install https://github.com/o/r --commit 3f2c…",
+            "orbit plugin install midnight-theme --catalog Examples",
+        ],
+        ..spec(
+            &["plugin", "install"],
+            "Install or update a plugin",
+            &[
+                pos("source", Kind::Str, "A folder, a .orbitplugin file, a git URL, or a catalog's plugin id."),
+                arg("commit", Kind::Str, "For git: the full commit id to install."),
+                arg("hash", Kind::Str, "For git: the content hash its files must have (blake3:…)."),
+                arg("catalog", Kind::Str, "Install the plugin with this id from this catalog."),
+                arg("yes", Kind::Flag, "Grant every capability it asks for.").short('y'),
+            ],
+        )
+    },
+    Spec {
+        details: "Loads the folder in place on this computer's host and reloads it whenever its files change. A dev \
+                  plugin replaces an installed one with the same id.",
+        examples: &["orbit plugin dev ./my-plugin --yes"],
+        ..spec(
+            &["plugin", "dev"],
+            "Load a plugin folder in place, reloading on change",
+            &[
+                opt_pos("path", Kind::Path, "The plugin folder; default: the current folder."),
+                arg("yes", Kind::Flag, "Grant every capability it asks for.").short('y'),
+            ],
+        )
+    },
+    Spec {
+        tool: read("list_plugins", "List plugins"),
+        aliases: &["plugins"],
+        ..spec(&["plugin", "list"], "List installed plugins", &[])
+    },
+    Spec {
+        details: "Turns a plugin on. One that asks for capabilities it was not granted stays waiting for approval \
+                  unless --yes grants them.",
+        ..spec(
+            &["plugin", "enable"],
+            "Turn a plugin on",
+            &[pos("id", Kind::Str, "The plugin's id."), arg("yes", Kind::Flag, "Grant every capability it asks for.").short('y')],
+        )
+    },
+    Spec { ..spec(&["plugin", "disable"], "Turn a plugin off", &[pos("id", Kind::Str, "The plugin's id.")]) },
+    Spec {
+        details: "Deletes its files (a dev folder is left alone), storage, settings, secrets and log.",
+        ..spec(&["plugin", "remove"], "Uninstall a plugin", &[pos("id", Kind::Str, "The plugin's id.")])
+    },
+    Spec {
+        details: "Every host API call (allowed or denied), hook decision, log line and lifecycle change, oldest first.",
+        tool: read("plugin_logs", "Read plugin logs"),
+        examples: &["orbit plugin logs guard-rm --limit 20"],
+        ..spec(
+            &["plugin", "logs"],
+            "Show a plugin's audit log",
+            &[
+                opt_pos("id", Kind::Str, "The plugin's id; default: every plugin."),
+                arg("limit", Kind::Int, "How many lines.").default("100"),
+            ],
+        )
+    },
     Spec {
         connects: false,
         ..spec(&["agent-context"], "Print a guide for agents driving Orbit", &[])
@@ -1054,6 +1161,18 @@ mod tests {
     fn automation_recipes_match_the_engine() {
         let engine: Vec<&str> = orbit_core::automations::recipes::RECIPES.iter().map(|r| r.id).collect();
         assert_eq!(RECIPES, engine.as_slice());
+    }
+
+    #[test]
+    fn plugin_commands_are_complete_and_never_install_from_mcp() {
+        let names: Vec<&str> = SPECS.iter().filter(|s| s.path.first() == Some(&"plugin")).map(|s| s.path[1]).collect();
+        for name in ["new", "validate", "install", "list", "enable", "disable", "remove", "logs", "dev"] {
+            assert!(names.contains(&name), "plugin {name}");
+        }
+        for spec in SPECS.iter().filter(|s| s.path.first() == Some(&"plugin")) {
+            assert_eq!(spec.tool.is_some(), matches!(spec.path[1], "list" | "logs"), "{}: only reading is a tool", spec.name());
+            assert_eq!(spec.connects, !matches!(spec.path[1], "new" | "validate" | "pack"), "{}", spec.name());
+        }
     }
 
     #[test]

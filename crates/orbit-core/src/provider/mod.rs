@@ -52,6 +52,43 @@ pub struct SessionSpec {
     /// member), added to the agent's own through its launch flags or
     /// session parameters; the user's agent configuration is never touched.
     pub mcp: Vec<McpServer>,
+    /// Plugin hooks that may veto a tool call before it runs
+    /// (`agent.tool.before`); adapters that see calls before they run ask
+    /// it, whatever the access level.
+    pub tool_policy: ToolPolicy,
+}
+
+type ToolCheck = dyn Fn(&RequestKind) -> Option<String> + Send + Sync;
+
+/// A veto on tool calls: answers why a call must not run, or `None`.
+#[derive(Clone, Default)]
+pub struct ToolPolicy {
+    check: Option<std::sync::Arc<ToolCheck>>,
+    every_tool: bool,
+}
+
+impl ToolPolicy {
+    /// `every_tool`: something listens now, so adapters that must register
+    /// interest up front (Claude Code's `PreToolUse` hook) do so for every
+    /// tool. The check itself is asked whenever an adapter sees a call.
+    pub fn new(check: impl Fn(&RequestKind) -> Option<String> + Send + Sync + 'static, every_tool: bool) -> Self {
+        Self { check: Some(std::sync::Arc::new(check)), every_tool }
+    }
+
+    pub fn every_tool(&self) -> bool {
+        self.every_tool
+    }
+
+    /// Why `kind` must not run, if it must not.
+    pub fn check(&self, kind: &RequestKind) -> Option<String> {
+        self.check.as_ref().and_then(|f| f(kind))
+    }
+}
+
+impl std::fmt::Debug for ToolPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolPolicy").field("check", &self.check.is_some()).field("every_tool", &self.every_tool).finish()
+    }
 }
 
 /// A stdio MCP server to give one session.

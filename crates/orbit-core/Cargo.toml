@@ -8,6 +8,9 @@ publish.workspace = true
 
 [dependencies]
 orbit-proto = { workspace = true }
+# Plugins: manifests, the host's install and consent logic, the WebAssembly
+# sandbox (wasmi) and the keychain.
+orbit-plugin = { workspace = true, features = ["host"] }
 bitcode = { workspace = true }
 wincode = { workspace = true }
 crossfire = { workspace = true }
@@ -47,6 +50,7 @@ ring = "0.17"
 
 [dev-dependencies]
 tempfile = "3"
+orbit-plugin = { workspace = true, features = ["host", "testing"] }
 
 # A scripted stand-in for `codex app-server`, used only by the Codex adapter
 # tests (`CARGO_BIN_EXE_orbit-fake-codex`).

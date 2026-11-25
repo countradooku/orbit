@@ -10,7 +10,7 @@ Three placeholders keep a build from talking to anything until they are set:
 
 | What | Where | Placeholder |
 |---|---|---|
-| Release signing key (public half) | `update/verify.rs`, `RELEASE_PUBLIC_KEY` | `REPLACE-WITH-THE-ORBIT-RELEASE-PUBLIC-KEY` |
+| Release signing key (public half), for updates and the plugin kill list | `orbit-plugin/src/sign.rs`, `RELEASE_PUBLIC_KEY` (the updater uses it) | `REPLACE-WITH-THE-ORBIT-RELEASE-PUBLIC-KEY` |
 | Manifest address | `update/mod.rs`, `MANIFEST_URL` | `https://updates.orbit.invalid/{channel}.json` |
 | Documentation link (About) | `diagnostics/about.rs`, `DOCS_URL` | `https://docs.orbit.invalid/` |
 
@@ -28,7 +28,9 @@ minisign -G -p orbit-release.pub -s orbit-release.key
 ```
 
 Put the second line of `orbit-release.pub` (it starts with `RW`) into
-`RELEASE_PUBLIC_KEY`. Keep `orbit-release.key` and its password offline or in
+`RELEASE_PUBLIC_KEY`. The same key signs the plugin kill list
+(`kill-list.toml.minisig`, trusted comment `orbit-kill-list <date>`,
+published next to the manifests; see [PLUGINS.md](PLUGINS.md)). Keep `orbit-release.key` and its password offline or in
 the CI secret store; never commit it. Rotating the key means shipping one
 release signed with the old key whose binary trusts the new one.
 

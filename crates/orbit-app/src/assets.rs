@@ -29,6 +29,8 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     Circle, CircleArrowUp, Monitor, LifeBuoy,
     // Hosts: the switcher, adding and sharing.
     Server, Laptop, Share2, KeyRound, RefreshCw, Unplug, FolderUp, House, Wifi,
+    // Plugins: the page, the browser, logs, snippets.
+    Puzzle, TextQuote, ScrollText, PackagePlus,
 ]);
 
 /// Orbit's icons first, then GPUI Kit's defaults.

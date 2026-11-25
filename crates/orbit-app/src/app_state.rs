@@ -67,6 +67,8 @@ pub enum AppEvent {
     HostTerminals,
     /// Something to tell the user about the background host.
     Host(HostNotice),
+    /// A plugin asked to show a notification (it holds that capability).
+    PluginNotice { title: String, body: String },
 }
 
 /// How to reach one host: what [`connect`] returns.
@@ -498,6 +500,7 @@ impl AppState {
             let state = &self.active.state;
             crate::settings::receive(state.settings.clone(), cx);
             crate::bots::receive(state.bots.clone(), state.guard.clone(), true, cx);
+            crate::plugins::receive(&state.plugins, cx);
             self.fetch_kept_terminals(cx);
         }
         cx.emit(AppEvent::Teams);
@@ -546,6 +549,14 @@ impl AppState {
             let bots = changes.bots.then(|| state.bots.clone()).flatten();
             let guard = changes.guard.then(|| state.guard.clone()).flatten();
             crate::bots::receive(bots, guard, changes.reset, cx);
+        }
+        if changes.plugins || changes.reset {
+            crate::plugins::receive(&state.plugins, cx);
+        }
+        for (plugin, title, body) in changes.plugin_notices {
+            let name = state.plugins.plugin(&plugin).map(|p| p.name.clone()).unwrap_or(plugin);
+            let title = if title.is_empty() { name } else { title };
+            cx.emit(AppEvent::PluginNotice { title, body });
         }
         if changes.reset {
             // Everything was replaced: reload every timeline a view shows.

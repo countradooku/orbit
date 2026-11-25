@@ -19,6 +19,7 @@ mod guard;
 mod host;
 mod integrations;
 mod orchestrator;
+mod plugins;
 mod review;
 mod queue;
 mod sessions;
@@ -47,6 +48,7 @@ pub use bus::EventRx;
 pub use files::THREAD_DIGEST_MIME;
 pub use host::SLEEP_AFTER as TERMINAL_SLEEP_AFTER;
 pub use orchestrator::{Deferred, Internal, Launcher, Orchestrator, Outcome, prompt_uuid};
+pub use plugins::KILL_LIST_URL;
 
 use crate::provider;
 use crate::store::Store;

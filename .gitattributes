@@ -9,3 +9,5 @@
 *.ico binary
 *.icns binary
 *.bin binary
+*.wasm binary
+*.orbitplugin binary

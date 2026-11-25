@@ -88,6 +88,9 @@ pub struct Workspace {
     automations: Entity<AutomationsView>,
     teams: Entity<crate::teams::TeamsPage>,
     usage: Entity<crate::usage::page::UsageView>,
+    /// Plugins' panels, as tabs beside the work area.
+    plugin_dock: Entity<crate::plugins::dock::PluginDock>,
+    plugin_split: Entity<ResizableState>,
     threads: Vec<(ThreadId, Entity<ThreadView>)>,
     /// Threads shown side by side, in grid order; empty or two or more.
     tiles: Vec<ThreadId>,
@@ -100,6 +103,8 @@ pub struct Workspace {
     focus: FocusHandle,
     /// Debug builds: a screen to open once data arrives
     /// (`ORBIT_DEBUG_ROUTE` = `latest`, `inbox`, `fleet`, `terminal`,
+    /// `plugin-panel:<plugin>:<panel>`, `plugin-review:<plugin>`,
+    /// `plugin-log:<plugin>`, `plugin-settings:<plugin>`,
     /// `tiles`, `shortcuts`, `palette`), for screenshots and visual checks.
     debug_route: Option<String>,
     tracker: notify::Tracker,
@@ -126,6 +131,8 @@ impl Workspace {
         let teams = cx.new(|cx| crate::teams::TeamsPage::new(app.clone(), weak.clone(), window, cx));
         let usage = cx.new(|cx| crate::usage::page::UsageView::new(app.clone(), weak.clone(), cx));
         let split = cx.new(|_| ResizableState::default());
+        let plugin_dock = cx.new(|_| crate::plugins::dock::PluginDock::new(app.clone()));
+        let plugin_split = cx.new(|_| ResizableState::default());
         let subs = vec![
             cx.observe_window_appearance(window, |_, window, cx| {
                 if settings::get(cx).appearance.mode == ColorMode::System {
@@ -197,6 +204,8 @@ impl Workspace {
             automations,
             teams,
             usage,
+            plugin_dock,
+            plugin_split,
             threads: Vec::new(),
             tiles: Vec::new(),
             shown_threads: Vec::new(),
@@ -230,6 +239,29 @@ impl Workspace {
             }
             "install-host" => {
                 self.debug_route = Some(route);
+                return;
+            }
+            // Plugins, once the host has said which are installed:
+            // `plugin-panel:<plugin>:<panel>` opens a panel in the dock,
+            // `plugin-review:<plugin>` the consent dialog.
+            plugin if ["plugin-panel:", "plugin-review:", "plugin-log:", "plugin-settings:"].iter().any(|p| plugin.starts_with(p)) => {
+                let mut parts = plugin.splitn(3, ':').skip(1);
+                let id = parts.next().unwrap_or_default().to_owned();
+                let Some(info) = crate::plugins::state(cx).plugin(&id).cloned() else {
+                    self.debug_route = Some(route);
+                    return;
+                };
+                let app = self.app.clone();
+                if plugin.starts_with("plugin-panel:") {
+                    let panel = parts.next().unwrap_or_default().to_owned();
+                    self.plugin_dock.update(cx, |dock, cx| dock.open(&id, &panel, cx));
+                } else if plugin.starts_with("plugin-log:") {
+                    window.defer(cx, move |window, cx| crate::plugins::consent::show_logs(&app, &info, window, cx));
+                } else if plugin.starts_with("plugin-settings:") {
+                    window.defer(cx, move |window, cx| crate::plugins::settings::open(&app, &info, window, cx));
+                } else {
+                    window.defer(cx, move |window, cx| crate::plugins::consent::review(&app, &info, window, cx));
+                }
                 return;
             }
             // Shows another host once this one has its threads.
@@ -631,6 +663,104 @@ impl Workspace {
             }
         });
         self.tile_focus.insert(id, sub);
+    }
+
+    /// The composer the user is looking at: the thread's, else Home's.
+    fn active_composer(&self, cx: &App) -> Entity<crate::composer::Composer> {
+        match self.current_thread_view() {
+            Some(view) => view.read(cx).composer().clone(),
+            None => self.home.read(cx).composer().clone(),
+        }
+    }
+
+    // ── Plugins ──────────────────────────────────────────────────────────
+
+    fn open_plugin_panel(&mut self, action: &crate::plugins::OpenPluginPanel, _: &mut Window, cx: &mut Context<Self>) {
+        self.plugin_dock.update(cx, |dock, cx| dock.open(&action.plugin, &action.panel, cx));
+        cx.notify();
+    }
+
+    fn insert_snippet(&mut self, action: &crate::plugins::InsertSnippet, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = crate::plugins::snippet(&action.plugin, &action.name, cx) else { return };
+        let composer = self.active_composer(cx);
+        crate::composer::Composer::append_to_draft(&composer, &text, window, cx);
+    }
+
+    fn apply_template(&mut self, action: &crate::plugins::ApplyTemplate, window: &mut Window, cx: &mut Context<Self>) {
+        let project = match self.current_thread(cx) {
+            Some(thread) => thread.project,
+            None => self.home.read(cx).project(cx),
+        };
+        let Some(project) = project else {
+            window.push_notification(Notification::warning("Pick a project first: the template becomes its orbit.toml."), cx);
+            return;
+        };
+        let request = PluginCommand::ApplyTemplate { id: action.plugin.clone(), template: action.template.clone(), project };
+        let task = self.app.update(cx, |app, cx| app.call(Command::Plugin(Box::new(request)), cx));
+        cx.spawn_in(window, async move |_, cx| {
+            let result = task.await;
+            let _ = cx.update(|window, cx| match result {
+                Ok(Reply::Plugin(reply)) => {
+                    if let PluginReply::Message(message) = *reply {
+                        window.push_notification(Notification::success(message), cx);
+                    }
+                }
+                Ok(_) => {}
+                Err(message) => window.push_notification(Notification::error(message), cx),
+            });
+        })
+        .detach();
+    }
+
+    fn manage_plugins(&mut self, _: &crate::plugins::ManagePlugins, window: &mut Window, cx: &mut Context<Self>) {
+        crate::plugins::page::open(window, cx);
+    }
+
+    fn run_plugin_command(&mut self, action: &crate::plugins::RunPluginCommand, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((plugin, command)) = crate::plugins::command(&action.plugin, &action.command, cx) else { return };
+        if !plugin.status.is_active() {
+            return;
+        }
+        match command.kind.clone() {
+            PluginCommandKind::Prompt(text) => {
+                let composer = self.active_composer(cx);
+                crate::composer::Composer::append_to_draft(&composer, &text, window, cx);
+            }
+            PluginCommandKind::Panel(panel) => {
+                let plugin = plugin.id.clone();
+                self.plugin_dock.update(cx, |dock, cx| dock.open(&plugin, &panel, cx));
+                cx.notify();
+            }
+            PluginCommandKind::Terminal(_) | PluginCommandKind::Wasm => {
+                let thread_view = self.current_thread_view().cloned();
+                let terminal = matches!(command.kind, PluginCommandKind::Terminal(_));
+                if terminal && thread_view.is_none() {
+                    window.push_notification(Notification::warning("Open a thread first: terminal agents run in its terminal."), cx);
+                    return;
+                }
+                let request = PluginCommand::RunCommand { id: action.plugin.clone(), command: action.command.clone() };
+                let task = self.app.update(cx, |app, cx| app.call(Command::Plugin(Box::new(request)), cx));
+                cx.spawn_in(window, async move |_, cx| {
+                    let result = task.await;
+                    let _ = cx.update(|window, cx| match result {
+                        Ok(Reply::Plugin(reply)) => match *reply {
+                            PluginReply::Terminal { command } => {
+                                if let Some(view) = &thread_view {
+                                    view.update(cx, |view, cx| view.run_in_terminal(&format!("{command}\r"), window, cx));
+                                }
+                            }
+                            PluginReply::Message(message) if !message.trim().is_empty() => {
+                                window.push_notification(Notification::info(message), cx);
+                            }
+                            _ => {}
+                        },
+                        Ok(_) => {}
+                        Err(message) => window.push_notification(Notification::error(message), cx),
+                    });
+                })
+                .detach();
+            }
+        }
     }
 
     fn current_thread_view(&self) -> Option<&Entity<ThreadView>> {
@@ -1247,6 +1377,16 @@ impl Render for Workspace {
                 .into_any_element()
         } else {
             let main = self.render_main(window, cx);
+            self.plugin_dock.update(cx, |dock, cx| dock.prune(cx));
+            let main = if self.plugin_dock.read(cx).is_open() {
+                h_resizable("plugin-dock")
+                    .with_state(&self.plugin_split)
+                    .child(resizable_panel().size_range(px(360.)..Pixels::MAX).child(div().size_full().min_w_0().child(main)))
+                    .child(resizable_panel().size(px(340.)).size_range(px(260.)..px(720.)).child(self.plugin_dock.clone()))
+                    .into_any_element()
+            } else {
+                main
+            };
             div()
                 .flex_1()
                 .min_h_0()
@@ -1315,6 +1455,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FocusTileUp, window, cx| this.focus_tile_toward(Direction::Up, window, cx)))
             .on_action(cx.listener(|this, _: &FocusTileDown, window, cx| this.focus_tile_toward(Direction::Down, window, cx)))
             .on_action(cx.listener(Self::quit))
+            .on_action(cx.listener(Self::run_plugin_command))
+            .on_action(cx.listener(Self::open_plugin_panel))
+            .on_action(cx.listener(Self::insert_snippet))
+            .on_action(cx.listener(Self::manage_plugins))
+            .on_action(cx.listener(Self::apply_template))
             .map(crate::update::register_actions)
             .map(crate::diagnostics::register_actions)
             .map(crate::onboarding::register_actions)

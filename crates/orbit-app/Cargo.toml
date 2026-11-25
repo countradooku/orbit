@@ -31,6 +31,8 @@ orbit-proto = { workspace = true }
 orbit-core = { workspace = true }
 orbit-net = { workspace = true }
 orbit-bots = { workspace = true }
+# Panels' component trees, themes and packing plugin folders to send to a host.
+orbit-plugin = { workspace = true }
 orbit-terminal = { path = "../orbit-terminal", default-features = false }
 orbit-browser = { path = "../orbit-browser", default-features = false }
 mimalloc = { workspace = true }

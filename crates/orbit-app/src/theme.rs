@@ -63,9 +63,11 @@ pub fn install(cx: &mut App) {
 /// then the rest by name.
 pub fn names(dark: bool, cx: &App) -> Vec<SharedString> {
     let orbit = if dark { ORBIT_DARK } else { ORBIT_LIGHT };
+    let plugin_themes = crate::plugins::themes(cx);
     let mut names: Vec<SharedString> = ThemeRegistry::global(cx)
         .themes()
         .values()
+        .chain(plugin_themes.iter())
         .filter(|t| t.mode.is_dark() == dark && t.name.as_ref() != orbit && !t.name.starts_with("Default "))
         .map(|t| t.name.clone())
         .collect();
@@ -77,10 +79,17 @@ pub fn names(dark: bool, cx: &App) -> Vec<SharedString> {
 /// The theme a setting resolves to: an empty, unknown or wrong-mode name
 /// falls back to Orbit's.
 pub fn resolve(name: &str, dark: bool, cx: &App) -> SharedString {
-    match ThemeRegistry::global(cx).themes().get(name) {
+    match lookup(name, cx) {
         Some(theme) if theme.mode.is_dark() == dark => theme.name.clone(),
         _ => (if dark { ORBIT_DARK } else { ORBIT_LIGHT }).into(),
     }
+}
+
+/// A theme by name: a bundled one, or one a plugin adds (see
+/// `crate::plugins`, which keeps them out of the registry so they can go
+/// away again).
+fn lookup(name: &str, cx: &App) -> Option<std::rc::Rc<gpui_kit::component::ThemeConfig>> {
+    ThemeRegistry::global(cx).themes().get(name).cloned().or_else(|| crate::plugins::theme(name, cx))
 }
 
 /// Applies appearance settings to the theme and refreshes every window.
@@ -88,10 +97,7 @@ pub fn resolve(name: &str, dark: bool, cx: &App) -> SharedString {
 pub fn apply(settings: &AppearanceSettings, window: Option<&mut Window>, cx: &mut App) {
     let light_name = resolve(&settings.light_theme, false, cx);
     let dark_name = resolve(&settings.dark_theme, true, cx);
-    let (light, dark) = {
-        let themes = ThemeRegistry::global(cx).themes();
-        (themes.get(&light_name).cloned(), themes.get(&dark_name).cloned())
-    };
+    let (light, dark) = (lookup(&light_name, cx), lookup(&dark_name, cx));
     Theme::update(cx, |theme| {
         if let Some(light) = light {
             theme.light_theme = light;

@@ -89,6 +89,38 @@ pub fn render(view: WeakEntity<AutomationsView>, columns: u16, cx: &App) -> impl
                     }),
             )
     });
+    // Recipes plugins add, after Orbit's own.
+    let plugin_cards = crate::plugins::recipes(cx).into_iter().map(|(plugin, recipe)| {
+        let view = view.clone();
+        let schedule = if recipe.rule.is_empty() { "Runs when you start it".to_owned() } else { capital(&describe(&orbit_proto::Trigger::Rule { rule: recipe.rule.clone(), tz: String::new() })) };
+        v_flex()
+            .id(SharedString::from(format!("plugin-recipe-{}", recipe.id)))
+            .w_full()
+            .p_4()
+            .gap_3()
+            .rounded(theme.radius_lg)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.background)
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(div().flex_none().p_2().rounded(theme.radius).bg(theme.primary.opacity(0.1)).child(Icon::new(Lucide::Puzzle).small().text_color(theme.primary)))
+                    .child(div().flex_1().min_w_0().text_sm().font_weight(FontWeight::SEMIBOLD).child(recipe.title.clone())),
+            )
+            .child(div().flex_1().text_sm().text_color(theme.muted_foreground).child(recipe.blurb.clone()))
+            .child(div().truncate().text_xs().text_color(theme.muted_foreground).child(format!("{schedule} · from {plugin}")))
+            .child(
+                h_flex().child(
+                    Button::new(SharedString::from(format!("plugin-recipe-use-{}", recipe.id))).small().outline().label("Use recipe…").on_click(
+                        move |_, window, cx| {
+                            let _ = view.update(cx, |this, cx| this.open_plugin_recipe(&recipe, window, cx));
+                        },
+                    ),
+                ),
+            )
+    });
+    let cards: Vec<AnyElement> = cards.map(|c| c.into_any_element()).chain(plugin_cards.map(|c| c.into_any_element())).collect();
     v_flex()
         .gap_3()
         .child(

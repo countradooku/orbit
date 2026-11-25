@@ -1,0 +1,22 @@
+# The guard-rm example's WebAssembly module. Not part of the workspace:
+# build it as docs/PLUGINS.md ("Building a module") says and commit the
+# resulting `guard.wasm`.
+[package]
+name = "orbit-example-guard-rm"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[workspace]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -14,10 +14,11 @@ use std::path::Path;
 use minisign_verify::{PublicKey, Signature};
 use sha2::{Digest as _, Sha256};
 
-/// The release signing key (`minisign.pub`'s second line). A placeholder:
-/// until a real key is set here, this build never installs an update.
+/// The release signing key (`minisign.pub`'s second line), kept in one place
+/// with the plugin kill list's (`orbit_plugin::sign`). A placeholder: until
+/// a real key is set there, this build never installs an update.
 /// `docs/RELEASING.md` explains how to make one.
-pub const RELEASE_PUBLIC_KEY: &str = "REPLACE-WITH-THE-ORBIT-RELEASE-PUBLIC-KEY";
+pub const RELEASE_PUBLIC_KEY: &str = orbit_plugin::sign::RELEASE_PUBLIC_KEY;
 
 /// The key updates must be signed with, if this build has one. Debug builds
 /// accept `ORBIT_UPDATE_PUBLIC_KEY`, to test against a local fixture.

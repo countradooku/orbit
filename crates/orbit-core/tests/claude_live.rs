@@ -63,6 +63,7 @@ async fn real_cli_initialize_prompt_approval_and_interrupt() {
         env: Vec::new(),
         extra_dirs: Vec::new(),
         guard: Default::default(),
+        tool_policy: Default::default(),
         mcp: Vec::new(),
     };
     let session = provider::start(ProviderKind::Claude, spec, tx);

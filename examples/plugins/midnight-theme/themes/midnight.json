@@ -1,0 +1,73 @@
+{
+  "name": "Midnight",
+  "author": "Orbit examples",
+  "themes": [
+    {
+      "name": "Midnight",
+      "mode": "dark",
+      "colors": {
+        "background": "#0b1020",
+        "foreground": "#d6deeb",
+        "border": "#1c2541",
+        "ring": "#5aa9ff",
+        "muted.background": "#121a33",
+        "muted.foreground": "#8a97b8",
+        "panel.background": "#0e1428",
+        "popover.background": "#121a33",
+        "popover.foreground": "#d6deeb",
+        "primary.background": "#2f6fdb",
+        "primary.foreground": "#ffffff",
+        "primary.hover.background": "#3a7ae6",
+        "primary.active.background": "#275fc0",
+        "secondary.background": "#18213d",
+        "secondary.foreground": "#d6deeb",
+        "secondary.hover.background": "#1f2a4b",
+        "secondary.active.background": "#141c35",
+        "accent.background": "#18213d",
+        "accent.foreground": "#d6deeb",
+        "list.active.background": "#2f6fdb33",
+        "list.active.border": "#5aa9ff",
+        "tab.background": "#0b1020",
+        "tab.active.background": "#121a33",
+        "tab.active.foreground": "#d6deeb",
+        "base.red": "#ff6b81",
+        "base.green": "#7ee0a1",
+        "base.yellow": "#f5d76e",
+        "base.blue": "#5aa9ff",
+        "base.magenta": "#c792ea",
+        "base.cyan": "#6fd3e0"
+      }
+    },
+    {
+      "name": "Midnight Daybreak",
+      "mode": "light",
+      "colors": {
+        "background": "#f7f9fc",
+        "foreground": "#1b2338",
+        "border": "#dde3ee",
+        "ring": "#2f6fdb",
+        "muted.background": "#eef2f8",
+        "muted.foreground": "#5d6782",
+        "panel.background": "#f1f4f9",
+        "popover.background": "#ffffff",
+        "popover.foreground": "#1b2338",
+        "primary.background": "#2f6fdb",
+        "primary.foreground": "#ffffff",
+        "primary.hover.background": "#3a7ae6",
+        "primary.active.background": "#275fc0",
+        "secondary.background": "#e8edf5",
+        "secondary.foreground": "#1b2338",
+        "accent.background": "#e8edf5",
+        "accent.foreground": "#1b2338",
+        "tab.active.background": "#ffffff",
+        "tab.active.foreground": "#1b2338",
+        "base.red": "#c8324a",
+        "base.green": "#23864a",
+        "base.yellow": "#9a6b00",
+        "base.blue": "#2f6fdb",
+        "base.magenta": "#8e44c9",
+        "base.cyan": "#0f7f8f"
+      }
+    }
+  ]
+}

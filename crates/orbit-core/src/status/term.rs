@@ -29,6 +29,37 @@ pub const KNOWN_AGENTS: &[&str] = &[
     "copilot", "grok", "kimi", "crush", "auggie", "cline",
 ];
 
+/// Terminal agents from plugins' agent manifests: their command names,
+/// recognised like [`KNOWN_AGENTS`].
+static PLUGIN_AGENTS: parking_lot::RwLock<Vec<&'static str>> = parking_lot::RwLock::new(Vec::new());
+
+/// Sets the plugin terminal agents' command names (lowercase, without an
+/// extension). Each distinct name is interned once for the process.
+pub fn set_plugin_agents(names: &[String]) {
+    static INTERNED: parking_lot::Mutex<Vec<&'static str>> = parking_lot::Mutex::new(Vec::new());
+    let mut interned = INTERNED.lock();
+    let mut list = Vec::new();
+    for name in names {
+        let name = name.to_ascii_lowercase();
+        let found = match interned.iter().find(|n| **n == name) {
+            Some(n) => *n,
+            None => {
+                let leaked: &'static str = Box::leak(name.into_boxed_str());
+                interned.push(leaked);
+                leaked
+            }
+        };
+        if !KNOWN_AGENTS.contains(&found) && !list.contains(&found) {
+            list.push(found);
+        }
+    }
+    *PLUGIN_AGENTS.write() = list;
+}
+
+fn known_agent(stem: &str) -> Option<&'static str> {
+    KNOWN_AGENTS.iter().find(|a| **a == stem).copied().or_else(|| PLUGIN_AGENTS.read().iter().find(|a| **a == stem).copied())
+}
+
 /// A hook call, already parsed from its payload.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HookCall {
@@ -481,7 +512,7 @@ pub fn agent_command(line: &str) -> Option<&'static str> {
     let base = word.rsplit(['/', '\\']).next()?;
     let lower = base.to_ascii_lowercase();
     let stem = [".exe", ".cmd", ".ps1", ".bat"].iter().find_map(|ext| lower.strip_suffix(ext)).unwrap_or(&lower);
-    KNOWN_AGENTS.iter().find(|a| **a == stem).copied()
+    known_agent(stem)
 }
 
 #[cfg(test)]

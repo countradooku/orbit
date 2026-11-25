@@ -1,0 +1,238 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orbit.invalid/schemas/orbit-plugin.schema.json",
+  "title": "Orbit plugin manifest (orbit-plugin.toml)",
+  "description": "The manifest at the root of an Orbit plugin. Unknown keys are refused at every level. See docs/PLUGINS.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "version", "engines"],
+  "properties": {
+    "id": {
+      "description": "Kebab-case id, unique among installed plugins. Not `orbit`, `orbit-*` or another reserved id.",
+      "type": "string",
+      "pattern": "^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){2,63}$"
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "version": { "description": "Semantic version of the plugin.", "type": "string" },
+    "description": { "type": "string", "maxLength": 300 },
+    "publisher": { "type": "string" },
+    "license": { "type": "string" },
+    "homepage": { "type": "string", "pattern": "^https://" },
+    "categories": { "type": "array", "items": { "type": "string" } },
+    "engines": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orbit"],
+      "properties": {
+        "orbit": { "description": "A semver requirement on Orbit's version, such as >=0.1.0.", "type": "string" }
+      }
+    },
+    "capabilities": {
+      "description": "What the plugin may do. Shown in the consent dialog; checked again on every call.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "storage", "secrets", "notifications", "threads.read", "threads.create", "agents",
+          "hooks.prompts", "hooks.tools", "hooks.threads"
+        ]
+      }
+    },
+    "themes": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/theme" }
+    },
+    "snippets": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/snippet" } },
+    "slash_commands": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/slash_command" } },
+    "recipes": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/recipe" } },
+    "keybindings": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/keybinding" } },
+    "templates": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/template" } },
+    "agents": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/agent" } },
+    "panels": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/panel" } },
+    "commands": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/command" } },
+    "settings": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/setting" } },
+    "wasm": { "$ref": "#/$defs/wasm" }
+  },
+  "$defs": {
+    "path": {
+      "description": "A path inside the plugin: relative, forward slashes, no `..`.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))[^\\\\:]+$"
+    },
+    "slug": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+    "theme": {
+      "description": "A GPUI Kit theme-set JSON file (the format of Orbit's bundled themes).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": { "path": { "$ref": "#/$defs/path" } }
+    },
+    "snippet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "text": { "type": "string" },
+        "path": { "$ref": "#/$defs/path" }
+      },
+      "oneOf": [{ "required": ["text"] }, { "required": ["path"] }]
+    },
+    "slash_command": {
+      "description": "`/name args` in the composer becomes `prompt`, with {{args}} replaced.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/slug" },
+        "description": { "type": "string" },
+        "argument_hint": { "type": "string" },
+        "prompt": { "type": "string" },
+        "path": { "$ref": "#/$defs/path" }
+      },
+      "oneOf": [{ "required": ["prompt"] }, { "required": ["path"] }]
+    },
+    "recipe": {
+      "description": "An automation recipe for the gallery.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "prompt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "title": { "type": "string", "minLength": 1 },
+        "blurb": { "type": "string" },
+        "prompt": { "type": "string", "minLength": 1 },
+        "schedule": { "description": "An RRULE such as FREQ=DAILY;BYHOUR=9.", "type": "string" },
+        "target": { "enum": ["worktree", "project"] },
+        "mode": { "enum": ["build", "plan"] },
+        "open_pr": { "type": "boolean" }
+      }
+    },
+    "keybinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "command"],
+      "properties": {
+        "key": { "description": "As keybindings.json writes it: mod-shift-r.", "type": "string" },
+        "command": { "type": "string", "pattern": "^(orbit::[A-Za-z]+|plugin:[a-z0-9-]+)$" },
+        "when": { "type": "string" }
+      }
+    },
+    "template": {
+      "description": "A project template: an orbit.toml to start from.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "path": { "$ref": "#/$defs/path" }
+      }
+    },
+    "agent": {
+      "description": "An agent CLI. acp and stream-json agents appear in the model picker; terminal agents run in a terminal tab.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "protocol", "command"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" },
+        "name": { "type": "string", "minLength": 1 },
+        "protocol": { "enum": ["acp", "stream-json", "terminal"] },
+        "command": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "maxItems": 64, "items": { "type": "string" } },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "install": { "description": "How to install the CLI, shown while it is missing.", "type": "string" },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "context_window": { "type": "integer", "minimum": 0 },
+              "default": { "type": "boolean" }
+            }
+          }
+        },
+        "modes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+              "id": { "enum": ["build", "plan"] },
+              "label": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "panel": {
+      "description": "A declarative panel: a component tree in TOML or JSON (see docs/PLUGINS.md, Panels).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "path"],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "title": { "type": "string", "minLength": 1 },
+        "path": { "$ref": "#/$defs/path" }
+      }
+    },
+    "command": {
+      "description": "A palette command: exactly one of prompt, panel, agent or wasm.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title"],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "prompt": { "type": "string" },
+        "panel": { "$ref": "#/$defs/slug" },
+        "agent": { "type": "string" },
+        "wasm": { "type": "boolean" }
+      }
+    },
+    "setting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "label", "type"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "type": { "enum": ["text", "toggle", "number", "choice", "secret"] },
+        "default": { "type": "string" },
+        "choices": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "wasm": {
+      "description": "Plugin logic as a sandboxed WebAssembly module (see docs/PLUGINS.md, WebAssembly).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module"],
+      "properties": {
+        "module": { "$ref": "#/$defs/path" },
+        "hooks": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "enum": ["agent.prompt.before", "agent.tool.before", "agent.tool.after", "thread.finished"] }
+        },
+        "on_error": { "enum": ["allow", "deny"] },
+        "fuel": { "type": "integer", "minimum": 1, "maximum": 500000000 },
+        "memory_mb": { "type": "integer", "minimum": 1, "maximum": 128 },
+        "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 5000 }
+      }
+    }
+  }
+}

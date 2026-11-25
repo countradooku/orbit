@@ -470,6 +470,14 @@ impl Composer {
                             .map(Suggestion::Command),
                     );
                 }
+                // Plugins' slash commands expand to prompts when sent.
+                let plugin_commands = crate::plugins::slash_commands(cx);
+                items.extend(
+                    menu::rank_commands(query, &plugin_commands, menu::MAX_ROWS)
+                        .into_iter()
+                        .filter(|c| !Builtin::replaces(&c.name))
+                        .map(Suggestion::Command),
+                );
                 items.truncate(menu::MAX_ROWS);
                 items
             }
@@ -811,6 +819,8 @@ impl Composer {
         if text.is_empty() && self.attachments.is_empty() {
             return;
         }
+        // A plugin's slash command becomes its prompt.
+        let text = crate::plugins::expand_slash(&text, cx).unwrap_or(text);
         if let Some(reason) = self.blocker(cx) {
             if self.attaching == 0 {
                 window.push_notification(Notification::warning(reason), cx);

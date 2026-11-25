@@ -7,6 +7,27 @@
 //! id replaces a preset, and can disable it.
 
 use orbit_proto::*;
+use parking_lot::RwLock;
+
+/// Agent CLIs from plugins' agent manifests (see `engine::plugins`), listed
+/// after the built-in presets. Set by whoever runs the plugins (the engine)
+/// or mirrors them (a client, from [`PluginsState`]).
+static PLUGIN_AGENTS: RwLock<Vec<ProviderInstance>> = RwLock::new(Vec::new());
+
+/// Replaces the plugin agents; returns whether the list changed.
+pub fn set_plugin_agents(agents: Vec<ProviderInstance>) -> bool {
+    let mut current = PLUGIN_AGENTS.write();
+    if *current == agents {
+        return false;
+    }
+    *current = agents;
+    true
+}
+
+/// Whether `id` names an agent a plugin defines.
+pub fn is_plugin_agent(id: &str) -> bool {
+    PLUGIN_AGENTS.read().iter().any(|a| a.id == id)
+}
 
 /// A known instance, and whether it is listed even when not installed.
 pub struct Preset {
@@ -45,6 +66,12 @@ pub fn all() -> Vec<Preset> {
         acp("goose", "Goose", "goose", &["acp"]),
         acp("antigravity", "Antigravity", "agy", &["acp"]),
     ]
+    .into_iter()
+    // Plugin agents are listed even before they are installed: their
+    // plugin was installed on purpose, and the picker says how to install
+    // the CLI.
+    .chain(PLUGIN_AGENTS.read().iter().map(|a| Preset { instance: a.clone(), always_listed: true }))
+    .collect()
 }
 
 /// The effective instance list: presets overridden or extended by the

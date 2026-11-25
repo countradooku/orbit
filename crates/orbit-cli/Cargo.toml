@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 orbit-proto = { workspace = true }
+# Checking and packing plugin folders here (`orbit plugin validate|pack`);
+# without the host feature, so no WebAssembly runtime or keychain.
+orbit-plugin = { workspace = true }
 # Client side only: the CLI connects to a running engine, it never embeds one.
 orbit-net = { workspace = true, default-features = false }
 crossfire = { workspace = true }

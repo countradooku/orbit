@@ -150,6 +150,8 @@ pub struct Orchestrator {
     pub(crate) usage: super::usage::UsageState,
     /// Terminal sessions that outlive the app (`engine/host.rs`).
     pub(crate) host: super::host::HostState,
+    /// Installed plugins and their hooks (`engine/plugins.rs`).
+    pub(crate) plugins: super::plugins::PluginRuntime,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -181,7 +183,8 @@ impl Orchestrator {
         let git = Git::new(super::settings::git_config(store.dir(), store.settings()));
         let teams = crate::teams::TeamsState::load(store.dir());
         let providers = Self::initial_providers(store.settings());
-        Self {
+        let plugins = super::plugins::PluginRuntime::open(store.dir());
+        let mut orchestrator = Self {
             store,
             bus: Bus::new(),
             providers,
@@ -209,7 +212,10 @@ impl Orchestrator {
             workspaces: Default::default(),
             usage: Default::default(),
             host: Default::default(),
-        }
+            plugins,
+        };
+        orchestrator.plugins_start();
+        orchestrator
     }
 
     /// The git repository a thread works in, if any.
@@ -501,6 +507,7 @@ impl Orchestrator {
             git: self.workspaces.git_snapshot(),
             runs: self.workspaces.runs_snapshot(),
             quota: Box::new(self.usage_board()),
+            plugins: Box::new(self.plugins.host.state()),
             ..self.store.snapshot(self.providers.clone())
         }
     }
@@ -578,6 +585,7 @@ impl Orchestrator {
         self.teams_tick();
         self.usage_tick();
         self.host_tick();
+        self.plugins_tick();
         let now = Instant::now();
         for runtime in self.runtimes.values_mut() {
             let idle = runtime.turn.is_none() && !runtime.checkpointing && runtime.held_prompt.is_none();
@@ -713,6 +721,7 @@ impl Orchestrator {
             Command::Bots(command) => self.bots_command(command),
             Command::Team(command) => self.team_command(*command),
             Command::Workspace(command) => self.workspace_command(command),
+            Command::Plugin(command) => self.plugin_command(*command),
             Command::Host(HostCommand::ListDir { path }) => Outcome::Deferred(Box::pin(async move {
                 tokio::task::spawn_blocking(move || super::host::list_host_dir(&path))
                     .await
@@ -858,6 +867,10 @@ impl Orchestrator {
                 Outcome::Deferred(future) => futures_block_on(future),
             },
             Command::Host(command) => self.host_command(command),
+            Command::Plugin(command) => match self.plugin_command(*command) {
+                Outcome::Ready(result) => result,
+                Outcome::Deferred(future) => futures_block_on(future),
+            },
         }
     }
 
@@ -1141,6 +1154,7 @@ impl Orchestrator {
             return Err("Write a message first.".into());
         }
         validate_message(&text, &attachments)?;
+        self.plugin_prompt_gate(thread_id, &text)?;
         if thread.archived {
             return Err("This thread is archived. Unarchive it to continue.".into());
         }
@@ -1236,6 +1250,7 @@ impl Orchestrator {
         let guard = self.guard().clone();
         // A team member's Orbit tools, for this session only.
         let mcp = self.team_session(&thread, &mut env);
+        let tool_policy = self.plugin_tool_policy(thread_id, &cwd);
         let runtime = self.runtimes.entry(thread_id).or_default();
         let spec = SessionSpec {
             thread: thread_id,
@@ -1249,6 +1264,7 @@ impl Orchestrator {
             extra_dirs: vec![self.store.dir().join("blobs")],
             guard,
             mcp,
+            tool_policy,
         };
         let session = (self.launcher)(thread.config.provider, spec, self.agent_tx.clone());
         self.runtimes.get_mut(&thread_id).unwrap().session = Some(session);
@@ -1602,6 +1618,7 @@ impl Orchestrator {
             runtime.last_active = Some(now);
         }
         self.status_on_agent(thread_id, &event);
+        self.plugins_on_agent(thread_id, &event);
         match event {
             AgentEvent::Ready { session_id, .. } => {
                 self.update_thread(thread_id, |t| t.session = Some(session_id));
@@ -1733,6 +1750,7 @@ impl Orchestrator {
                         t.unread = true;
                     }
                 });
+                self.plugin_review_request(thread_id, request.id, &request.kind);
             }
             AgentEvent::RequestWithdrawn { provider_ref } => {
                 let request = self

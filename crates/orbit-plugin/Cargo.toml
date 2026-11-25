@@ -1,0 +1,64 @@
+[package]
+name = "orbit-plugin"
+description = "Orbit plugins: manifests and validation, packaging and content hashes, signed catalogs and kill lists, consent, storage, secrets and the WebAssembly sandbox."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# The host side: the WebAssembly sandbox (wasmi) and the system keychain.
+# The CLI and the app only read manifests, panels and themes.
+host = [
+    "dep:parking_lot",
+    "dep:wasmi",
+    "dep:keyring-core",
+    "dep:windows-native-keyring-store",
+    "dep:apple-native-keyring-store",
+    "dep:zbus-secret-service-keyring-store",
+]
+# A minisign signer for tests and fixtures (`sign::testing`).
+testing = ["dep:ring", "dep:blake2"]
+
+[dependencies]
+orbit-proto = { workspace = true }
+serde = { workspace = true }
+sonic-rs = { workspace = true }
+log = { workspace = true }
+parking_lot = { workspace = true, optional = true }
+# Manifests and panels (already linked through orbit-core and GPUI Kit).
+toml = "1"
+semver = "1"
+# Content hashes (already linked through orbit-core).
+blake3 = "1.8"
+# Signed catalogs and kill lists: the verifier the updater uses.
+minisign-verify = "0.3"
+# `.orbitplugin` archives: the zip reader the updater uses.
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+# An interpreter, not a JIT: about 1.1 MB of code and 20 s of build against
+# wasmtime's 11.5 MB and 3 minutes (docs/PLUGINS.md, "Why wasmi").
+wasmi = { version = "1.1", default-features = false, features = ["std"], optional = true }
+keyring-core = { version = "1", optional = true }
+ring = { version = "0.17", optional = true }
+blake2 = { version = "0.10", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+# Without `search`, which pulls in regex for nothing Orbit uses.
+windows-native-keyring-store = { version = "1", default-features = false, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"], optional = true }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"], optional = true }
+
+[dev-dependencies]
+# Itself, with the host and the test signer, for the integration tests.
+orbit-plugin = { path = ".", features = ["host", "testing"] }
+tempfile = "3"
+wat = "1"
+ring = "0.17"
+blake2 = "0.10"

@@ -25,6 +25,7 @@ pub mod ids;
 pub mod legacy;
 pub mod link;
 pub mod model;
+pub mod plugin;
 pub mod settings;
 pub mod status;
 pub mod teams;
@@ -46,6 +47,7 @@ pub use guard::*;
 pub use host::*;
 pub use ids::*;
 pub use model::*;
+pub use plugin::*;
 pub use settings::*;
 pub use status::*;
 pub use teams::*;
@@ -73,8 +75,10 @@ pub use workspace::*;
 /// `Reply::Usage`); version 12, the background host (`Command::Host`,
 /// `Reply::Host`, `Event::TerminalSleep`; see [`host`]); version 13,
 /// remote hosts (`HostCommand::Ping`, `ListDir` and `Share`,
-/// `HostReply::Dir` and `Share`).
-pub const PROTOCOL_VERSION: u16 = 13;
+/// `HostReply::Dir` and `Share`); version 14, plugins (`Snapshot::plugins`,
+/// `Event::Plugins` and `PluginStorage`, `Command::Plugin`,
+/// `Reply::Plugin`; see [`plugin`]).
+pub const PROTOCOL_VERSION: u16 = 14;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
 pub const WS_SUBPROTOCOL: &str = "orbit.v1";

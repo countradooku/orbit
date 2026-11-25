@@ -99,6 +99,7 @@ impl Orchestrator {
         };
         info.instance = instance.id.clone();
         info.name = instance.display_name().to_owned();
+        self.plugin_overlay(&mut info);
         let slot = self.providers.iter().position(|p| p.instance_id() == info.instance_id());
         match slot {
             _ if !info.installed && !listed => {

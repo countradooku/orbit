@@ -57,6 +57,7 @@ impl Fake {
             env: Vec::new(),
             extra_dirs: Vec::new(),
             guard: Default::default(),
+            tool_policy: Default::default(),
             mcp: Vec::new(),
         }
     }

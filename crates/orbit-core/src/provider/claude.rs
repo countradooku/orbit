@@ -211,6 +211,7 @@ impl Session {
         let mut parser = Parser::new(spec.cwd.clone(), session_id, spec.config.access, Some(binary.display().to_string()));
         parser.requested_model = spec.config.model.clone();
         parser.guard = spec.guard.clone();
+        parser.tool_policy = spec.tool_policy.clone();
         parser.catalog = catalog::last();
         parser.known_windows = parser.catalog.as_ref().map(|c| c.windows.clone()).unwrap_or_default();
         Some(Self {
@@ -356,7 +357,9 @@ impl Session {
             }
         });
         let mut writer = JsonlWriter::new(stdin);
-        writer.send_raw(&init_request(parser::guard_hooks(&self.spec.guard, self.spec.config.access))).await?;
+        writer
+            .send_raw(&init_request(parser::guard_hooks(&self.spec.guard, self.spec.config.access, self.spec.tool_policy.every_tool())))
+            .await?;
         self.resume_at = None;
         self.applied = Applied {
             model: self.spec.config.model.clone(),

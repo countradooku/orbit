@@ -1,0 +1,20 @@
+# A WebAssembly guard: blocks `rm -rf /`-style commands before any agent
+# runs them, whatever the thread's access level.
+id = "guard-rm"
+name = "Guard: rm -rf /"
+version = "1.0.0"
+description = "Blocks commands that would recursively delete the root, home or system folders."
+publisher = "Orbit examples"
+license = "MIT"
+categories = ["safety"]
+engines = { orbit = ">=0.1.0" }
+capabilities = ["hooks.tools"]
+
+[wasm]
+module = "guard.wasm"
+hooks = ["agent.tool.before"]
+# A guard that can't decide blocks rather than lets a command through.
+on_error = "deny"
+fuel = 2000000
+memory_mb = 2
+timeout_ms = 100
