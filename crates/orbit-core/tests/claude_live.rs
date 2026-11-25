@@ -158,3 +158,15 @@ async fn wait_for_exit(rx: &Events) -> Option<String> {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "runs the real Claude Code CLI with Haiku (a fraction of a cent)"]
+async fn real_cli_one_shot_title() {
+    let launch = provider::Launch::builtin(ProviderKind::Claude, None, Vec::new());
+    let prompt = "Write a title for this coding conversation: 3 to 7 words, sentence case, no quotes. Reply with the title only.\n\n\
+                  User: the login form throws a TypeError when the email field is empty";
+    let started = std::time::Instant::now();
+    let title = provider::oneshot::generate(launch, prompt.into()).await.expect("a title");
+    eprintln!("  title {title:?} in {:?}", started.elapsed());
+    assert!(!title.is_empty() && title.len() < 80 && !title.contains('\n'), "{title:?}");
+}
