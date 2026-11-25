@@ -345,8 +345,14 @@ impl Store {
             for record in records {
                 timeline.apply(record);
             }
-            for item in &timeline.items {
+            // A thread that is not running cannot have streaming items: they
+            // are leftovers of a turn cut off by a crash or a forced quit.
+            let busy = self.threads.get(&id).is_some_and(|t| t.status.is_busy());
+            for item in &mut timeline.items {
                 observe_raw_id(item.id.0);
+                if !busy && item.status == ItemStatus::Streaming {
+                    item.status = ItemStatus::Cancelled;
+                }
             }
             self.open.insert(id, OpenTimeline { log, timeline });
         }
@@ -578,5 +584,19 @@ mod tests {
         assert!(!store.timeline_path(id).exists());
         assert_eq!(store.collect_garbage().unwrap(), 1);
         assert!(store.read_blob(&blob.hash).is_err());
+    }
+
+    #[test]
+    fn streaming_leftovers_of_a_crash_load_as_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = ThreadId::new();
+        {
+            let mut store = Store::open(dir.path()).unwrap();
+            store.commit(Event::ThreadUpserted(Thread { status: ThreadStatus::Running, ..thread(id) })).unwrap();
+            let item = Item { status: ItemStatus::Streaming, ..text_item(1, "half a reply") };
+            store.commit(Event::ItemUpserted { thread: id, item }).unwrap();
+        }
+        let mut store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.load_timeline(id).unwrap().items()[0].status, ItemStatus::Cancelled);
     }
 }

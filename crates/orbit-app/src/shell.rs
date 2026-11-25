@@ -44,13 +44,16 @@ pub struct Workspace {
     fleet: Entity<FleetView>,
     threads: Vec<(ThreadId, Entity<ThreadView>)>,
     focus: FocusHandle,
+    /// Debug builds: a screen to open once data arrives (`ORBIT_DEBUG_ROUTE`
+    /// = `latest`, `inbox`, `fleet`), for screenshots and visual checks.
+    debug_route: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
     pub fn new(app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let weak = cx.weak_entity();
-        let sidebar = cx.new(|cx| Sidebar::new(app.clone(), weak.clone(), cx));
+        let sidebar = cx.new(|cx| Sidebar::new(app.clone(), weak.clone(), window, cx));
         let home = cx.new(|cx| HomeView::new(app.clone(), weak.clone(), window, cx));
         let inbox = cx.new(|cx| InboxView::new(app.clone(), weak.clone(), cx));
         let fleet = cx.new(|cx| FleetView::new(app.clone(), weak.clone(), cx));
@@ -62,7 +65,21 @@ impl Workspace {
                 }
             }),
             // Follow deletions: never leave the user on a thread that is gone.
-            cx.observe(&app, |this, app, cx| {
+            cx.observe_in(&app, window, |this, app, window, cx| {
+                if let Some(route) = this.debug_route.take() {
+                    let state = app.read(cx).state();
+                    let target = match route.as_str() {
+                        "inbox" => Some(Route::Inbox),
+                        "fleet" => Some(Route::Fleet),
+                        "latest" => state.threads.values().max_by_key(|t| t.updated_ms).map(|t| Route::Thread(t.id)),
+                        _ => None,
+                    };
+                    match target {
+                        Some(route) => this.navigate(route, window, cx),
+                        None if state.threads.is_empty() => this.debug_route = Some(route),
+                        None => {}
+                    }
+                }
                 if let Route::Thread(id) = this.route
                     && !app.read(cx).state().threads.contains_key(&id)
                     && app.read(cx).connection().is_none_or(|c| *c == orbit_net::ConnectionStatus::Connected)
@@ -85,6 +102,7 @@ impl Workspace {
             fleet,
             threads: Vec::new(),
             focus: cx.focus_handle(),
+            debug_route: if cfg!(debug_assertions) { std::env::var("ORBIT_DEBUG_ROUTE").ok() } else { None },
             _subscriptions: subs,
         }
     }

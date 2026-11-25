@@ -274,6 +274,14 @@ pub struct Thread {
     /// Unanswered agent requests, kept on the thread record so the inbox
     /// can show every request across threads without loading timelines.
     pub pending: Vec<PendingRequest>,
+    /// Done for now: kept, searchable, out of the active list. Any new
+    /// message un-settles the thread.
+    pub settled_ms: Option<u64>,
+    /// Hidden until this time (Unix ms). The thread keeps running; it wakes
+    /// early when it needs the user or fails.
+    pub snoozed_until: Option<u64>,
+    /// Woke from a snooze and the user has not looked yet.
+    pub woke: bool,
 }
 
 /// An unanswered request as the inbox shows it.

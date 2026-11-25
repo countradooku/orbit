@@ -53,6 +53,8 @@ impl Row {
                 ItemBody::Assistant { .. } => Row::Assistant(item.id),
                 ItemBody::Reasoning { text } if text.trim().is_empty() && item.status != ItemStatus::Streaming => continue,
                 ItemBody::Reasoning { .. } => Row::Reasoning(item.id),
+                // Questions and plan approvals are shown as request cards.
+                ItemBody::Tool(call) if matches!(call.name.as_str(), "AskUserQuestion" | "ExitPlanMode") => continue,
                 ItemBody::Tool(_) => {
                     if let Some(Row::Work { turn, items }) = rows.last_mut()
                         && *turn == item.turn
@@ -120,7 +122,7 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
             v_flex()
                 .items_end()
                 .gap_1()
-                .pt_4()
+                .pt_5()
                 .group("user-msg")
                 .child(
                     div()
@@ -190,6 +192,7 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
                 .when(!streaming, |el| {
                     el.child(
                         h_flex()
+                            .h_6()
                             .opacity(0.)
                             .group_hover("agent-msg", |s| s.opacity(1.))
                             .child(gpui_kit::component::clipboard::Clipboard::new(("copy-agent", id.0)).value(text)),
@@ -368,8 +371,7 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
             let files = summary.files.len();
             let (adds, dels) = summary.files.iter().fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions));
             h_flex()
-                .mt_3()
-                .mb_1()
+                .mt_1()
                 .gap_2()
                 .text_xs()
                 .text_color(theme.muted_foreground)

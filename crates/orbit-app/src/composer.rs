@@ -9,7 +9,9 @@
 use std::rc::Rc;
 
 use gpui_kit::component::attachment::{Attachment as AttachmentChip, AttachmentContent, AttachmentTitle};
-use gpui_kit::component::button::{Button, ButtonVariants as _, Toggle};
+use gpui_kit::component::button::{Button, ButtonRounded, ButtonVariants as _, Toggle};
+use gpui_kit::component::popover::Popover;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex};
@@ -36,6 +38,9 @@ pub struct Composer {
     running: bool,
     /// Live usage of the thread, for the meter. `None` on the home screen.
     usage: Option<Usage>,
+    /// Where the agent works ("orbit", "Current checkout"), shown under the box.
+    context: Option<String>,
+    branch: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -47,7 +52,7 @@ impl Composer {
             TextareaState::new(window, cx)
                 .auto_grow(1, 14)
                 .submit_on_enter(true)
-                .placeholder("Ask for a change, a fix, or an explanation…")
+                .placeholder("Describe a change, a fix or a question — / for commands")
         });
         let input_sub = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
             if let InputEvent::PressEnter { shift: false, secondary } = event {
@@ -64,6 +69,8 @@ impl Composer {
             attaching: 0,
             running: false,
             usage: None,
+            context: None,
+            branch: None,
             _subscriptions: vec![input_sub, app_sub],
         }
     }
@@ -82,6 +89,15 @@ impl Composer {
     pub fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
         if self.running != running {
             self.running = running;
+            cx.notify();
+        }
+    }
+
+    /// Sets the workspace and branch shown under the box.
+    pub fn set_context(&mut self, context: Option<String>, branch: Option<String>, cx: &mut Context<Self>) {
+        if self.context != context || self.branch != branch {
+            self.context = context;
+            self.branch = branch;
             cx.notify();
         }
     }
@@ -172,181 +188,129 @@ impl Composer {
         .detach();
     }
 
-    fn render_model_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The current model and its non-default options, read from the
+    /// provider's catalog: ("Opus 5.5", "High").
+    fn model_summary(&self, cx: &App) -> (String, Option<String>) {
         let state = self.app.read(cx).state();
-        let providers: Rc<Vec<ProviderInfo>> = Rc::new(state.providers.clone());
-        let label = ui::model_label(&self.config, &providers);
-        let current = self.config.clone();
-        let this = cx.weak_entity();
-        Button::new("model")
-            .ghost()
-            .small()
-            .icon(Icon::new(Lucide::Sparkles))
-            .label(label)
-            .dropdown_caret(true)
-            .dropdown_menu(move |mut menu, _, _| {
-                menu = menu.min_w(px(260.));
-                for provider in providers.iter() {
-                    menu = menu.label(provider.kind.label());
-                    if !provider.installed {
-                        let note = provider.message.clone().unwrap_or_else(|| "Not installed".into());
-                        menu = menu.item(PopupMenuItem::new(note).disabled(true));
-                        continue;
-                    }
-                    for model in &provider.models {
-                        let selected = current.provider == provider.kind
-                            && (current.model == model.slug || (current.model.is_empty() && model.is_default));
-                        let (kind, slug) = (provider.kind, model.slug.clone());
-                        let this = this.clone();
-                        menu = menu.item(PopupMenuItem::new(model.name.clone()).checked(selected).on_click(
-                            move |_, _, cx| {
-                                let slug = slug.clone();
-                                let _ = this.update(cx, |this, cx| {
-                                    this.update_config(
-                                        |c| {
-                                            c.provider = kind;
-                                            c.model = slug;
-                                        },
-                                        cx,
-                                    )
-                                });
-                            },
-                        ));
-                    }
-                    menu = menu.separator();
-                }
-                menu
-            })
-    }
-
-    /// One control per option the selected model reports.
-    fn render_model_options(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let state = self.app.read(cx).state();
-        let Some(provider) = state.provider(self.config.provider) else { return Vec::new() };
-        let model = provider
-            .models
-            .iter()
-            .find(|m| m.slug == self.config.model)
-            .or_else(|| provider.models.iter().find(|m| m.is_default));
-        let Some(model) = model else { return Vec::new() };
-        let mut out = Vec::new();
+        let name = ui::model_label(&self.config, &state.providers);
+        let Some(model) = selected_model(&self.config, &state.providers) else { return (name, None) };
+        let mut extras = Vec::new();
         for option in &model.options {
-            let chosen = self
-                .config
-                .options
-                .iter()
-                .find(|v| v.id == option.id)
-                .map(|v| v.value.clone())
-                .unwrap_or_else(|| option.default_setting());
-            let this = cx.weak_entity();
-            let option_id = option.id.clone();
-            match (&option.kind, chosen) {
-                (OptionKind::Select { choices }, OptionSetting::Choice(chosen)) => {
-                    // "Default" alone says nothing; name the option instead.
-                    let label = match choices.iter().find(|c| c.id == chosen) {
-                        Some(c) if c.id == "default" => option.label.clone(),
-                        Some(c) => c.label.clone(),
-                        None => chosen.clone(),
-                    };
-                    let choices = Rc::new(choices.clone());
-                    out.push(
-                        Button::new(SharedString::from(format!("opt-{option_id}")))
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(Lucide::Brain))
-                            .label(label)
-                            .tooltip(option.label.clone())
-                            .dropdown_caret(true)
-                            .dropdown_menu(move |mut menu, _, _| {
-                                for choice in choices.iter() {
-                                    let (this, option_id, id) = (this.clone(), option_id.clone(), choice.id.clone());
-                                    let mut item = PopupMenuItem::new(choice.label.clone()).checked(choice.id == chosen);
-                                    item = item.on_click(move |_, _, cx| {
-                                        let (option_id, id) = (option_id.clone(), id.clone());
-                                        let _ = this.update(cx, |this, cx| {
-                                            this.update_config(|c| set_option(c, option_id, OptionSetting::Choice(id)), cx)
-                                        });
-                                    });
-                                    menu = menu.item(item);
-                                }
-                                menu
-                            })
-                            .into_any_element(),
-                    );
+            match (&option.kind, chosen(&self.config, option)) {
+                (OptionKind::Select { choices }, OptionSetting::Choice(id)) if id != "default" => {
+                    if let Some(c) = choices.iter().find(|c| c.id == id) {
+                        extras.push(c.label.clone());
+                    }
                 }
-                (OptionKind::Toggle { .. }, OptionSetting::Toggle(on)) => {
-                    out.push(
-                        Toggle::new(SharedString::from(format!("opt-{option_id}")))
-                            .small()
-                            .label(option.label.clone())
-                            .checked(on)
-                            .on_click(move |checked: &bool, _, cx| {
-                                let (option_id, checked) = (option_id.clone(), *checked);
-                                let _ = this.update(cx, |this, cx| {
-                                    this.update_config(|c| set_option(c, option_id, OptionSetting::Toggle(checked)), cx)
-                                });
-                            })
-                            .into_any_element(),
-                    );
+                (OptionKind::Toggle { default }, OptionSetting::Toggle(on)) if on != *default && on => {
+                    extras.push(option.label.clone());
                 }
                 _ => {}
             }
         }
-        out
+        (name, (!extras.is_empty()).then(|| extras.join(" · ")))
     }
 
-    fn render_mode_and_access(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let theme = cx.theme();
+    /// One pill for everything about the model: which agent, which model,
+    /// how hard it thinks. Opens a single popover with all of it.
+    fn render_model_pill(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let (name, extras) = self.model_summary(cx);
+        let providers: Rc<Vec<ProviderInfo>> = Rc::new(self.app.read(cx).state().providers.clone());
+        let config = self.config.clone();
+        let this = cx.weak_entity();
+        let icon = ui::provider_icon(self.config.provider, cx);
+        Popover::new("model-picker")
+            .anchor(Anchor::BottomRight)
+            .trigger(
+                Button::new("model-pill")
+                    .ghost()
+                    .small()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .child(icon.xsmall())
+                            .child(div().font_weight(FontWeight::MEDIUM).child(name))
+                            .when_some(extras, |el, extras| {
+                                el.child(div().text_color(theme.muted_foreground).child(extras))
+                            }),
+                    ),
+            )
+            .content(move |_, _, cx| render_model_menu(&providers, &config, &this, cx))
+    }
+
+    fn render_plan_toggle(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let supports_plan = self
             .app
             .read(cx)
             .state()
             .provider(self.config.provider)
             .is_none_or(|p| p.modes.is_empty() || p.modes.iter().any(|m| m.mode == Mode::Plan));
-        let mut out = Vec::new();
-        if supports_plan {
-            let this = cx.weak_entity();
-            out.push(
-                Toggle::new("plan-mode")
-                    .small()
-                    .icon(Icon::new(Lucide::ListTodo))
-                    .label("Plan")
-                    .tooltip("Plan first: the agent proposes a plan and waits for your go-ahead")
-                    .checked(self.config.mode == Mode::Plan)
-                    .on_click(move |checked: &bool, _, cx| {
-                        let checked = *checked;
-                        let _ = this.update(cx, |this, cx| {
-                            this.update_config(|c| c.mode = if checked { Mode::Plan } else { Mode::Build }, cx)
-                        });
-                    })
-                    .into_any_element(),
-            );
+        if !supports_plan {
+            return None;
         }
-        let access = self.config.access;
-        let this = cx.weak_entity();
-        let warn = access == Access::Full;
-        out.push(
-            Button::new("access")
-                .ghost()
+        let planning = self.config.mode == Mode::Plan;
+        Some(
+            Toggle::new("plan-mode")
                 .small()
-                .icon(Icon::new(if warn { Lucide::ShieldAlert } else { Lucide::ShieldCheck }))
-                .label(access.label())
-                .when(warn, |b| b.text_color(theme.warning))
-                .dropdown_caret(true)
-                .dropdown_menu(move |mut menu, _, _| {
-                    for level in Access::ALL {
-                        let this = this.clone();
-                        menu = menu.item(PopupMenuItem::new(access_description(level)).checked(level == access).on_click(
-                            move |_, _, cx| {
-                                let _ = this.update(cx, |this, cx| this.update_config(|c| c.access = level, cx));
-                            },
-                        ));
-                    }
-                    menu
-                })
+                .icon(Icon::new(Lucide::ListTodo))
+                .label("Plan")
+                .tooltip("Plan first: the agent proposes a plan and waits for your go-ahead")
+                .checked(planning)
+                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                    let checked = *checked;
+                    this.update_config(|c| c.mode = if checked { Mode::Plan } else { Mode::Build }, cx)
+                }))
                 .into_any_element(),
-        );
-        out
+        )
+    }
+
+    /// Workspace, branch and access: chosen once, read often. They sit
+    /// under the box, quiet, out of the way of writing.
+    fn render_context_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let access = self.config.access;
+        let warn = access == Access::Full;
+        let this = cx.weak_entity();
+        h_flex()
+            .px_1()
+            .pt_1p5()
+            .gap_1()
+            .text_xs()
+            .text_color(theme.muted_foreground)
+            .when_some(self.context.clone(), |el, label| {
+                el.child(
+                    h_flex()
+                        .gap_1()
+                        .px_1p5()
+                        .child(Icon::new(IconName::Folder).xsmall())
+                        .child(label),
+                )
+            })
+            .when_some(self.branch.clone(), |el, branch| {
+                el.child(h_flex().gap_1().px_1p5().child(Icon::new(Lucide::GitBranch).xsmall()).child(branch))
+            })
+            .child(div().flex_1())
+            .when_some(self.usage, |el, usage| el.child(ui::ContextMeter::new("composer-meter", usage)))
+            .child(
+                Button::new("access")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(if warn { Lucide::ShieldAlert } else { Lucide::ShieldCheck }))
+                    .label(access.label())
+                    .when(warn, |b| b.text_color(theme.warning))
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for level in Access::ALL {
+                            let this = this.clone();
+                            menu = menu.item(PopupMenuItem::new(access_description(level)).checked(level == access).on_click(
+                                move |_, _, cx| {
+                                    let _ = this.update(cx, |this, cx| this.update_config(|c| c.access = level, cx));
+                                },
+                            ));
+                        }
+                        menu
+                    }),
+            )
     }
 
     fn render_attachments(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
@@ -374,6 +338,179 @@ impl Composer {
         }
         Some(row)
     }
+}
+
+fn selected_model<'a>(config: &ThreadConfig, providers: &'a [ProviderInfo]) -> Option<&'a ModelInfo> {
+    let provider = providers.iter().find(|p| p.kind == config.provider)?;
+    provider
+        .models
+        .iter()
+        .find(|m| m.slug == config.model)
+        .or_else(|| if config.model.is_empty() { provider.models.iter().find(|m| m.is_default) } else { None })
+}
+
+fn chosen(config: &ThreadConfig, option: &OptionDescriptor) -> OptionSetting {
+    config.options.iter().find(|v| v.id == option.id).map(|v| v.value.clone()).unwrap_or_else(|| option.default_setting())
+}
+
+/// The model popover: agents and their models, then the selected model's
+/// options as segmented choices and switches.
+fn render_model_menu(
+    providers: &[ProviderInfo],
+    config: &ThreadConfig,
+    this: &WeakEntity<Composer>,
+    cx: &mut App,
+) -> Div {
+    let theme = cx.theme().clone();
+    let mut list = v_flex().gap_0p5();
+    for provider in providers {
+        list = list.child(
+            h_flex()
+                .px_2()
+                .pt_2()
+                .pb_1()
+                .gap_1p5()
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.muted_foreground)
+                .child(ui::provider_icon(provider.kind, cx).xsmall())
+                .child(provider.kind.label())
+                .when(!provider.installed, |el| el.child(div().flex_1().text_right().child("Not installed"))),
+        );
+        if !provider.installed {
+            list = list.child(
+                div()
+                    .px_2()
+                    .pb_1()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .whitespace_normal()
+                    .child(provider.message.clone().unwrap_or_else(|| "Install its command-line tool to use it.".into())),
+            );
+        }
+        for model in &provider.models {
+            let selected = config.provider == provider.kind
+                && (config.model == model.slug || (config.model.is_empty() && model.is_default));
+            let (kind, slug, this) = (provider.kind, model.slug.clone(), this.clone());
+            list = list.child(
+                h_flex()
+                    .id(SharedString::from(format!("model-{}-{}", provider.kind.label(), model.slug)))
+                    .px_2()
+                    .py_1p5()
+                    .gap_2()
+                    .rounded(theme.radius)
+                    .cursor_default()
+                    .when(selected, |el| el.bg(theme.accent))
+                    .when(!selected, |el| el.hover(|s| s.bg(theme.muted)))
+                    .on_click(move |_, _, cx| {
+                        let slug = slug.clone();
+                        let _ = this.update(cx, |this, cx| {
+                            this.update_config(
+                                |c| {
+                                    if c.provider != kind {
+                                        c.options.clear();
+                                    }
+                                    c.provider = kind;
+                                    c.model = slug;
+                                },
+                                cx,
+                            )
+                        });
+                    })
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_sm().child(model.name.clone()))
+                            .when_some(model.description.clone(), |el, d| {
+                                el.child(div().text_xs().text_color(theme.muted_foreground).truncate().child(d))
+                            }),
+                    )
+                    .when(selected, |el| el.child(Icon::new(IconName::Check).xsmall().text_color(theme.primary))),
+            );
+        }
+    }
+    // Models scroll; the selected model's options stay in view below them.
+    let models = div()
+        .id("model-list")
+        .max_h(rems(19.))
+        .overflow_y_scroll()
+        .child(list);
+    let mut list = v_flex().w(rems(22.)).child(models);
+    if let Some(model) = selected_model(config, providers)
+        && !model.options.is_empty()
+    {
+        list = list.child(div().my_1().h_px().bg(theme.border));
+        for option in &model.options {
+            let current = chosen(config, option);
+            let option_id = option.id.clone();
+            match &option.kind {
+                OptionKind::Select { choices } => {
+                    let mut group = h_flex().gap_0p5().p_0p5().rounded(theme.radius).bg(theme.muted);
+                    for choice in choices {
+                        let selected = current == OptionSetting::Choice(choice.id.clone());
+                        let (this, option_id, id) = (this.clone(), option_id.clone(), choice.id.clone());
+                        group = group.child(
+                            div()
+                                .id(SharedString::from(format!("choice-{}-{}", option.id, choice.id)))
+                                .flex_1()
+                                .py_1()
+                                .rounded(theme.radius)
+                                .text_center()
+                                .text_xs()
+                                .cursor_default()
+                                .when(selected, |el| el.bg(theme.background).shadow_xs().font_weight(FontWeight::MEDIUM))
+                                .when(!selected, |el| el.text_color(theme.muted_foreground).hover(|s| s.text_color(theme.foreground)))
+                                .when_some(choice.description.clone(), |el, d| {
+                                    el.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(d.clone()).build(window, cx))
+                                })
+                                .on_click(move |_, _, cx| {
+                                    let (option_id, id) = (option_id.clone(), id.clone());
+                                    let _ = this.update(cx, |this, cx| {
+                                        this.update_config(|c| set_option(c, option_id, OptionSetting::Choice(id)), cx)
+                                    });
+                                })
+                                .child(choice.label.clone()),
+                        );
+                    }
+                    list = list.child(
+                        v_flex()
+                            .px_2()
+                            .py_1()
+                            .gap_1()
+                            .child(div().text_xs().text_color(theme.muted_foreground).child(option.label.clone()))
+                            .child(group),
+                    );
+                }
+                OptionKind::Toggle { .. } => {
+                    let on = current == OptionSetting::Toggle(true);
+                    let this = this.clone();
+                    list = list.child(
+                        h_flex()
+                            .px_2()
+                            .py_1p5()
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .child(div().text_sm().child(option.label.clone()))
+                                    .when_some(option.description.clone(), |el, d| {
+                                        el.child(div().text_xs().text_color(theme.muted_foreground).child(d))
+                                    }),
+                            )
+                            .child(Switch::new(SharedString::from(format!("switch-{}", option.id))).small().checked(on).on_click(
+                                move |checked: &bool, _, cx| {
+                                    let (option_id, checked) = (option_id.clone(), *checked);
+                                    let _ = this.update(cx, |this, cx| {
+                                        this.update_config(|c| set_option(c, option_id, OptionSetting::Toggle(checked)), cx)
+                                    });
+                                },
+                            )),
+                    );
+                }
+            }
+        }
+    }
+    list
 }
 
 fn set_option(config: &mut ThreadConfig, id: String, value: OptionSetting) {
@@ -409,70 +546,62 @@ impl Render for Composer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let has_text = !self.input.read(cx).value().trim().is_empty() || !self.attachments.is_empty();
-        let hint = if self.running {
-            Some("Enter queues · Ctrl+Enter steers the running turn")
-        } else {
-            None
-        };
         let send = if self.running && !has_text {
             Button::new("stop")
-                .icon(Icon::new(Lucide::CircleStop))
+                .icon(Icon::new(IconName::Square))
+                .rounded(ButtonRounded::Size(px(999.)))
                 .tooltip("Stop (Ctrl+.)")
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::Stop)))
         } else {
             Button::new("send")
                 .primary()
                 .icon(Icon::new(IconName::ArrowUp))
-                .tooltip(if self.running { "Queue (Enter) · Steer (Ctrl+Enter)" } else { "Send (Enter)" })
+                .rounded(ButtonRounded::Size(px(999.)))
+                .tooltip(if self.running { "Queue (Enter) · Steer the running turn (Ctrl+Enter)" } else { "Send (Enter)" })
                 .disabled(!has_text || self.attaching > 0)
                 .on_click(cx.listener(|this, _, window, cx| this.submit(false, window, cx)))
         };
         v_flex()
             .w_full()
-            .rounded(theme.radius_lg)
-            .border_1()
-            .border_color(theme.input)
-            .bg(theme.popover)
-            .shadow_sm()
-            .children(self.render_attachments(cx))
             .child(
-                div().px_3().pt_2p5().child(
-                    Textarea::new(&self.input).appearance(false).on_paste(|_, _, _| false),
-                ),
-            )
-            .child(
-                h_flex()
-                    .px_2()
-                    .pt_1()
-                    .pb_2()
-                    .gap_1()
+                v_flex()
+                    .w_full()
+                    .rounded(theme.radius_lg)
+                    .border_1()
+                    .border_color(theme.input)
+                    .bg(theme.popover)
+                    .shadow_sm()
+                    .children(self.render_attachments(cx))
+                    .child(div().px_3().pt_3().child(Textarea::new(&self.input).appearance(false)))
                     .child(
-                        // Controls keep their size and wrap to a second line
-                        // in a narrow window rather than overlapping.
                         h_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .flex_wrap()
-                            .gap_0p5()
-                            .child(div().flex_none().child(self.render_model_picker(cx)))
-                            .children(self.render_model_options(cx).into_iter().map(|el| div().flex_none().child(el)))
-                            .children(self.render_mode_and_access(cx).into_iter().map(|el| div().flex_none().child(el)))
+                            .px_2()
+                            .pt_1()
+                            .pb_2()
+                            .gap_1()
                             .child(
-                                div().flex_none().child(
-                                    Button::new("attach")
-                                        .ghost()
-                                        .small()
-                                        .icon(Icon::new(Lucide::Paperclip))
-                                        .tooltip("Attach files…")
-                                        .on_click(cx.listener(|this, _, window, cx| this.attach_files(window, cx))),
-                                ),
-                            ),
-                    )
-                    .when_some(self.usage, |el, usage| el.child(div().flex_none().child(ui::ContextMeter::new("composer-meter", usage))))
-                    .child(div().flex_none().child(send)),
+                                Button::new("attach")
+                                    .ghost()
+                                    .small()
+                                    .icon(Icon::new(Lucide::Paperclip))
+                                    .tooltip("Attach files…")
+                                    .on_click(cx.listener(|this, _, window, cx| this.attach_files(window, cx))),
+                            )
+                            .children(self.render_plan_toggle(cx))
+                            .child(div().flex_1())
+                            .when(self.running, |el| {
+                                el.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .mr_1()
+                                        .child(if has_text { "Enter queues · Ctrl+Enter steers" } else { "Working…" }),
+                                )
+                            })
+                            .child(self.render_model_pill(cx))
+                            .child(send),
+                    ),
             )
-            .when_some(hint, |el, hint| {
-                el.child(div().px_3().pb_2().text_xs().text_color(theme.muted_foreground).child(hint))
-            })
+            .child(self.render_context_bar(cx))
     }
 }

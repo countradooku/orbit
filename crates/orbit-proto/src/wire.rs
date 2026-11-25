@@ -118,6 +118,9 @@ pub struct ThreadPatch {
     pub archived: Option<bool>,
     pub pinned: Option<bool>,
     pub unread: Option<bool>,
+    pub settled: Option<bool>,
+    /// `Some(Some(t))` snoozes until `t` (Unix ms); `Some(None)` wakes now.
+    pub snooze_until: Option<Option<u64>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]

@@ -33,6 +33,8 @@ pub enum Internal {
     ProjectBranch { project: ProjectId, branch: Option<String> },
     /// The provider's quota window has reset; resume the thread's queue.
     QuotaReset(ThreadId),
+    /// A snooze timer fired.
+    SnoozeEnded { thread: ThreadId, until: u64 },
 }
 
 /// Starts provider sessions. Tests replace it with scripted fakes.
@@ -495,6 +497,12 @@ impl Orchestrator {
                     self.store.unload_timeline(thread);
                 }
             }
+            Internal::SnoozeEnded { thread, until } => {
+                // Ignore timers for snoozes that were changed since.
+                if self.store.thread(thread).is_some_and(|t| t.snoozed_until == Some(until)) {
+                    self.wake(thread);
+                }
+            }
             Internal::ProjectBranch { project, branch } => {
                 if let Some(mut p) = self.store.project(project).cloned()
                     && p.base_branch != branch
@@ -684,8 +692,31 @@ impl Orchestrator {
             }
             if let Some(unread) = patch.unread {
                 t.unread = unread;
+                if !unread {
+                    t.woke = false;
+                }
+            }
+            if let Some(settled) = patch.settled {
+                t.settled_ms = settled.then(now_ms);
+                if settled {
+                    // Settling ends the thread's active life: unpin, unsnooze.
+                    t.pinned = false;
+                    t.snoozed_until = None;
+                }
+            }
+            if let Some(snooze) = patch.snooze_until {
+                t.snoozed_until = snooze.filter(|until| *until > now_ms());
+                t.woke = false;
             }
         });
+        if let Some(Some(until)) = patch.snooze_until {
+            let wait = Duration::from_millis(until.saturating_sub(now_ms()));
+            let tx = self.internal_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(wait).await;
+                let _ = tx.send(Internal::SnoozeEnded { thread: id, until });
+            });
+        }
         if let Some(config) = config {
             if let Some(session) = self.runtimes.get(&id).and_then(|r| r.session.as_ref()) {
                 session.send(SessionInput::Configure(config.clone()));
@@ -802,6 +833,12 @@ impl Orchestrator {
             let title = title_from(&text);
             self.update_thread(thread_id, |t| t.title = title);
         }
+        // Writing to a settled or snoozed thread brings it back.
+        self.update_thread(thread_id, |t| {
+            t.settled_ms = None;
+            t.snoozed_until = None;
+            t.woke = false;
+        });
         if steering {
             let prompt = self.prompt_input(thread_id, item_id, text, &attachments, true);
             if let Some(session) = self.runtimes.get(&thread_id).and_then(|r| r.session.as_ref()) {
@@ -1049,6 +1086,15 @@ impl Orchestrator {
         });
     }
 
+    /// Ends a snooze and marks the thread as woken, if it was snoozed.
+    fn wake(&mut self, thread: ThreadId) {
+        self.update_thread(thread, |t| {
+            if t.snoozed_until.take().is_some() {
+                t.woke = true;
+            }
+        });
+    }
+
     fn notice(&mut self, thread: ThreadId, level: NoticeLevel, text: String) {
         if self.store.load_timeline(thread).is_err() {
             return;
@@ -1124,6 +1170,7 @@ impl Orchestrator {
         };
         if let TurnOutcome::Failed { message } = &outcome {
             self.notice(thread_id, NoticeLevel::Error, message.clone());
+            self.wake(thread_id);
         }
         let open = self.open.contains(&thread_id);
         self.update_thread(thread_id, |t| {
@@ -1286,6 +1333,7 @@ impl Orchestrator {
                     t.requests.insert(provider_ref, (request.id, item.id));
                 }
                 self.put_item(thread_id, item);
+                self.wake(thread_id);
                 self.update_thread(thread_id, |t| {
                     t.pending.push(pending);
                     t.status = ThreadStatus::Waiting;

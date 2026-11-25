@@ -121,11 +121,20 @@ impl ThreadView {
     /// Keeps the composer in step with the thread record (config, running).
     fn sync_thread_record(&mut self, cx: &mut Context<Self>) {
         let Some(thread) = self.thread(cx).cloned() else { return };
-        let usage = self.app.read(cx).state().usage(self.id);
+        let state = self.app.read(cx).state();
+        let usage = state.usage(self.id);
+        let project = thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p));
+        let context = Some(match (&thread.workspace.worktree, project) {
+            (Some(_), _) => "Own worktree".to_owned(),
+            (None, Some(p)) => p.name.clone(),
+            (None, None) => "Scratch folder".to_owned(),
+        });
+        let branch = thread.workspace.branch.clone().or_else(|| project.and_then(|p| p.base_branch.clone()));
         self.composer.update(cx, |composer, cx| {
             composer.set_running(thread.status.is_busy(), cx);
             composer.set_config(thread.config.clone(), cx);
             composer.set_usage(Some(usage), cx);
+            composer.set_context(context, branch, cx);
         });
         cx.notify();
     }
@@ -253,66 +262,6 @@ impl ThreadView {
         cx.notify();
     }
 
-    fn rename(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let title = self.thread(cx).map(|t| t.title.clone()).unwrap_or_default();
-        let input = cx.new(|cx| gpui_kit::component::input::InputState::new(window, cx).default_value(title));
-        let app = self.app.clone();
-        let id = self.id;
-        window.open_dialog(cx, move |dialog, _, _| {
-            let (input, app) = (input.clone(), app.clone());
-            dialog
-                .title("Rename thread")
-                .w(px(420.))
-                .child(gpui_kit::component::input::Input::new(&input))
-                .footer(
-                    h_flex()
-                        .gap_2()
-                        .justify_end()
-                        .child(gpui_kit::component::dialog::DialogClose::new().child(
-                            Button::new("cancel").outline().label("Cancel"),
-                        ))
-                        .child(gpui_kit::component::dialog::DialogAction::new().child(
-                            Button::new("rename").primary().label("Rename"),
-                        )),
-                )
-                .on_ok(move |_, window, cx| {
-                    let title = input.read(cx).value().trim().to_owned();
-                    if !title.is_empty() {
-                        app.update(cx, |app, cx| {
-                            app.run(
-                                Command::UpdateThread {
-                                    id,
-                                    patch: ThreadPatch { title: Some(title), ..Default::default() },
-                                },
-                                window,
-                                cx,
-                            )
-                        });
-                    }
-                    true
-                })
-        });
-    }
-
-    fn confirm_delete(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let title = self.thread(cx).map(|t| display_title(t).to_owned()).unwrap_or_default();
-        let app = self.app.clone();
-        let id = self.id;
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let app = app.clone();
-            alert
-                .title(format!("Delete “{title}”?"))
-                .description("Its messages, attachments and checkpoints are removed from this computer.")
-                .confirm()
-                .ok_text("Delete")
-                .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
-                .on_ok(move |_, window, cx| {
-                    app.update(cx, |app, cx| app.run(Command::DeleteThread { id }, window, cx));
-                    true
-                })
-        });
-    }
-
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let state = self.app.read(cx).state();
@@ -320,9 +269,6 @@ impl ThreadView {
         let project = thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p));
         let usage = state.usage(self.id);
         let model = ui::model_label(&thread.config, &state.providers);
-        let view = cx.weak_entity();
-        let archived = thread.archived;
-        let pinned = thread.pinned;
         let id = self.id;
         h_flex()
             .h_11()
@@ -363,50 +309,13 @@ impl ThreadView {
                     .tooltip("Review changes (Ctrl+R)")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(ThreadViewEvent::Review))),
             )
-            .child(
+            .child({
+                let (app, menu_thread) = (self.app.clone(), thread.clone());
+                let path = project.map(|p| p.path.clone());
                 Button::new("thread-menu").ghost().small().icon(IconName::Ellipsis).dropdown_menu(move |menu, _, _| {
-                    let (rename, pin, archive, delete) = (view.clone(), view.clone(), view.clone(), view.clone());
-                    menu.item(PopupMenuItem::new("Rename…").icon(Lucide::Pencil).on_click(move |_, window, cx| {
-                        let _ = rename.update(cx, |this, cx| this.rename(window, cx));
-                    }))
-                    .item(PopupMenuItem::new(if pinned { "Unpin" } else { "Pin" }).icon(Lucide::Pin).on_click(
-                        move |_, window, cx| {
-                            let _ = pin.update(cx, |this, cx| {
-                                this.app.update(cx, |app, cx| {
-                                    app.run(
-                                        Command::UpdateThread {
-                                            id,
-                                            patch: ThreadPatch { pinned: Some(!pinned), ..Default::default() },
-                                        },
-                                        window,
-                                        cx,
-                                    )
-                                })
-                            });
-                        },
-                    ))
-                    .item(PopupMenuItem::new(if archived { "Unarchive" } else { "Archive" }).icon(Lucide::Archive).on_click(
-                        move |_, window, cx| {
-                            let _ = archive.update(cx, |this, cx| {
-                                this.app.update(cx, |app, cx| {
-                                    app.run(
-                                        Command::UpdateThread {
-                                            id,
-                                            patch: ThreadPatch { archived: Some(!archived), ..Default::default() },
-                                        },
-                                        window,
-                                        cx,
-                                    )
-                                })
-                            });
-                        },
-                    ))
-                    .separator()
-                    .item(PopupMenuItem::new("Delete…").icon(Lucide::Trash).on_click(move |_, window, cx| {
-                        let _ = delete.update(cx, |this, cx| this.confirm_delete(window, cx));
-                    }))
-                }),
-            )
+                    crate::thread_menu::build(menu, &app, &menu_thread, path.clone())
+                })
+            })
     }
 
     fn render_queue(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {

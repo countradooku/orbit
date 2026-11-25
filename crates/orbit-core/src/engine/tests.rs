@@ -390,3 +390,32 @@ fn terminals_round_trip_through_the_engine() {
     }
     h.call(Command::CloseTerminal { term });
 }
+
+#[test]
+fn settle_snooze_and_wake() {
+    let mut h = Harness::new();
+    let id = h.new_thread();
+    h.call(Command::UpdateThread { id, patch: ThreadPatch { pinned: Some(true), ..Default::default() } });
+    h.call(Command::UpdateThread { id, patch: ThreadPatch { settled: Some(true), ..Default::default() } });
+    h.wait("settled", |h| h.thread(id).settled_ms.is_some());
+    assert!(!h.thread(id).pinned, "settling unpins");
+
+    // A message brings a settled thread back.
+    h.send(id, "hi");
+    h.wait("unsettled", |h| h.thread(id).settled_ms.is_none() && h.thread(id).turns == 1);
+
+    // A snooze ends by itself and marks the thread as woken.
+    let until = now_ms() + 300;
+    h.call(Command::UpdateThread { id, patch: ThreadPatch { snooze_until: Some(Some(until)), ..Default::default() } });
+    h.wait("snoozed", |h| h.thread(id).snoozed_until == Some(until));
+    h.wait("woke", |h| h.thread(id).snoozed_until.is_none() && h.thread(id).woke);
+
+    // A request wakes a snoozed thread early.
+    h.call(Command::UpdateThread {
+        id,
+        patch: ThreadPatch { snooze_until: Some(Some(now_ms() + 3_600_000)), ..Default::default() },
+    });
+    h.wait("snoozed again", |h| h.thread(id).snoozed_until.is_some());
+    h.send(id, "ask");
+    h.wait("woken by the request", |h| h.thread(id).status == ThreadStatus::Waiting && h.thread(id).snoozed_until.is_none());
+}

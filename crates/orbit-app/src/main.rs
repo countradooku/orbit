@@ -20,6 +20,7 @@ mod shell;
 mod sidebar;
 mod theme;
 mod thread;
+mod thread_menu;
 mod ui;
 
 use gpui_kit::component::TitleBar;

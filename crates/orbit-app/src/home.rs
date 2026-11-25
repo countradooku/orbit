@@ -48,6 +48,7 @@ impl HomeView {
                     let defaults = app.read(cx).state().defaults.clone();
                     this.composer.update(cx, |c, cx| c.set_config(defaults, cx));
                 }
+                this.sync_context(cx);
                 cx.notify();
             }),
         ];
@@ -56,7 +57,17 @@ impl HomeView {
 
     pub fn select_project(&mut self, project: Option<ProjectId>, cx: &mut Context<Self>) {
         self.picked = Some(project);
+        self.sync_context(cx);
         cx.notify();
+    }
+
+    fn sync_context(&mut self, cx: &mut Context<Self>) {
+        let project = self.project(cx);
+        let state = self.app.read(cx).state();
+        let project = project.and_then(|id| state.projects.iter().find(|p| p.id == id));
+        let context = Some(project.map(|_| "Current checkout".to_owned()).unwrap_or_else(|| "Scratch folder".into()));
+        let branch = project.and_then(|p| p.base_branch.clone());
+        self.composer.update(cx, |c, cx| c.set_context(context, branch, cx));
     }
 
     pub fn focus_composer(home: &Entity<Self>, window: &mut Window, cx: &mut App) {
