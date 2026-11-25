@@ -210,6 +210,7 @@ impl Session {
         let session_id = spec.resume.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let mut parser = Parser::new(spec.cwd.clone(), session_id, spec.config.access, Some(binary.display().to_string()));
         parser.requested_model = spec.config.model.clone();
+        parser.guard = spec.guard.clone();
         parser.catalog = catalog::last();
         parser.known_windows = parser.catalog.as_ref().map(|c| c.windows.clone()).unwrap_or_default();
         Some(Self {
@@ -349,7 +350,7 @@ impl Session {
             }
         });
         let mut writer = JsonlWriter::new(stdin);
-        writer.send_raw(&init_request()).await?;
+        writer.send_raw(&init_request(parser::guard_hooks(&self.spec.guard, self.spec.config.access))).await?;
         self.resume_at = None;
         self.applied = Applied {
             model: self.spec.config.model.clone(),
@@ -581,8 +582,8 @@ impl Session {
     }
 }
 
-fn init_request() -> String {
-    format!(r#"{{"type":"control_request","request_id":"{INIT_ID}","request":{{"subtype":"initialize","hooks":null}}}}"#)
+fn init_request(hooks: &str) -> String {
+    format!(r#"{{"type":"control_request","request_id":"{INIT_ID}","request":{{"subtype":"initialize","hooks":{hooks}}}}}"#)
 }
 
 async fn next_line(proc: &mut Option<Proc>) -> Option<Vec<u8>> {
@@ -702,7 +703,7 @@ pub async fn probe(binary: Option<PathBuf>, user_env: Vec<(String, String)>) -> 
     let mut writer = JsonlWriter::new(stdin);
     let mut reader = JsonlReader::new(stdout);
     let exchange = async {
-        writer.send_raw(&init_request()).await.ok()?;
+        writer.send_raw(&init_request("null")).await.ok()?;
         let mut parser = Parser::new(cwd.clone(), String::new(), Access::Ask, Some(shown.clone()));
         let mut out = Output::default();
         while let Ok(Some(line)) = reader.next_line().await {

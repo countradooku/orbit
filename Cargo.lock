@@ -6008,6 +6008,7 @@ dependencies = [
  "gpui-kit",
  "log",
  "mimalloc",
+ "orbit-bots",
  "orbit-browser",
  "orbit-core",
  "orbit-net",
@@ -6030,6 +6031,27 @@ dependencies = [
  "orbit-proto",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "orbit-bots"
+version = "0.1.0"
+dependencies = [
+ "bitcode",
+ "bytes",
+ "crossfire",
+ "log",
+ "orbit-core",
+ "orbit-net",
+ "orbit-proto",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "sockudo-ws",
+ "sonic-rs",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
@@ -6144,6 +6166,7 @@ dependencies = [
  "env_logger",
  "log",
  "mimalloc",
+ "orbit-bots",
  "orbit-core",
  "orbit-net",
  "tokio",

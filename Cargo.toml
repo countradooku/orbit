@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/orbit-proto", "crates/orbit-core", "crates/orbit-net", "crates/orbitd", "crates/orbit-bench", "crates/orbit-terminal", "crates/orbit-browser", "crates/orbit-app", "crates/orbit-cli"]
+members = ["crates/orbit-proto", "crates/orbit-core", "crates/orbit-net", "crates/orbitd", "crates/orbit-bench", "crates/orbit-terminal", "crates/orbit-browser", "crates/orbit-app", "crates/orbit-cli", "crates/orbit-bots"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ publish = false
 orbit-proto = { path = "crates/orbit-proto" }
 orbit-core = { path = "crates/orbit-core" }
 orbit-net = { path = "crates/orbit-net" }
+orbit-bots = { path = "crates/orbit-bots" }
 
 # Wire + data
 bitcode = "0.6"

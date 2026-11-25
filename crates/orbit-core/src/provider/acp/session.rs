@@ -627,7 +627,11 @@ impl Session {
             self.answer(raw_id, None);
             return;
         }
-        let decision = if self.grants.contains(&grant_key) {
+        let guarded = self.spec.guard.check(&tool.request_kind(&self.cwd())).is_some();
+        let decision = if guarded {
+            // The guard always asks a person, whatever the access level.
+            None
+        } else if self.grants.contains(&grant_key) {
             Some(Decision::Allow)
         } else {
             auto_decision(self.spec.config.access, &tool.kind)

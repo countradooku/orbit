@@ -19,7 +19,8 @@
 mod cli;
 mod github;
 mod gitlab;
-mod http;
+/// The shared HTTPS client (also used by the chat bots).
+pub mod http;
 mod jira;
 mod json;
 mod linear;

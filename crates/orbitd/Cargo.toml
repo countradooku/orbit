@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 orbit-core = { workspace = true }
 orbit-net = { workspace = true }
+orbit-bots = { workspace = true }
 tokio = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }

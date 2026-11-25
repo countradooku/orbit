@@ -347,6 +347,19 @@ struct ControlRequest<'a> {
     decision_reason: Option<Cow<'a, str>>,
 }
 
+/// The input of a `hook_callback` control request.
+#[derive(Deserialize)]
+struct HookInput<'a> {
+    #[serde(borrow, default)]
+    hook_event_name: Cow<'a, str>,
+    #[serde(borrow, default)]
+    tool_name: Cow<'a, str>,
+    #[serde(borrow, default)]
+    tool_input: Option<LazyValue<'a>>,
+    #[serde(borrow, default)]
+    tool_use_id: Option<Cow<'a, str>>,
+}
+
 #[derive(Deserialize)]
 struct ControlResponse<'a> {
     #[serde(borrow, default)]
@@ -447,6 +460,9 @@ struct Message {
 }
 
 struct Pending {
+    /// A `PreToolUse` hook call the guard holds: answered with a hook
+    /// decision instead of a permission result.
+    hook: bool,
     tool: String,
     input: String,
     tool_use_id: Option<String>,
@@ -491,6 +507,9 @@ pub struct Parser {
     /// Reset time of a rejected quota window.
     rejected_reset_ms: Option<u64>,
     pub interrupting: bool,
+    /// Tool calls matching it are held for a person through the
+    /// `PreToolUse` hook (see [`guard_hooks`]), in every permission mode.
+    pub guard: GuardSettings,
 }
 
 impl Parser {
@@ -514,6 +533,7 @@ impl Parser {
             total_cost: 0.0,
             rejected_reset_ms: None,
             interrupting: false,
+            guard: GuardSettings { enabled: false, rules: Vec::new() },
         }
     }
 
@@ -1152,6 +1172,10 @@ impl Parser {
             out.replies.push(error_reply(id, "Orbit could not read this request"));
             return;
         };
+        if req.subtype == "hook_callback" {
+            self.on_guard_hook(id, &req, out);
+            return;
+        }
         if req.subtype != "can_use_tool" {
             out.replies.push(error_reply(id, &format!("Orbit does not support {}", req.subtype)));
             return;
@@ -1167,6 +1191,7 @@ impl Parser {
             return;
         }
         let mut pending = Pending {
+            hook: false,
             tool: tool.clone(),
             input,
             tool_use_id,
@@ -1203,6 +1228,31 @@ impl Parser {
             out.events.push(AgentEvent::Request { provider_ref: id.to_owned(), kind });
         }
         self.requests.insert(id.to_owned(), pending);
+    }
+
+    /// A `PreToolUse` hook call (registered by [`guard_hooks`]): a tool
+    /// call the guard matches is raised as a request and the hook answers
+    /// once the person decides; anything else continues untouched.
+    fn on_guard_hook(&mut self, id: &str, req: &ControlRequest, out: &mut Output) {
+        let hook = req.input.as_ref().and_then(|i| sonic_rs::from_str::<HookInput>(i.as_raw_str()).ok());
+        let Some(hook) = hook.filter(|h| h.hook_event_name == "PreToolUse") else {
+            out.replies.push(success_reply(id, "{}"));
+            return;
+        };
+        let tool = hook.tool_name.to_string();
+        let input = hook.tool_input.as_ref().map(|i| i.as_raw_str().to_owned()).unwrap_or_else(|| "{}".to_owned());
+        let kind = tools::request_kind(&tool, &input, None, &self.cwd);
+        // Read-only threads are refused by the permission check; let it.
+        if self.access == Access::Readonly || self.guard.check(&kind).is_none() {
+            out.replies.push(success_reply(id, "{}"));
+            return;
+        }
+        let tool_use_id = hook.tool_use_id.as_deref().or(req.tool_use_id.as_deref()).map(str::to_owned);
+        out.events.push(AgentEvent::Request { provider_ref: id.to_owned(), kind });
+        self.requests.insert(
+            id.to_owned(),
+            Pending { hook: true, tool, input, tool_use_id, suggestions: None, questions: Vec::new() },
+        );
     }
 
     /// Applies the user's decision. Returns false for an unknown request.
@@ -1253,6 +1303,17 @@ impl Parser {
         }
 
         let p = self.requests.remove(id).unwrap();
+        if p.hook {
+            let (verdict, reason) = match decision {
+                Decision::Allow | Decision::AllowForSession => ("allow", "Approved in Orbit.".to_owned()),
+                Decision::Deny { feedback } | Decision::Answer { text: feedback } if !feedback.trim().is_empty() => {
+                    ("deny", format!("The user declined this tool call and said: {feedback}"))
+                }
+                _ => ("deny", "The user declined this tool call.".to_owned()),
+            };
+            out.replies.push(hook_reply(id, verdict, &reason));
+            return true;
+        }
         let approve_plan = p.tool == "ExitPlanMode" && matches!(decision, Decision::Allow | Decision::AllowForSession);
         if approve_plan {
             // Leave plan mode for the thread's access level in the same
@@ -1366,6 +1427,33 @@ fn deny_reply(id: &str, message: &str, tool_use_id: Option<&str>, interrupt: boo
     success_reply(id, &body)
 }
 
+/// The callback id Orbit registers its guard hook under.
+pub const GUARD_HOOK: &str = "orbit_guard";
+
+/// The `hooks` value of the `initialize` request: a `PreToolUse` hook on
+/// the tools that can do harm, when a guard is active. A hook's decision
+/// applies in every permission mode, `bypassPermissions` included, so a
+/// guarded call reaches a person even under Full access.
+pub fn guard_hooks(guard: &GuardSettings, access: Access) -> &'static str {
+    if guard.active() && access != Access::Readonly {
+        concat!(
+            r#"{"PreToolUse":[{"matcher":"Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Read","hookCallbackIds":[""#,
+            "orbit_guard",
+            r#""]}]}"#
+        )
+    } else {
+        "null"
+    }
+}
+
+fn hook_reply(id: &str, decision: &str, reason: &str) -> String {
+    let body = format!(
+        r#"{{"hookSpecificOutput":{{"hookEventName":"PreToolUse","permissionDecision":"{decision}","permissionDecisionReason":{}}}}}"#,
+        json_str(reason)
+    );
+    success_reply(id, &body)
+}
+
 fn success_reply(id: &str, body: &str) -> String {
     format!(r#"{{"type":"control_response","response":{{"subtype":"success","request_id":{},"response":{body}}}}}"#, json_str(id))
 }
@@ -1458,6 +1546,38 @@ mod tests {
     fn exit_codes_are_read_strictly() {
         assert_eq!(exit_code_of("Exit code 2\nerror: x"), Some(2));
         assert_eq!(exit_code_of("command failed, exit code 2"), None);
+    }
+
+    #[test]
+    fn the_guard_hook_holds_matching_calls_in_every_mode() {
+        let mut parser = Parser::new("/repo".into(), "s".into(), Access::Full, None);
+        parser.guard = GuardSettings::default();
+        assert!(guard_hooks(&parser.guard, Access::Full).contains(GUARD_HOOK));
+        assert_eq!(guard_hooks(&parser.guard, Access::Readonly), "null");
+        let hook = |id: &str, command: &str| {
+            format!(
+                r#"{{"type":"control_request","request_id":"{id}","request":{{"subtype":"hook_callback","callback_id":"orbit_guard","tool_use_id":"tu_{id}","input":{{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{{"command":"{command}"}}}}}}}}"#
+            )
+        };
+        // Unguarded: the hook lets the call continue untouched.
+        let mut out = Output::default();
+        parser.feed(hook("h1", "cargo test").as_bytes(), &mut out);
+        assert!(out.events.is_empty());
+        assert!(out.replies[0].contains(r#""request_id":"h1","response":{}"#), "{}", out.replies[0]);
+        // Guarded: raised as a request and answered with a hook decision.
+        let mut out = Output::default();
+        parser.feed(hook("h2", "git push --force").as_bytes(), &mut out);
+        assert!(out.replies.is_empty());
+        assert!(matches!(&out.events[..], [AgentEvent::Request { provider_ref, kind: RequestKind::Command { command, .. } }]
+            if provider_ref == "h2" && command == "git push --force"));
+        let mut out = Output::default();
+        assert!(parser.resolve("h2", &Decision::AllowForSession, &mut out));
+        assert!(out.replies[0].contains(r#""permissionDecision":"allow""#), "{}", out.replies[0]);
+        let mut out = Output::default();
+        parser.feed(hook("h3", "rm -rf /").as_bytes(), &mut out);
+        let mut out = Output::default();
+        parser.resolve("h3", &Decision::Deny { feedback: "no".into() }, &mut out);
+        assert!(out.replies[0].contains(r#""permissionDecision":"deny""#) && out.replies[0].contains("said: no"));
     }
 
     #[test]

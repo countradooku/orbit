@@ -432,7 +432,7 @@ impl Session {
             }),
             _ => None,
         };
-        let (approval_policy, _, sandbox_policy) = map::policy(config.access);
+        let (approval_policy, _, sandbox_policy) = map::guarded_policy(config.access, self.spec.guard.active());
         let cwd = self.spec.cwd.to_string_lossy();
         let params = TurnStartParams {
             thread_id,
@@ -626,11 +626,13 @@ impl Session {
                     conn.respond(raw_id, "{\"decision\":\"decline\"}");
                     return;
                 };
-                if full {
+                let command = p.command.or_else(|| self.item_commands.get(&p.item_id).cloned()).unwrap_or_default();
+                // Full access approves everything except what the guard
+                // keeps for a person.
+                if full && self.spec.guard.check_text(&command).is_none() {
                     conn.respond(raw_id, "{\"decision\":\"accept\"}");
                     return;
                 }
-                let command = p.command.or_else(|| self.item_commands.get(&p.item_id).cloned()).unwrap_or_default();
                 let reason = match (p.reason, p.network_approval_context) {
                     (Some(reason), _) if !reason.is_empty() => reason,
                     (_, Some(net)) => format!("Network access to {} ({})", net.host, net.protocol),
@@ -644,11 +646,12 @@ impl Session {
                     conn.respond(raw_id, "{\"decision\":\"decline\"}");
                     return;
                 };
-                if full {
+                let changes = self.item_files.get(&p.item_id).map(Vec::as_slice).unwrap_or_default();
+                let guarded = changes.iter().any(|c| self.spec.guard.check_text(&c.path).is_some());
+                if full && !guarded {
                     conn.respond(raw_id, "{\"decision\":\"accept\"}");
                     return;
                 }
-                let changes = self.item_files.get(&p.item_id).map(Vec::as_slice).unwrap_or_default();
                 let (mut path, diff) = map::approval_diff(changes);
                 if let Some(root) = p.grant_root.filter(|r| !r.is_empty()) {
                     path = format!("Write access to {root}");
@@ -861,7 +864,7 @@ impl Session {
     }
 
     fn open_thread(&mut self, conn: &mut Connection) {
-        let (approval_policy, sandbox, _) = map::policy(self.spec.config.access);
+        let (approval_policy, sandbox, _) = map::guarded_policy(self.spec.config.access, self.spec.guard.active());
         let cwd = self.spec.cwd.to_string_lossy();
         let model = (!self.spec.config.model.is_empty()).then_some(self.spec.config.model.as_str());
         let mut params = ThreadOpenParams {

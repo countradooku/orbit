@@ -7,6 +7,7 @@
 
 pub mod args;
 pub mod automation;
+pub mod bot;
 pub mod conn;
 pub mod error;
 pub mod exec;

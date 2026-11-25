@@ -45,6 +45,9 @@ pub struct SessionSpec {
     pub env: Vec<(String, String)>,
     /// Extra directories the agent may read (attachments directory).
     pub extra_dirs: Vec<PathBuf>,
+    /// Requests matching it are always raised for a person, never approved
+    /// by the adapter on the access level's behalf (see `engine::guard`).
+    pub guard: GuardSettings,
 }
 
 /// An attachment ready to send: its record and the blob's path on disk.

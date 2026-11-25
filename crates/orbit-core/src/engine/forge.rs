@@ -16,8 +16,7 @@ use crate::forge::{Forge, ForgeConfig, MergeRequest, prompt};
 use crate::git::{Git, NewWorktree};
 
 /// The integration settings' file in the data folder.
-const INTEGRATIONS_FILE: &str = "integrations.bin";
-const INTEGRATIONS_VERSION: u8 = 1;
+const INTEGRATIONS_FILE: &str = super::integrations::FILE;
 /// Failing checks whose logs go into one fix prompt.
 const FIX_LOGS: usize = 4;
 
@@ -539,35 +538,12 @@ fn pr_template(repo: &Path) -> Option<String> {
 // ── Integration settings file ────────────────────────────────────────────
 
 fn load_integrations(path: &Path) -> IntegrationSettings {
-    let Ok(bytes) = std::fs::read(path) else { return IntegrationSettings::default() };
-    match bytes.split_first() {
-        Some((&INTEGRATIONS_VERSION, rest)) => bitcode::decode(rest).unwrap_or_else(|e| {
-            log::warn!("{}: unreadable ({e}); starting empty", path.display());
-            IntegrationSettings::default()
-        }),
-        _ => IntegrationSettings::default(),
-    }
+    super::integrations::load(path).forge
 }
 
+/// Saves the tracker settings, keeping the bots' tokens in the same file.
 fn save_integrations(path: &Path, settings: &IntegrationSettings) -> std::io::Result<()> {
-    let mut bytes = vec![INTEGRATIONS_VERSION];
-    bytes.extend(bitcode::encode(settings));
-    let tmp = path.with_extension("bin.tmp");
-    {
-        use std::io::Write as _;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            // Tokens: readable by the user only.
-            options.mode(0o600);
-        }
-        let mut file = options.open(&tmp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)
+    super::integrations::update(path, |i| i.forge = settings.clone()).map(drop)
 }
 
 #[cfg(test)]

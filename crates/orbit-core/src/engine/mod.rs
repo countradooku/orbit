@@ -7,12 +7,16 @@
 //! any thread, including the UI thread, without blocking.
 
 mod automations;
+mod bots;
 mod bus;
+pub use bots::{BotCall, BotLink};
 pub use bus::Bus;
 mod drafts;
 mod files;
 mod cli;
 mod forge;
+mod guard;
+mod integrations;
 mod orchestrator;
 mod review;
 mod queue;
@@ -55,6 +59,8 @@ enum Call {
     Command { command: Command, reply: TxOneshot<Result<Reply, String>> },
     Subscribe { epoch: u64, since: u64, reply: TxOneshot<Subscribed> },
     Shutdown { done: TxOneshot<()> },
+    AttachBots(BotLink),
+    PublishBots(BotsState),
 }
 
 pub struct EngineOptions {
@@ -127,6 +133,17 @@ impl EngineHandle {
         rx
     }
 
+    /// Connects the chat bots (`orbit-bots`): bot commands are forwarded to
+    /// `link`, and the platforms' tokens are sent over it.
+    pub fn attach_bots(&self, link: BotLink) {
+        let _ = self.calls.send(Call::AttachBots(link));
+    }
+
+    /// Broadcasts the bots' state to every client ([`Event::Bots`]).
+    pub fn publish_bots(&self, state: BotsState) {
+        let _ = self.calls.send(Call::PublishBots(state));
+    }
+
     /// Persists everything, stops every agent session and waits (up to two
     /// seconds) for the engine to finish.
     pub fn shutdown(&self) {
@@ -167,6 +184,8 @@ async fn run(store: Store, calls: crossfire::AsyncRx<mpsc::List<Call>>, launcher
                     let (snapshot, replay, events) = orchestrator.subscribe(epoch, since);
                     reply.send(Subscribed { snapshot, replay, events });
                 }
+                Ok(Call::AttachBots(link)) => orchestrator.attach_bots(link),
+                Ok(Call::PublishBots(state)) => orchestrator.emit(Event::Bots(state)),
                 Ok(Call::Shutdown { done }) => {
                     orchestrator.shutdown();
                     // Release the data folder before saying we are done.

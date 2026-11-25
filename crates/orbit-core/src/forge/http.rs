@@ -1,4 +1,5 @@
-//! A small HTTPS client for tracker APIs, on the engine's Tokio runtime.
+//! A small HTTPS client for tracker and chat APIs, on the caller's Tokio
+//! runtime.
 //!
 //! One shared connection pool; HTTP/1.1 over rustls with the operating
 //! system's trust store. Plain HTTP is refused except to loopback, so a
@@ -23,7 +24,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 
 type HttpsClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
-pub(crate) struct Response {
+pub struct Response {
     pub status: u16,
     /// Seconds from a `Retry-After` header.
     pub retry_after: Option<u64>,
@@ -48,13 +49,27 @@ fn client() -> Result<&'static HttpsClient, ForgeError> {
 }
 
 /// Sends one request. `headers` may hold secrets; they are never logged.
-pub(crate) async fn send(method: &str, url: &str, headers: &[(&str, String)], body: Option<Vec<u8>>) -> Result<Response, ForgeError> {
+pub async fn send(method: &str, url: &str, headers: &[(&str, String)], body: Option<Vec<u8>>) -> Result<Response, ForgeError> {
+    send_with(method, url, headers, body, TIMEOUT).await
+}
+
+/// [`send`] with its own time limit, for long polls.
+pub async fn send_with(
+    method: &str,
+    url: &str,
+    headers: &[(&str, String)],
+    body: Option<Vec<u8>>,
+    timeout: Duration,
+) -> Result<Response, ForgeError> {
     let uri: hyper::Uri = url.parse().map_err(|_| ForgeError::Failed(format!("“{url}” is not a valid address.")))?;
     let loopback = matches!(uri.host(), Some("127.0.0.1" | "localhost" | "[::1]" | "::1"));
     if uri.scheme_str() != Some("https") && !loopback {
         return Err(ForgeError::Failed(format!("Use an https:// address (got {url}).")));
     }
-    let mut request = Request::builder().method(method).uri(uri).header("user-agent", concat!("Orbit/", env!("CARGO_PKG_VERSION")));
+    let mut request = Request::builder().method(method).uri(uri);
+    if !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("user-agent")) {
+        request = request.header("user-agent", concat!("Orbit/", env!("CARGO_PKG_VERSION")));
+    }
     for (name, value) in headers {
         request = request.header(*name, value);
     }
@@ -77,7 +92,9 @@ pub(crate) async fn send(method: &str, url: &str, headers: &[(&str, String)], bo
             .to_bytes();
         Ok(Response { status, retry_after, body })
     };
-    tokio::time::timeout(TIMEOUT, work).await.map_err(|_| ForgeError::Offline(format!("{host} didn’t answer within 30 seconds.")))?
+    tokio::time::timeout(timeout, work)
+        .await
+        .map_err(|_| ForgeError::Offline(format!("{host} didn’t answer within {} seconds.", timeout.as_secs())))?
 }
 
 /// Standard base64 (for HTTP Basic authentication).
