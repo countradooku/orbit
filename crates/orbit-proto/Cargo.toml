@@ -1,0 +1,11 @@
+[package]
+name = "orbit-proto"
+description = "Orbit wire protocol: domain model, commands, events and the binary frame codec."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bitcode = { workspace = true }
+crc32fast = { workspace = true }
