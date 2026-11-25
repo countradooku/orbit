@@ -22,3 +22,12 @@ memchr = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+# A scripted stand-in for `codex app-server`, used only by the Codex adapter
+# tests (`CARGO_BIN_EXE_orbit-fake-codex`).
+[[bin]]
+name = "orbit-fake-codex"
+path = "tests/support/fake_codex.rs"
+test = false
+doc = false
+bench = false
