@@ -56,8 +56,8 @@ pub enum Row {
     User(ItemId),
     Assistant(ItemId),
     Reasoning(ItemId),
-    /// Consecutive tool calls. Work inside an opened fold (`nested`) starts
-    /// open: the reader asked to see it.
+    /// Consecutive tool calls. Work inside an opened fold (`nested`) shows
+    /// its steps without a header of its own: the fold is the header.
     Work { items: Vec<ItemId>, nested: bool },
     /// A subagent the agent started.
     Task(ItemId),
@@ -422,7 +422,9 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
             // A live work log stays open so you can follow it; a finished one
             // folds away unless you open it (inside an opened fold it starts
             // open: you asked to see the work).
-            let open = live || (*nested != this.expanded.contains(&key));
+            // Inside an opened fold the fold is the header: the steps show
+            // directly, without a second "Worked" line.
+            let open = live || *nested || this.expanded.contains(&key);
             let failed = calls.iter().filter(|i| i.status == ItemStatus::Failed).count();
             let summary = format!(
                 "{} · {} step{}",
@@ -454,7 +456,7 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
                     list = list.child(render_tool(this, &weak, call, &theme));
                 }
             }
-            v_flex().pt_2().child(header).when(open, |el| el.child(list)).into_any_element()
+            v_flex().pt_2().when(!*nested, |el| el.child(header)).when(open, |el| el.child(list)).into_any_element()
         }
         Row::Task(id) => {
             let Some(item) = item(*id) else { return empty() };
@@ -1032,6 +1034,16 @@ fn render_fold(
     };
     if steps > 0 {
         parts.push(format!("{steps} step{}", if steps == 1 { "" } else { "s" }));
+    }
+    if fold.kind == FoldKind::Work {
+        let thoughts = items.iter().filter(|i| matches!(i.body, ItemBody::Reasoning { .. })).count();
+        let notes = items.iter().filter(|i| matches!(i.body, ItemBody::Assistant { .. })).count();
+        if thoughts > 0 {
+            parts.push(format!("{thoughts} thought{}", if thoughts == 1 { "" } else { "s" }));
+        }
+        if notes > 0 {
+            parts.push(format!("{notes} note{}", if notes == 1 { "" } else { "s" }));
+        }
     }
     if subagents > 0 {
         parts.push(format!("{subagents} subagent{}", if subagents == 1 { "" } else { "s" }));

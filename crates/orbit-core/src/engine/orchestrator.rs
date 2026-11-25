@@ -367,6 +367,7 @@ impl Orchestrator {
                 self.store.unload_timeline(id);
             }
         }
+        self.rearm_quota_resets();
     }
 
     pub fn store(&self) -> &Store {

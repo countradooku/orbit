@@ -90,8 +90,7 @@ pub struct ThreadView {
     item_row: HashMap<ItemId, usize>,
     markdown: HashMap<ItemId, Entity<TextViewState>>,
     /// Rows the reader expanded (work logs, reasoning, tool output, long
-    /// messages) by key. For work inside an opened fold, which starts open,
-    /// membership means the reader closed it.
+    /// messages) by key.
     expanded: HashSet<ItemId>,
     /// Folds (a turn's work, an earlier attempt) the reader opened.
     folds: HashSet<ItemId>,
@@ -113,6 +112,11 @@ pub struct ThreadView {
     stop_requested: Option<Instant>,
     /// The banner the reader dismissed (by key), until it changes.
     dismissed: Option<String>,
+    /// Debug builds: steps to run once the timeline loads, from
+    /// `ORBIT_DEBUG_THREAD` (for screenshots), e.g. `find:token;inspect`.
+    debug_steps: Option<String>,
+    /// Debug builds: the question panel shows demo questions; keep it.
+    debug_questions: bool,
     busy: bool,
     _ticker: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -175,6 +179,8 @@ impl ThreadView {
             turn_started: None,
             stop_requested: None,
             dismissed: None,
+            debug_steps: if cfg!(debug_assertions) { std::env::var("ORBIT_DEBUG_THREAD").ok() } else { None },
+            debug_questions: false,
             busy: false,
             _ticker: None,
             _subscriptions: subscriptions,
@@ -315,7 +321,7 @@ impl ThreadView {
             self.rebuild(false, cx);
         }
         let pending = questions::pending(&thread);
-        if self.questions.as_ref().map(|q| &q.questions) != Some(&pending) {
+        if !self.debug_questions && self.questions.as_ref().map(|q| &q.questions) != Some(&pending) {
             let had = self.questions.is_some();
             self.questions = if pending.is_empty() { None } else { Questions::new(pending, window, cx) };
             if !had && let Some(questions) = &self.questions {
@@ -553,6 +559,61 @@ impl ThreadView {
         Composer::focus(&self.composer.clone(), window, cx);
     }
 
+    /// Runs `ORBIT_DEBUG_THREAD` steps: `find:<query>`, `next`, `open-folds`,
+    /// `inspect` (the first step with output), `quote` (the last reply),
+    /// `top` (scroll to the top), `questions` (the question panel).
+    fn run_debug_steps(&mut self, steps: &str, window: &mut Window, cx: &mut Context<Self>) {
+        for step in steps.split(';') {
+            let items: Vec<Item> = self.app.read(cx).state().timeline(self.id).map(|t| t.items().to_vec()).unwrap_or_default();
+            match step.split_once(':') {
+                Some(("find", query)) => {
+                    self.open_find(window, cx);
+                    if let Some(find) = &self.find {
+                        find.input.update(cx, |input, cx| input.set_value(query, window, cx));
+                    }
+                    self.search(true, cx);
+                }
+                _ if step == "next" => self.step_find(true, cx),
+                _ if step == "top" => self.scroller.update(cx, |s, cx| {
+                    s.scroll_to_item(0, cx);
+                }),
+                _ if step == "open-folds" => {
+                    self.folds.extend(self.folded.values().copied());
+                    self.rebuild(false, cx);
+                }
+                _ if step == "inspect" => {
+                    if let Some(item) = items.iter().find(|i| matches!(&i.body, ItemBody::Tool(c) if c.output.len() > 200)) {
+                        self.inspect(item.id, false, window, cx);
+                    }
+                }
+                // The question panel for the thread's questions, answered or
+                // not (a restart closes pending ones), to look at it.
+                _ if step == "questions" => {
+                    let questions: Vec<questions::Question> = items
+                        .iter()
+                        .filter_map(|i| match &i.body {
+                            ItemBody::Request(AgentRequest { id, kind: RequestKind::Question { question, options, multi_select }, .. }) => {
+                                Some(questions::Question { request: *id, text: question.clone(), options: options.clone(), multi: *multi_select })
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    self.questions = Questions::new(questions, window, cx);
+                    self.debug_questions = true;
+                    if let Some(q) = &self.questions {
+                        q.focus(window, cx);
+                    }
+                }
+                _ if step == "quote" => {
+                    if let Some(item) = items.iter().rev().find(|i| matches!(i.body, ItemBody::Assistant { .. })) {
+                        self.quote_reply(item.id, window, cx);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     // ── Find ─────────────────────────────────────────────────────────────
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -689,10 +750,10 @@ impl ThreadView {
         }
         let Some(&row) = self.item_row.get(&hit.item) else { return };
         let remeasure = match self.rows.get(row) {
-            // Open the log (inside an opened fold it is open unless closed).
+            // Open the log (inside an opened fold it is always open).
             Some(Row::Work { items, nested }) => {
                 let key = items[0];
-                if *nested { self.expanded.remove(&key) } else { self.expanded.insert(key) }
+                !*nested && self.expanded.insert(key)
             }
             Some(Row::User(_)) => self.expanded.insert(hit.item),
             _ => false,
@@ -702,19 +763,28 @@ impl ThreadView {
                 let _ = s.remeasure_items(row..row + 1, cx);
             });
         }
-        let top = self.scroller.read(cx).logical_scroll_top().item_ix;
-        let reply = self.markdown.get(&hit.item).cloned().filter(|_| matches!(self.rows.get(row), Some(Row::Assistant(_))));
-        // A reply already on screen scrolls to the line itself; anything
-        // else comes to the top.
-        if reply.is_none() || row < top || row > top + 2 {
-            self.scroller.update(cx, |s, cx| {
-                s.scroll_to_item(row, cx);
+        // Inside a laid-out reply, place the match's line near the top: its
+        // height is known, and the match sits about as far down as it is
+        // into the text. Elsewhere the row comes to the top.
+        let within = self
+            .markdown
+            .get(&hit.item)
+            .filter(|_| matches!(self.rows.get(row), Some(Row::Assistant(_))))
+            .and_then(|md| {
+                let md = md.read(cx);
+                let height = md.bounds().size.height;
+                let len = md.rendered_text().len().max(1);
+                (height > px(0.)).then(|| height * (hit.range.start as f32 / len as f32))
             });
-        }
-        if let Some(md) = reply {
-            let range = hit.range.clone();
-            md.update(cx, |md, cx| {
-                let _ = md.reveal_range(range, cx);
+        let top = self.scroller.read(cx).logical_scroll_top();
+        let offset = within.map(|y| (y - px(72.)).max(px(0.))).unwrap_or(px(0.));
+        // Already in view (same row, within the first screenful below the
+        // top edge): leave the page still.
+        let visible = top.item_ix == row
+            && within.is_some_and(|y| y >= top.offset_in_item && y < top.offset_in_item + px(360.));
+        if !visible {
+            self.scroller.update(cx, |s, cx| {
+                s.scroll_to_offset(ListOffset { item_ix: row, offset_in_item: offset }, cx);
             });
         }
     }
@@ -739,11 +809,8 @@ impl ThreadView {
             (true, n, None) => format!("{n}"),
         };
         let none = has_query && find.hits.is_empty();
-        h_flex()
+        let bar = h_flex()
             .id("find-bar")
-            .absolute()
-            .top(px(8.))
-            .right(px(40.))
             .w(rems(24.))
             .p_1()
             .gap_1()
@@ -751,7 +818,6 @@ impl ThreadView {
             .border_1()
             .border_color(theme.border)
             .bg(theme.popover)
-            .shadow_md()
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
@@ -798,8 +864,10 @@ impl ThreadView {
                     .icon(IconName::Close)
                     .tooltip("Close (Esc)")
                     .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx))),
-            )
-            .into_any_element()
+            );
+        // In the flow above the timeline, not over it: a match is never
+        // hidden under the bar.
+        h_flex().flex_none().w_full().justify_end().px_4().pt_2().pb_1().child(bar).into_any_element()
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -940,7 +1008,11 @@ impl Focusable for ThreadView {
 }
 
 impl Render for ThreadView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.loaded && !self.rows.is_empty() && let Some(steps) = self.debug_steps.take() {
+            let view = cx.entity();
+            window.defer(cx, move |window, cx| view.update(cx, |this, cx| this.run_debug_steps(&steps, window, cx)));
+        }
         let theme = cx.theme().clone();
         let view = cx.weak_entity();
         let rows = self.rows.clone();
@@ -952,6 +1024,9 @@ impl Render for ThreadView {
         })
         .with_bottom_fade(theme.background)
         .with_list_style(StyleRefinement::default().pt_4().pb_2())
+        // Rows carry their own spacing (a reply sits closer to its steps
+        // than to the next message), so the list adds only a hairline.
+        .with_row_style(StyleRefinement::default().pb_1())
         .flex_1()
         .min_h_0();
 
@@ -977,9 +1052,9 @@ impl Render for ThreadView {
                     .min_h_0()
                     .flex()
                     .flex_col()
+                    .children(find_bar)
                     .child(timeline)
                     .child(self.minimap.clone())
-                    .children(find_bar)
                     .into_any_element()
             })
             .child(

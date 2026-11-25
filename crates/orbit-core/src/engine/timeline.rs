@@ -116,3 +116,21 @@ impl Orchestrator {
         })
     }
 }
+
+impl Orchestrator {
+    /// After a restart, threads still waiting out a usage limit get their
+    /// reset timer back, so the limited turn is retried when it resets.
+    pub(crate) fn rearm_quota_resets(&mut self) {
+        let limited: Vec<(ThreadId, u64)> = self
+            .store
+            .threads()
+            .filter_map(|t| match t.status {
+                ThreadStatus::RateLimited { resets_ms } => Some((t.id, resets_ms)),
+                _ => None,
+            })
+            .collect();
+        for (thread, resets_ms) in limited {
+            self.schedule_quota_reset(thread, resets_ms);
+        }
+    }
+}

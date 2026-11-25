@@ -80,7 +80,13 @@ pub fn render(banner: &Banner, cx: &mut Context<ThreadView>) -> AnyElement {
                 )
             }),
         ),
-        Banner::Failed(message) => (Icon::new(IconName::CircleAlert), theme.danger, "This turn failed".into(), Some(message.clone())),
+        // The error itself is in the timeline; the banner says what Retry does.
+        Banner::Failed(message) => (
+            Icon::new(IconName::CircleAlert),
+            theme.danger,
+            format!("This turn failed: {}", message.lines().next().unwrap_or_default()),
+            Some("Retry sends your message again from the same point; this attempt stays above, folded.".into()),
+        ),
     };
     let actions = match banner {
         Banner::Unresponsive(_) => h_flex().gap_1().child(
@@ -149,7 +155,7 @@ pub fn render(banner: &Banner, cx: &mut Context<ThreadView>) -> AnyElement {
                 .flex_1()
                 .min_w_0()
                 .gap_0p5()
-                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
+                .child(div().text_sm().font_weight(FontWeight::MEDIUM).line_clamp(2).child(title))
                 .when_some(detail, |el, detail| {
                     el.child(div().text_xs().text_color(theme.muted_foreground).line_clamp(3).child(detail))
                 }),
