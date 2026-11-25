@@ -10,6 +10,15 @@ use orbit_proto::*;
 use crate::app_state::AppState;
 use crate::theme::{self, Appearance};
 
+/// What the platform calls revealing a folder (`cx.reveal_path`).
+const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
+    "Show in Finder"
+} else if cfg!(windows) {
+    "Show in Explorer"
+} else {
+    "Show in File Manager"
+};
+
 /// App-wide preferences that are not engine state.
 #[derive(Default)]
 pub struct Preferences {
@@ -120,7 +129,7 @@ pub fn open(app: Entity<AppState>, window: &mut Window, cx: &mut App) {
                                         .font_family(theme.mono_font_family.clone())
                                         .child(orbit_core::EngineOptions::default_data_dir().display().to_string()),
                                 )
-                                .child(Button::new("reveal-data").outline().xsmall().label("Show in Explorer").on_click(
+                                .child(Button::new("reveal-data").outline().xsmall().label(REVEAL_LABEL).on_click(
                                     |_, _, cx| cx.reveal_path(&orbit_core::EngineOptions::default_data_dir()),
                                 )),
                         )

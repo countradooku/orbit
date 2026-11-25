@@ -14,7 +14,9 @@ default = ["fast"]
 fast = ["gpui-kit/gpui-fast"]
 
 [dependencies]
-gpui-kit = { version = "0.11", features = ["tree-sitter"] }
+# `x11` is a gpui-kit default, listed so Linux keeps both backends (Wayland is
+# always built on Linux) even if default features are turned off.
+gpui-kit = { version = "0.11", features = ["tree-sitter", "x11"] }
 alacritty_terminal = { version = "0.26", default-features = false }
 log = { workspace = true }
 
