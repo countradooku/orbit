@@ -422,3 +422,118 @@ mod tests {
         assert!(err.contains("Workpsace"), "{err}");
     }
 }
+
+#[cfg(test)]
+mod ui_tests {
+    //! The keymap in a real window: contexts, the user's file, unbinding.
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        AppContext as _, Bounds, Context, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _,
+        TestAppContext, Window, WindowBounds, WindowOptions, div, px, size,
+    };
+
+    use crate::actions::*;
+
+    type Log = Rc<RefCell<Vec<String>>>;
+
+    /// Workspace > Deck > Input, each with its own focus handle.
+    struct Harness {
+        deck: FocusHandle,
+        input: FocusHandle,
+        log: Log,
+    }
+
+    impl Render for Harness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let log = |name: &'static str, log: &Log| {
+                let log = log.clone();
+                move |_: &dyn std::any::Any| log.borrow_mut().push(name.to_owned())
+            };
+            let (next, shortcuts, pick) = (log("next", &self.log), log("shortcuts", &self.log), self.log.clone());
+            div()
+                .key_context("Workspace")
+                .size_full()
+                .on_action(move |a: &DeckNext, _, _| next(a))
+                .on_action(move |a: &ShowShortcuts, _, _| shortcuts(a))
+                .on_action(move |a: &DeckPick, _, _| pick.borrow_mut().push(format!("pick {}", a.index)))
+                .child(
+                    div()
+                        .key_context("Deck")
+                        .track_focus(&self.deck)
+                        .size_full()
+                        .child(div().key_context("Input").track_focus(&self.input).size_full()),
+                )
+        }
+    }
+
+    fn open(cx: &mut TestAppContext, user_file: &str) -> (gpui_kit::AnyWindowHandle, Log, FocusHandle, FocusHandle, super::Report) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(super::FILE_NAME), user_file).unwrap();
+        let report = cx.update(|cx| {
+            gpui_kit::init(cx);
+            super::install(dir.path(), cx);
+            super::reload(cx)
+        });
+        let log: Log = Rc::default();
+        let (handle, deck, input) = cx.update(|cx| {
+            let log = log.clone();
+            let opened = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(Default::default(), size(px(400.), px(300.))))),
+                    ..Default::default()
+                },
+                cx,
+                move |_, cx| cx.new(|cx| Harness { deck: cx.focus_handle(), input: cx.focus_handle(), log }),
+            )
+            .expect("open test window");
+            let view = opened.1.clone();
+            let (deck, input) = (view.read(cx).deck.clone(), view.read(cx).input.clone());
+            (opened.0, deck, input)
+        });
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx)).unwrap();
+        (handle, log, deck, input, report)
+    }
+
+    #[gpui_kit::test]
+    fn deck_keys_work_in_the_deck_and_never_while_typing(cx: &mut TestAppContext) {
+        let (handle, log, deck, input, report) = open(cx, "[]");
+        assert!(report.problems.is_empty());
+        cx.update_window(handle, |_, window, cx| {
+            deck.focus(window, cx);
+            window.render_frame(cx);
+            window.press("j", cx);
+            window.press("3", cx);
+            window.press("shift-/", cx);
+            input.focus(window, cx);
+            window.render_frame(cx);
+            window.press("j", cx);
+            window.press("shift-/", cx);
+        })
+        .unwrap();
+        assert_eq!(*log.borrow(), vec!["next", "pick 2", "shortcuts"]);
+    }
+
+    #[gpui_kit::test]
+    fn the_users_file_adds_removes_and_reports(cx: &mut TestAppContext) {
+        let file = r#"[
+            { "key": "x", "command": "DeckNext", "when": "Deck && !Input" },
+            { "key": "j", "command": "-orbit::DeckNext" },
+            { "key": "y", "command": "orbit::NoSuchThing" },
+            { "key": "z", "command": "DeckNext", "when": "Dek" },
+        ]"#;
+        let (handle, log, deck, _, report) = open(cx, file);
+        assert_eq!(report.applied, 2);
+        assert_eq!(report.problems.len(), 2, "{:?}", report.problems);
+        cx.update_window(handle, |_, window, cx| {
+            deck.focus(window, cx);
+            window.render_frame(cx);
+            window.press("j", cx);
+            window.press("x", cx);
+        })
+        .unwrap();
+        assert_eq!(*log.borrow(), vec!["next"], "j was unbound and x took its place");
+    }
+}

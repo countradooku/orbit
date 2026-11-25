@@ -680,10 +680,13 @@ impl Sidebar {
             None => Vec::new(),
         };
         let request = pending.map(|p| p.request.id);
-        let question = pending.map(|p| match &p.request.kind {
-            RequestKind::Question { question, .. } => crate::inbox::clip(question, 240),
-            RequestKind::Command { command, .. } => format!("Wants to run {}", crate::inbox::clip(command, 160)),
-            kind => ui::request_line(kind),
+        // The status line already names the request; this is its substance.
+        let question = pending.and_then(|p| match &p.request.kind {
+            RequestKind::Question { question, .. } => Some(crate::inbox::clip(question, 240)),
+            RequestKind::Command { command, .. } => Some(crate::inbox::clip(command, 200)),
+            RequestKind::Plan { plan } => Some(crate::inbox::clip(plan, 240)),
+            RequestKind::FileChange { path, .. } => Some(path.clone()),
+            RequestKind::Tool { input, .. } => Some(crate::inbox::clip(input, 200)),
         });
         v_flex()
             .w(rems(22.))
@@ -819,7 +822,8 @@ impl Sidebar {
                         .child(ui::Monogram::new(name.clone(), seed))
                         .child(div().flex_1().min_w_0().truncate().child(name))
                         .child(self.activity_strip(id, cx))
-                        .when(count > 0, |el| el.child(div().text_color(theme.muted_foreground).child(count.to_string())))
+                        // Open, the rows below are the count; closed, it says what is inside.
+                        .when(!open && count > 0, |el| el.child(div().text_color(theme.muted_foreground).child(count.to_string())))
                         .when_some(new_in, |el, project| {
                             el.child(
                                 Button::new(("new-in", project.0))

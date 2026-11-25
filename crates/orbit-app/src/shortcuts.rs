@@ -131,13 +131,13 @@ pub fn open(window: &mut Window, cx: &mut App) {
         handle.focus(window, cx);
     });
     let groups = Rc::new(groups());
-    let width = window.rem_size() * 44.;
+    let width = window.rem_size() * 58.;
     window.open_dialog(cx, move |dialog, _, _| {
         let (search, query, groups) = (search.clone(), query.clone(), groups.clone());
         dialog.title("Keyboard shortcuts").w(width).content(move |content, _, cx| {
             let theme = cx.theme().clone();
             let query = query.borrow().clone();
-            let mut columns = v_flex().gap_4();
+            let mut columns = h_flex().flex_wrap().items_start().gap_y_4();
             let mut any = false;
             for (title, rows) in groups.iter() {
                 let rows: Vec<&Row> = rows
@@ -148,7 +148,7 @@ pub fn open(window: &mut Window, cx: &mut App) {
                     continue;
                 }
                 any = true;
-                let mut group = v_flex().gap_0p5().child(ui::section_label(*title, cx).px_0().pt_0());
+                let mut group = v_flex().w(relative(0.5)).pr_5().gap_0p5().child(ui::section_label(*title, cx).px_0().pt_0());
                 for row in rows {
                     let keys: AnyElement = match &row.keys {
                         Keys::Action(action) => ui::keycaps(action.as_ref(), cx).unwrap_or_else(|| {

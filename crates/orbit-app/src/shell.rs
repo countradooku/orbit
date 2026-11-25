@@ -135,6 +135,13 @@ impl Workspace {
                 cx.notify();
             }),
         ];
+        // Toasts sit bottom right, clear of the title bar and every view's
+        // header controls; at most three at once.
+        {
+            let notification = &mut gpui_kit::component::Theme::global_mut(cx).notification;
+            notification.placement = Anchor::BottomRight;
+            notification.max_items = 3;
+        }
         // Problems in the key bindings file are shown once the window is up.
         let report = keymap::last_report(cx);
         cx.defer_in(window, move |this, window, cx| this.show_keymap_report(&report, false, window, cx));
@@ -173,6 +180,18 @@ impl Workspace {
             self.debug_route = Some(route);
             return;
         }
+        // After a moment, so the requests arrive the way live ones do (and
+        // notify).
+        #[cfg(debug_assertions)]
+        if std::env::var("ORBIT_DEBUG_DEMO").is_ok_and(|v| v == "attention") {
+            let app = self.app.clone();
+            cx.spawn(async move |_, cx| {
+                cx.background_executor().timer(std::time::Duration::from_millis(1500)).await;
+                let _ = app.update(cx, |app, cx| app.debug_edit_threads(crate::demo::apply, cx));
+            })
+            .detach();
+        }
+        let state = self.app.read(cx).state();
         let mut recent: Vec<&Thread> = state.threads.values().filter(|t| !t.archived && t.settled_ms.is_none()).collect();
         recent.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
         let recent: Vec<ThreadId> = recent.iter().map(|t| t.id).collect();

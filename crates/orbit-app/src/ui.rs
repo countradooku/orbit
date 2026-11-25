@@ -97,7 +97,7 @@ impl Glyph {
 
     pub fn label(self) -> &'static str {
         match self {
-            Glyph::Approval => "Needs your approval",
+            Glyph::Approval => "Needs approval",
             Glyph::Question => "Has a question",
             Glyph::Failed => "Failed",
             Glyph::RateLimited => "Waiting for quota",
@@ -220,8 +220,8 @@ fn glyph_shape(glyph: Glyph, id: &ElementId, window: &Window, theme: &gpui_kit::
             .rounded_full()
             .bg(color)
             .text_color(theme.warning_foreground)
-            .text_size(rems(0.5625))
-            .line_height(rems(0.5625))
+            .text_size(rems(0.6875))
+            .line_height(rems(0.6875))
             .font_weight(FontWeight::BLACK)
             .child("?")
             .into_any_element(),

@@ -602,7 +602,7 @@ impl InboxView {
                     .text_color(theme.muted_foreground)
                     .when_some(project, |el, p| el.child(ui::Monogram::new(p.name.clone(), p.id.0)).child(p.name.clone()))
                     .when_some(thread.workspace.branch.clone(), |el, branch| {
-                        el.child("·").child(div().font_family(theme.mono_font_family.clone()).child(branch))
+                        el.child("·").child(div().max_w(rems(12.)).truncate().font_family(theme.mono_font_family.clone()).child(branch))
                     })
                     .child("·")
                     .child(format::relative_time(since, now_ms())),

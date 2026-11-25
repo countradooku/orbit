@@ -67,6 +67,7 @@ impl FleetView {
                     .unwrap_or_else(|| "—".into());
                 h_flex()
                     .id(("fleet-row", id.0))
+                    .w_full()
                     .h_9()
                     .px_4()
                     .gap_3()

@@ -10,6 +10,8 @@ mod actions;
 mod app_state;
 mod assets;
 mod composer;
+#[cfg(debug_assertions)]
+mod demo;
 mod fleet;
 mod format;
 mod home;
