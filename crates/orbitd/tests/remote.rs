@@ -11,7 +11,10 @@
 //! * a thread runs on a "remote" host reached through the fake `ssh`;
 //! * a host without `orbitd` is probed, installed to with the fake `scp`,
 //!   and then connects;
-//! * SSH failures become fixes.
+//! * SSH failures become fixes;
+//! * a link to a host without `orbitd` waits for the install, then connects;
+//! * sharing this computer: a device pairs with a code and the matching
+//!   digits, connects with its own token, and is cut off when revoked.
 //!
 //! Every host runs on its own temporary data folder and is stopped by the
 //! test that started it. Nothing is downloaded.
@@ -38,11 +41,13 @@ fn main() {
         std::env::set_var("ORBIT_HOST_GRACE_MS", "400");
     }
     let filters: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with('-')).collect();
-    let tests: [(&str, fn()); 4] = [
+    let tests: [(&str, fn()); 6] = [
         ("stdio_round_trips_and_the_host_outlives_the_connection", stdio_round_trips_and_the_host_outlives_the_connection),
         ("a_thread_runs_on_a_host_reached_over_ssh", a_thread_runs_on_a_host_reached_over_ssh),
         ("a_host_without_orbitd_is_installed_to_with_scp", a_host_without_orbitd_is_installed_to_with_scp),
         ("ssh_failures_say_what_to_do", ssh_failures_say_what_to_do),
+        ("a_link_waits_for_the_install_then_connects", a_link_waits_for_the_install_then_connects),
+        ("a_device_pairs_connects_and_is_revoked", a_device_pairs_connects_and_is_revoked),
     ];
     let mut ran = 0;
     for (name, test) in tests {
@@ -475,4 +480,108 @@ fn ssh_failures_say_what_to_do() {
         }
     }
     backend.shutdown();
+}
+
+fn a_link_waits_for_the_install_then_connects() {
+    use orbit_net::remote::{LinkPhase, RemoteLink};
+    let home = tempfile::tempdir().unwrap();
+    let entry = HostEntry::ssh("dev@box", None, "");
+    let link = RemoteLink::new(entry, tools(home.path(), &[]));
+    let client = link.connect().unwrap();
+    let backend = Backend::Remote(client.clone());
+    let mut feed = backend.feed();
+    let mut state = ClientState::default();
+    let mut pump = |state: &mut ClientState, done: &dyn Fn(&ClientState) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done(state) {
+            assert!(Instant::now() < deadline, "timed out; {:?} {:?}", state.connection, link.phase());
+            if let Ok(Some(batch)) = block_on(async { tokio::time::timeout(Duration::from_millis(50), feed.next_batch()).await }) {
+                state.apply(batch);
+            }
+        }
+    };
+    pump(&mut state, &|s| matches!(&s.connection, Some(ConnectionStatus::Disconnected { reason }) if reason.contains("isn’t installed")));
+    assert!(matches!(link.phase(), LinkPhase::NeedsInstall(Probe::Missing { .. })));
+    assert!(link.phase().waits_on_user(), "no probing every few seconds until the user acts");
+    // The install flow, as the window runs it.
+    let info = Remote::new(link.entry(), link.tools()).install(&orbitd()).unwrap();
+    link.installed(info);
+    client.reconnect_now();
+    pump(&mut state, &|s| s.connection == Some(ConnectionStatus::Connected));
+    backend.shutdown();
+    stop(&home.path().join("orbit-data"));
+}
+
+fn a_device_pairs_connects_and_is_revoked() {
+    use orbit_net::host::LocalHost;
+    let data = tempfile::tempdir().unwrap();
+    let host = LocalHost::new(data.path().to_owned(), Some(orbitd()));
+    host.start().unwrap();
+    let mut desk = App::open(host.connect().unwrap());
+    let share = |app: &mut App, command: ShareCommand| match app.call(Command::Host(HostCommand::Share(command))) {
+        Ok(Reply::Host(HostReply::Share(status))) => status,
+        other => panic!("{other:?}"),
+    };
+    // Off by default.
+    assert!(!share(&mut desk, ShareCommand::Status).enabled);
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let status = share(&mut desk, ShareCommand::Enable { listen: format!("127.0.0.1:{port}") });
+    assert!(status.enabled && status.error.is_none(), "{status:?}");
+    let url = format!("ws://127.0.0.1:{port}/");
+    // Without a code nothing pairs; a wrong code is refused.
+    assert!(orbit_net::share::pair(&url, "ABCD-EFGH", "Laptop", |_| {}).unwrap_err().contains("isn’t pairing"));
+    let code = share(&mut desk, ShareCommand::NewCode).code.expect("a code").code;
+    assert!(orbit_net::share::pair(&url, "WXYZ-2345", "Laptop", |_| {}).unwrap_err().contains("wrong"));
+    // The device asks; both screens show the same digits; the desk allows it.
+    let (digits_tx, digits_rx) = std::sync::mpsc::channel();
+    let pairing = {
+        let (url, code) = (url.clone(), code.clone());
+        std::thread::spawn(move || orbit_net::share::pair(&url, &code, "Laptop", |d| digits_tx.send(d).unwrap()))
+    };
+    let shown = digits_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let request = loop {
+        if let Some(r) = share(&mut desk, ShareCommand::Status).pending.first().cloned() {
+            break r;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!((request.device.as_str(), request.verify.as_str()), ("Laptop", shown.as_str()));
+    share(&mut desk, ShareCommand::Confirm { request: request.id, accept: true });
+    let token = pairing.join().unwrap().unwrap();
+    let status = share(&mut desk, ShareCommand::Status);
+    assert_eq!(status.devices.len(), 1);
+    assert!(status.code.is_none(), "a code pairs one device");
+    let saved = std::fs::read_to_string(data.path().join(orbit_net::share::FILE)).unwrap();
+    assert!(!saved.contains(&token), "only the token's digest is kept");
+
+    // The device connects with its token and works.
+    let mut laptop = App::open(RemoteClient::connect(url.clone(), token.clone()).unwrap());
+    run_turn(&mut laptop, "from the laptop");
+    // It may not manage sharing.
+    assert!(laptop.call(Command::Host(HostCommand::Share(ShareCommand::NewCode))).is_err());
+    // A wrong token is refused.
+    let stranger = Backend::Remote(RemoteClient::connect(url.clone(), "0".repeat(32)).unwrap());
+    let mut feed = stranger.feed();
+    let mut state = ClientState::default();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !matches!(&state.connection, Some(ConnectionStatus::Disconnected { reason }) if reason.contains("isn’t paired")) {
+        assert!(Instant::now() < deadline, "{:?}", state.connection);
+        if let Ok(Some(batch)) = block_on(async { tokio::time::timeout(Duration::from_millis(50), feed.next_batch()).await }) {
+            state.apply(batch);
+        }
+    }
+    stranger.shutdown();
+
+    // Revoked: its connection is closed at once, and it can't come back.
+    let device = share(&mut desk, ShareCommand::Status).devices[0].id.clone();
+    assert!(share(&mut desk, ShareCommand::Status).devices[0].connected);
+    share(&mut desk, ShareCommand::Revoke { device });
+    laptop.until("the revoked device to be cut off", |s| {
+        matches!(&s.connection, Some(ConnectionStatus::Disconnected { reason }) if reason.contains("removed") || reason.contains("isn’t paired"))
+    });
+    laptop.close();
+    assert!(!share(&mut desk, ShareCommand::Disable).enabled);
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err(), "no longer listening");
+    desk.close();
+    stop(data.path());
 }

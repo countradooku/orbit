@@ -10,7 +10,7 @@ publish.workspace = true
 default = ["engine"]
 # The server side and the in-process backend. Clients that only connect to a
 # running engine (the `orbit` CLI) turn it off and skip the engine entirely.
-engine = ["dep:orbit-core", "dep:getrandom"]
+engine = ["dep:orbit-core"]
 
 [dependencies]
 orbit-proto = { workspace = true }
@@ -22,7 +22,10 @@ log = { workspace = true }
 dirs = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
-getrandom = { version = "0.3", optional = true }
+getrandom = "0.3"
+# Pairing: device tokens are kept as SHA-256 digests, and both screens show
+# a number derived from the exchange.
+sha2 = "0.10"
 bytes = "1"
 
 [target.'cfg(unix)'.dependencies]

@@ -266,6 +266,8 @@ fn run_local(args: &Args) -> i32 {
     let bots = orbit_bots::Bots::start(engine.clone(), &args.data)
         .inspect_err(|err| log::warn!("no chat bots: {err}"))
         .ok();
+    // Sharing this computer with paired devices, when the user turned it on.
+    control.set_share(orbit_net::share::Share::start(engine.clone(), control.clone(), &args.data));
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
     let grace = lifetime::Grace::with_override(args.grace);
     let exit = runtime.block_on(async {

@@ -25,7 +25,17 @@ use sockudo_ws::{Config, Http1, Message};
 use tokio::net::TcpListener;
 
 use crate::host::{ControlError, ControlRequest, HostControl, HostStatus, is_control};
+use crate::share::{PairChallenge, PairResult, Share};
 use crate::transport::{FrameReader, FrameWriter, LocalListener};
+
+/// Who may connect: holders of the host's token (loopback, the local
+/// transport, `orbitd --listen`), or paired devices (a shared host's
+/// network listener, see [`crate::share`]).
+#[derive(Clone)]
+enum Auth {
+    Token(String),
+    Devices(Arc<Share>),
+}
 
 pub struct ServerOptions {
     pub listen: SocketAddr,
@@ -50,6 +60,26 @@ pub async fn serve_ws(
     token: String,
     control: Option<Arc<HostControl>>,
 ) -> std::io::Result<()> {
+    serve_ws_as(engine, listener, Auth::Token(token), control).await
+}
+
+/// A shared host's network listener: paired devices and pairing requests
+/// only.
+pub async fn serve_shared(
+    engine: EngineHandle,
+    listener: TcpListener,
+    share: Arc<Share>,
+    control: Arc<HostControl>,
+) -> std::io::Result<()> {
+    serve_ws_as(engine, listener, Auth::Devices(share), Some(control)).await
+}
+
+async fn serve_ws_as(
+    engine: EngineHandle,
+    listener: TcpListener,
+    auth: Auth,
+    control: Option<Arc<HostControl>>,
+) -> std::io::Result<()> {
     let config = Config::builder()
         .max_payload_length(64 * 1024 * 1024)
         .ping_interval(20)
@@ -64,13 +94,13 @@ pub async fn serve_ws(
         let _ = stream.set_nodelay(true);
         let server = server.clone();
         let engine = engine.clone();
-        let token = token.clone();
+        let auth = auth.clone();
         let control = control.clone();
         tokio::spawn(async move {
             match server.accept(stream).await {
                 Ok((ws, _)) => {
                     let (reader, writer) = ws.split();
-                    if let Err(err) = connection(WsRx(reader), WsTx(writer), engine, &token, control).await {
+                    if let Err(err) = connection(WsRx(reader), WsTx(writer), engine, &auth, control, peer.to_string()).await {
                         log::info!("{peer}: {err}");
                     }
                 }
@@ -90,10 +120,10 @@ pub async fn serve_local(
     loop {
         let (reader, writer) = listener.accept().await?;
         let engine = engine.clone();
-        let token = token.clone();
+        let auth = Auth::Token(token.clone());
         let control = control.clone();
         tokio::spawn(async move {
-            if let Err(err) = connection(LocalRx(reader), LocalTx(writer), engine, &token, control).await {
+            if let Err(err) = connection(LocalRx(reader), LocalTx(writer), engine, &auth, control, "local".into()).await {
                 log::info!("local client: {err}");
             }
         });
@@ -177,8 +207,9 @@ async fn connection(
     mut reader: impl LinkRx,
     mut writer: impl LinkTx,
     engine: EngineHandle,
-    token: &str,
+    auth: &Auth,
     control: Option<Arc<HostControl>>,
+    peer: String,
 ) -> Result<(), String> {
     // Frames for this link: hot messages skip the big enums (see `link`).
     let mut link = ServerEncoder::new();
@@ -190,8 +221,13 @@ async fn connection(
         None => return Ok(()),
     };
     if is_control(&first) {
-        let reply = control_request(&first, &engine, token, control.as_ref()).await;
-        let _ = writer.send(reply).await;
+        match auth {
+            Auth::Devices(share) => pair_request(&first, share, &peer, &mut reader, &mut writer).await?,
+            Auth::Token(token) => {
+                let reply = control_request(&first, &engine, token, control.as_ref()).await;
+                let _ = writer.send(reply).await;
+            }
+        }
         writer.close().await;
         return Ok(());
     }
@@ -204,10 +240,26 @@ async fn connection(
         let _ = writer.send(link.message(&ServerMsg::Goodbye { reason })).await;
         return Err("protocol mismatch".into());
     }
-    if !same_token(&presented, token) {
-        let _ = writer.send(link.message(&ServerMsg::Goodbye { reason: "The access token is wrong.".into() })).await;
-        return Err("bad token".into());
-    }
+    // A paired device's connection, closed when it is revoked.
+    let device = match auth {
+        Auth::Token(token) => {
+            if !same_token(&presented, token) {
+                let _ = writer.send(link.message(&ServerMsg::Goodbye { reason: "The access token is wrong.".into() })).await;
+                return Err("bad token".into());
+            }
+            None
+        }
+        Auth::Devices(share) => match share.admit(&presented) {
+            Some(guard) => Some(guard),
+            None => {
+                let reason = "This device isn’t paired with that computer, or it was removed there. Pair it again.".into();
+                let _ = writer.send(link.message(&ServerMsg::Goodbye { reason })).await;
+                return Err("unknown device".into());
+            }
+        },
+    };
+    let from_device = device.is_some();
+    let mut revoked = device.as_ref().map(|d| d.revoked.clone());
     let sub = engine.subscribe(epoch, since).await.map_err(|_| "engine stopped")?;
     writer.send(link.message(&ServerMsg::Welcome { version: PROTOCOL_VERSION, snapshot: sub.snapshot.map(Box::new) })).await?;
     if !sub.replay.is_empty() {
@@ -233,6 +285,12 @@ async fn connection(
                 let tx = reply_tx.clone();
                 if let (Some(control), Command::Host(host)) = (&control, &command) {
                     let answered = match host {
+                        // Sharing is managed at the computer itself.
+                        HostCommand::Share(_) if from_device => Some(Err("Sharing is managed on that computer itself.".into())),
+                        HostCommand::Share(share) => Some(match control.share() {
+                            Some(sharing) => sharing.command(share.clone()).map(|s| Reply::Host(HostReply::Share(s))),
+                            None => Err("This host doesn’t share.".into()),
+                        }),
                         HostCommand::AttachUi => {
                             window.get_or_insert_with(|| control.attach_window());
                             Some(Ok(Reply::Done))
@@ -278,6 +336,11 @@ async fn connection(
 
     let result = loop {
         tokio::select! {
+            _ = revoked_or_never(&mut revoked) => {
+                let reason = "This device’s access was removed on that computer.".into();
+                let _ = writer.send(link.message(&ServerMsg::Goodbye { reason })).await;
+                break Ok(());
+            }
             reply = reply_rx.recv() => match reply {
                 Ok(msg) => {
                     // The engine emits a command's events before it replies,
@@ -344,7 +407,69 @@ async fn connection(
     };
     reader_task.abort();
     writer.close().await;
+    drop(device);
     result
+}
+
+/// Resolves once a paired device is revoked; never for a token client.
+async fn revoked_or_never(revoked: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    match revoked {
+        Some(rx) => {
+            while !*rx.borrow_and_update() {
+                if rx.changed().await.is_err() {
+                    return;
+                }
+            }
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// A device pairing with a shared host: the challenge now, the token once
+/// the user here allowed it (see [`crate::share`]).
+async fn pair_request(
+    first: &[u8],
+    share: &Arc<Share>,
+    peer: &str,
+    reader: &mut impl LinkRx,
+    writer: &mut impl LinkTx,
+) -> Result<(), String> {
+    let request: ControlRequest = serde_json::from_slice(first).map_err(|e| e.to_string())?;
+    if request.op != "pair" {
+        let refused = PairChallenge { error: "Only pairing is open on this address.".into(), ..Default::default() };
+        return writer.send(json(&refused)).await;
+    }
+    let (challenge, id, decision) = match share.begin_pair(&request.code, &request.device, &request.nonce, peer.to_owned()) {
+        Ok(started) => started,
+        Err(error) => return writer.send(json(&PairChallenge { error, ..Default::default() })).await,
+    };
+    writer.send(json(&challenge)).await?;
+    let decided = tokio::select! {
+        decided = decision => Some(decided.unwrap_or(false)),
+        // The device gave up (closed, or sent something else).
+        _ = reader.recv() => None,
+        _ = tokio::time::sleep(crate::share::DECIDE_TIMEOUT) => Some(false),
+    };
+    match decided {
+        Some(true) => {
+            let result = share.finish_pair(id, &request.device)?;
+            writer.send(json(&result)).await
+        }
+        Some(false) => {
+            share.drop_request(id);
+            let declined = PairResult { error: "The other computer didn’t allow this device.".into(), ..Default::default() };
+            writer.send(json(&declined)).await
+        }
+        None => {
+            share.drop_request(id);
+            Ok(())
+        }
+    }
+}
+
+/// A pairing frame.
+fn json<T: serde::Serialize>(value: &T) -> Vec<u8> {
+    serde_json::to_vec(value).unwrap_or_default()
 }
 
 /// The engine's activity with the host process's own facts.

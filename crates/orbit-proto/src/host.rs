@@ -54,6 +54,87 @@ pub enum HostCommand {
     /// listed; nothing is filtered by ignore files. Replies
     /// [`HostReply::Dir`].
     ListDir { path: String },
+    /// Sharing this computer with other devices over the network; handled
+    /// by the background host. Replies [`HostReply::Share`].
+    Share(ShareCommand),
+}
+
+/// What [`HostCommand::Share`] asks (see `docs/REMOTE.md`, "Share this
+/// computer").
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
+pub enum ShareCommand {
+    Status,
+    /// Listen on `listen` (`ip:port`) for paired devices.
+    Enable { listen: String },
+    /// Stop listening; paired devices stay paired.
+    Disable,
+    /// A fresh pairing code (the previous one stops working).
+    NewCode,
+    /// Lets the device that asked in `request` in, or not.
+    Confirm { request: u64, accept: bool },
+    /// Forgets a paired device and closes its connections.
+    Revoke { device: String },
+}
+
+/// Whether this computer is shared, and with whom.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
+pub struct ShareStatus {
+    pub enabled: bool,
+    /// `ip:port` listened on (or to listen on).
+    pub listen: String,
+    /// Why listening failed.
+    pub error: Option<String>,
+    /// Addresses other devices can use, the most private first.
+    pub addresses: Vec<ShareAddress>,
+    pub code: Option<PairingCode>,
+    pub pending: Vec<PairRequest>,
+    pub devices: Vec<PairedDevice>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
+pub struct ShareAddress {
+    /// An IP address of this computer.
+    pub ip: String,
+    /// "Tailscale", "Local network".
+    pub label: String,
+    /// The network encrypts traffic itself (Tailscale's WireGuard).
+    pub encrypted: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
+pub struct PairingCode {
+    /// `ABCD-EFGH`.
+    pub code: String,
+    pub expires_ms: u64,
+}
+
+/// A device asking to pair, waiting for the user here.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
+pub struct PairRequest {
+    pub id: u64,
+    /// The name the device gave.
+    pub device: String,
+    /// Shown on both screens; the user checks they match.
+    pub verify: String,
+    /// Its network address.
+    pub from: String,
+    pub at_ms: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
+pub struct PairedDevice {
+    pub id: String,
+    pub name: String,
+    pub paired_ms: u64,
+    pub last_seen_ms: u64,
+    /// Connected now.
+    pub connected: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
@@ -64,6 +145,7 @@ pub enum HostReply {
     Terminal { session: TermSession, scrollback: Vec<u8> },
     Terminals(Vec<TermSession>),
     Dir(DirListing),
+    Share(ShareStatus),
 }
 
 /// A folder on the host, as [`HostCommand::ListDir`] lists it.

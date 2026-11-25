@@ -143,6 +143,7 @@ impl Orchestrator {
                 Ok(Reply::Done)
             }
             HostCommand::Ping => Ok(Reply::Done),
+            HostCommand::Share(_) => Err("Sharing this computer needs the background host; Orbit runs its engine in the window.".into()),
             HostCommand::ListDir { path } => list_host_dir(&path).map(|listing| Reply::Host(HostReply::Dir(listing))),
             HostCommand::Terminals => {
                 let mut ids: Vec<TermId> = self.host.sessions.keys().copied().collect();

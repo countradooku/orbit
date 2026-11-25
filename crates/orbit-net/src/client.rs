@@ -189,6 +189,38 @@ async fn open_counting(url: &str, max_backoff: &mut Duration) -> Result<(Reader,
     open(url).await
 }
 
+/// A bare connection for a JSON exchange (pairing): frames in and out,
+/// pings answered.
+pub(crate) struct RawLink {
+    reader: Reader,
+    writer: Writer,
+}
+
+impl RawLink {
+    pub(crate) async fn next(&mut self) -> Result<Option<bytes::Bytes>, String> {
+        loop {
+            match self.reader.next().await? {
+                Incoming::Binary(data) => return Ok(Some(data)),
+                Incoming::Ping(data) => self.writer.pong(&data).await?,
+                Incoming::Close => return Ok(None),
+            }
+        }
+    }
+
+    pub(crate) async fn send(&mut self, frame: &[u8]) -> Result<(), String> {
+        self.writer.binary(frame).await
+    }
+
+    pub(crate) async fn close(&mut self) {
+        self.writer.close().await;
+    }
+}
+
+pub(crate) async fn open_raw(url: &str) -> Result<RawLink, String> {
+    let (reader, writer) = open(url).await?;
+    Ok(RawLink { reader, writer })
+}
+
 /// Sends one frame and returns the first frame of the answer (a control
 /// request, see [`crate::host::control`]).
 pub(crate) async fn exchange_once(url: &str, frame: &[u8]) -> std::io::Result<Vec<u8>> {

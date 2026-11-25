@@ -19,6 +19,7 @@
 
 pub mod bridge;
 pub mod hosts;
+pub mod link;
 pub mod ssh_config;
 pub mod wsl;
 
@@ -31,6 +32,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 pub use hosts::{HostEntry, HostKind, HostsFile};
+pub use link::{LinkPhase, RemoteLink};
 
 /// Where `orbitd` is installed on a remote host, relative to its home.
 pub const INSTALL_DIR: &str = ".orbit/bin";
@@ -236,7 +238,7 @@ impl std::fmt::Display for Failure {
 }
 
 impl Failure {
-    fn other(message: impl Into<String>) -> Self {
+    pub fn other(message: impl Into<String>) -> Self {
         Self { kind: FailureKind::Other, message: message.into(), run_once: None }
     }
 }

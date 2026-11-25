@@ -72,7 +72,8 @@ pub use workspace::*;
 /// quota and usage (`Snapshot::quota`, `Event::Quota`, `Command::Usage`,
 /// `Reply::Usage`); version 12, the background host (`Command::Host`,
 /// `Reply::Host`, `Event::TerminalSleep`; see [`host`]); version 13,
-/// remote hosts (`HostCommand::Ping` and `ListDir`, `HostReply::Dir`).
+/// remote hosts (`HostCommand::Ping`, `ListDir` and `Share`,
+/// `HostReply::Dir` and `Share`).
 pub const PROTOCOL_VERSION: u16 = 13;
 
 /// WebSocket subprotocol name negotiated during the upgrade.
