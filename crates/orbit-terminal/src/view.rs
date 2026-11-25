@@ -11,6 +11,8 @@ use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
+#[cfg(not(feature = "fast"))]
+use gpui_kit::ScrollWheelEvent as ScrollEvent;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
 

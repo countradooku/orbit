@@ -8,7 +8,9 @@ publish.workspace = true
 
 [features]
 default = ["fast"]
-# Render on GPUI Fast, like orbit-app.
+# Render on GPUI Fast, like orbit-app. Features unify: an app that compares
+# backends depends on this crate with `default-features = false` and forwards
+# its own `fast` feature here.
 fast = ["gpui-kit/gpui-fast"]
 
 [dependencies]
@@ -19,3 +21,4 @@ log = { workspace = true }
 [dev-dependencies]
 orbit-core = { workspace = true }
 crossfire = { workspace = true }
+gpui-kit = { version = "0.11", features = ["tree-sitter", "test-support"] }

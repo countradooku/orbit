@@ -1,6 +1,6 @@
 //! A window with one terminal running the user's shell.
 //!
-//! `cargo run -p orbit-terminal --example standalone`
+//! `cargo run -p orbit-terminal --example standalone [-- --dark]`
 //!
 //! The PTY comes from `orbit_core::terminal`; the view knows nothing about
 //! it. Output is drained in batches (one `feed`, so one redraw, per batch),
@@ -91,6 +91,9 @@ fn main() {
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx| {
         gpui_kit::init(cx);
         orbit_terminal::init(cx);
+        if std::env::args().any(|arg| arg == "--dark") {
+            gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
+        }
         let bounds = Bounds::centered(None, size(px(960.), px(600.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),

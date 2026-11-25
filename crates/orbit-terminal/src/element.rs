@@ -13,6 +13,9 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::CursorShape;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
+// Upstream GPUI still calls the wheel event by its old name.
+#[cfg(not(feature = "fast"))]
+use gpui_kit::ScrollWheelEvent as ScrollEvent;
 
 use crate::colors::Palette;
 use crate::view::TerminalView;
@@ -371,6 +374,8 @@ struct GridLayout<'a> {
     cursor_cell: Option<(usize, usize)>,
     /// Whether a solid block cursor is drawn by inverting its cell.
     block_cursor: bool,
+    /// The last contrast correction: neighboring cells share colors.
+    readable: Option<((Hsla, Hsla), Hsla)>,
 }
 
 impl<'a> GridLayout<'a> {
@@ -385,6 +390,7 @@ impl<'a> GridLayout<'a> {
             cursor: None,
             cursor_cell: None,
             block_cursor: false,
+            readable: None,
         }
     }
 
@@ -449,7 +455,7 @@ impl<'a> GridLayout<'a> {
                 fg = bg.unwrap_or(self.palette.background);
                 bg = Some(new_bg);
             }
-            fg = Palette::readable(fg, bg.unwrap_or(self.palette.background));
+            fg = self.readable(fg, bg.unwrap_or(self.palette.background));
             if cell.flags.contains(Flags::DIM) {
                 fg = self.palette.dim(fg);
             }
@@ -493,6 +499,17 @@ impl<'a> GridLayout<'a> {
             self.push_glyph(row, col, wide, c, zerowidth, fg, weight, style, underline, strikethrough);
         }
         self.finish_row();
+    }
+
+    fn readable(&mut self, fg: Hsla, bg: Hsla) -> Hsla {
+        match self.readable {
+            Some((pair, fixed)) if pair == (fg, bg) => fixed,
+            _ => {
+                let fixed = Palette::readable(fg, bg);
+                self.readable = Some(((fg, bg), fixed));
+                fixed
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
