@@ -110,6 +110,7 @@ fn status_line(thread: &Thread, state: &orbit_net::state::ClientState, theme: &g
         return (text, theme.warning);
     }
     match &thread.status {
+        ThreadStatus::Starting if thread.workspace.worktree.is_none() => ("Setting up the worktree…".into(), muted),
         ThreadStatus::Running | ThreadStatus::Starting => ("Working…".into(), muted),
         ThreadStatus::Failed { message } => (format!("Failed · {message}"), theme.danger),
         ThreadStatus::RateLimited { resets_ms } => (format::resets_at(*resets_ms, now_ms()), theme.warning),

@@ -17,7 +17,7 @@ use crate::provider::{
     self, AgentEvent, BlockKind, EventSender, PromptAttachment, SessionHandle, SessionInput, SessionSpec,
     TurnOutcome,
 };
-use crate::git::{Git, GitConfig, TreeId};
+use crate::git::{BranchCleanup, Git, GitConfig, NewWorktree, RemoveWorktree, TreeId};
 use crate::store::Store;
 use crate::terminal::{ExitSender, OutputSender, TermSize, Terminals};
 
@@ -35,6 +35,8 @@ pub enum Internal {
     QuotaReset(ThreadId),
     /// A snooze timer fired.
     SnoozeEnded { thread: ThreadId, until: u64 },
+    /// A thread's worktree finished setting up (or failed to).
+    WorktreeReady { thread: ThreadId, result: Result<Workspace, String>, setup_log: Option<String> },
 }
 
 /// Starts provider sessions. Tests replace it with scripted fakes.
@@ -497,6 +499,27 @@ impl Orchestrator {
                     self.store.unload_timeline(thread);
                 }
             }
+            Internal::WorktreeReady { thread, result, setup_log } => {
+                if self.store.thread(thread).is_none() {
+                    return; // deleted while it was being set up
+                }
+                match result {
+                    Ok(workspace) => {
+                        self.update_thread(thread, |t| {
+                            t.workspace = workspace;
+                            t.status = ThreadStatus::Idle;
+                        });
+                        if let Some(log) = setup_log {
+                            self.notice(thread, NoticeLevel::Warning, format!("The setup script failed:\n{log}"));
+                        }
+                        self.start_next_queued(thread);
+                    }
+                    Err(message) => {
+                        self.notice(thread, NoticeLevel::Error, message.clone());
+                        self.update_thread(thread, |t| t.status = ThreadStatus::Failed { message });
+                    }
+                }
+            }
             Internal::SnoozeEnded { thread, until } => {
                 // Ignore timers for snoozes that were changed since.
                 if self.store.thread(thread).is_some_and(|t| t.snoozed_until == Some(until)) {
@@ -651,8 +674,9 @@ impl Orchestrator {
         {
             return Err("That project no longer exists.".into());
         }
-        if worktree {
-            return Err("Worktrees are not available in this build.".into());
+        let project_record = project.and_then(|p| self.store.project(p).cloned());
+        if worktree && project_record.is_none() {
+            return Err("A worktree needs a project: pick one first.".into());
         }
         let now = now_ms();
         let thread = Thread {
@@ -662,14 +686,58 @@ impl Orchestrator {
             config: config.clone(),
             created_ms: now,
             updated_ms: now,
+            // Messages queue until the worktree is ready.
+            status: if worktree { ThreadStatus::Starting } else { ThreadStatus::Idle },
             ..Default::default()
         };
         let id = thread.id;
         self.emit(Event::ThreadUpserted(thread));
+        if let (true, Some(project)) = (worktree, project_record) {
+            self.create_worktree(id, project);
+        }
         if *self.store.defaults() != config {
             self.emit(Event::DefaultsChanged(config));
         }
         Ok(Reply::Thread(id))
+    }
+
+    fn create_worktree(&mut self, thread: ThreadId, project: Project) {
+        let (git, tx) = (self.git.clone(), self.internal_tx.clone());
+        let short = format!("{:x}", thread.0 & 0xff_ffff);
+        tokio::spawn(async move {
+            let mut log = String::new();
+            let mut on_output = |_: crate::git::OutputStream, line: &str| {
+                if log.len() < 16 * 1024 {
+                    log.push_str(line);
+                    log.push('\n');
+                }
+            };
+            let spec = NewWorktree {
+                project_root: PathBuf::from(&project.path),
+                thread,
+                branch: format!("orbit/{short}"),
+                base: project.base_branch.clone(),
+                path: None,
+                setup: project.scripts.setup.clone(),
+            };
+            let result = git.create_worktree(spec, &mut on_output).await;
+            let (result, setup_log) = match result {
+                Ok(info) => {
+                    let failed = info.setup.as_ref().is_some_and(|s| s.code != Some(0));
+                    let setup_log = info.setup.as_ref().map(|s| s.tail.clone()).filter(|_| failed);
+                    (
+                        Ok(Workspace {
+                            branch: Some(info.record.branch.clone()),
+                            worktree: Some(info.record.path.display().to_string()),
+                            port_base: Some(info.record.port_base),
+                        }),
+                        setup_log,
+                    )
+                }
+                Err(err) => (Err(format!("Couldn’t create the worktree: {err}")), None),
+            };
+            let _ = tx.send(Internal::WorktreeReady { thread, result, setup_log });
+        });
     }
 
     fn patch_thread(&mut self, id: ThreadId, patch: ThreadPatch) -> CommandResult {
@@ -727,6 +795,18 @@ impl Orchestrator {
     }
 
     fn delete_thread(&mut self, id: ThreadId) -> CommandResult {
+        if let Some(thread) = self.store.thread(id)
+            && let Some(path) = thread.workspace.worktree.clone()
+        {
+            let teardown = thread.project.and_then(|p| self.store.project(p)).and_then(|p| p.scripts.teardown.clone());
+            let git = self.git.clone();
+            tokio::spawn(async move {
+                let opts = RemoveWorktree { teardown, branch: BranchCleanup::DeleteIfMerged, force: true };
+                if let Err(err) = git.remove_worktree(Path::new(&path), opts, &mut |_, _| {}).await {
+                    log::warn!("removing worktree {path}: {err}");
+                }
+            });
+        }
         if let Some(repo) = self.store.thread(id).and_then(|t| self.repo_of(t)) {
             let git = self.git.clone();
             tokio::spawn(async move {
@@ -817,7 +897,9 @@ impl Orchestrator {
         let in_turn = self.runtimes.get(&thread_id).is_some_and(|r| r.turn.is_some());
         // Between a turn's end and its snapshot nothing can be steered; new
         // messages queue behind the snapshot instead.
-        let busy = in_turn || self.runtimes.get(&thread_id).is_some_and(|r| r.checkpointing);
+        let busy = in_turn
+            || self.runtimes.get(&thread_id).is_some_and(|r| r.checkpointing)
+            || thread.status == ThreadStatus::Starting;
         let rate_limited = matches!(thread.status, ThreadStatus::RateLimited { .. });
         let item_id = ItemId::new();
         let current_turn = thread.turns;

@@ -27,6 +27,8 @@ pub enum ComposerEvent {
     Submit { text: String, attachments: Vec<Attachment>, steer: bool },
     Stop,
     ConfigChanged(ThreadConfig),
+    /// Home only: run the new thread in its own worktree or not.
+    WorktreeChosen(bool),
 }
 
 pub struct Composer {
@@ -41,6 +43,9 @@ pub struct Composer {
     /// Where the agent works ("orbit", "Current checkout"), shown under the box.
     context: Option<String>,
     branch: Option<String>,
+    /// Home only: whether the next thread gets its own worktree. `None`
+    /// hides the choice (an existing thread's workspace is fixed).
+    worktree_choice: Option<bool>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -71,6 +76,7 @@ impl Composer {
             usage: None,
             context: None,
             branch: None,
+            worktree_choice: None,
             _subscriptions: vec![input_sub, app_sub],
         }
     }
@@ -98,6 +104,13 @@ impl Composer {
         if self.context != context || self.branch != branch {
             self.context = context;
             self.branch = branch;
+            cx.notify();
+        }
+    }
+
+    pub fn set_worktree_choice(&mut self, choice: Option<bool>, cx: &mut Context<Self>) {
+        if self.worktree_choice != choice {
+            self.worktree_choice = choice;
             cx.notify();
         }
     }
@@ -278,14 +291,38 @@ impl Composer {
             .gap_1()
             .text_xs()
             .text_color(theme.muted_foreground)
-            .when_some(self.context.clone(), |el, label| {
-                el.child(
-                    h_flex()
-                        .gap_1()
-                        .px_1p5()
-                        .child(Icon::new(IconName::Folder).xsmall())
-                        .child(label),
-                )
+            .map(|el| match (self.worktree_choice, self.context.clone()) {
+                (Some(worktree), _) => {
+                    let this = this.clone();
+                    el.child(
+                        Button::new("workspace-choice")
+                            .ghost()
+                            .xsmall()
+                            .icon(if worktree { Icon::new(Lucide::GitFork) } else { Icon::new(IconName::Folder) })
+                            .label(if worktree { "New worktree" } else { "Current checkout" })
+                            .dropdown_menu(move |menu, _, _| {
+                                let (a, b) = (this.clone(), this.clone());
+                                menu.item(
+                                    PopupMenuItem::new("Current checkout — work in the project folder")
+                                        .checked(!worktree)
+                                        .on_click(move |_, _, cx| {
+                                            let _ = a.update(cx, |_, cx| cx.emit(ComposerEvent::WorktreeChosen(false)));
+                                        }),
+                                )
+                                .item(
+                                    PopupMenuItem::new("New worktree — an isolated branch and folder")
+                                        .checked(worktree)
+                                        .on_click(move |_, _, cx| {
+                                            let _ = b.update(cx, |_, cx| cx.emit(ComposerEvent::WorktreeChosen(true)));
+                                        }),
+                                )
+                            }),
+                    )
+                }
+                (None, Some(label)) => el.child(
+                    h_flex().gap_1().px_1p5().child(Icon::new(IconName::Folder).xsmall()).child(label),
+                ),
+                (None, None) => el,
             })
             .when_some(self.branch.clone(), |el, branch| {
                 el.child(h_flex().gap_1().px_1p5().child(Icon::new(Lucide::GitBranch).xsmall()).child(branch))

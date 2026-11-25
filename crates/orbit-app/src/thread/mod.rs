@@ -272,6 +272,7 @@ impl ThreadView {
                 steer: *steer,
             },
             ComposerEvent::Stop => Command::Interrupt { thread: self.id },
+            ComposerEvent::WorktreeChosen(_) => return,
             ComposerEvent::ConfigChanged(config) => Command::UpdateThread {
                 id: self.id,
                 patch: ThreadPatch { config: Some(config.clone()), ..Default::default() },

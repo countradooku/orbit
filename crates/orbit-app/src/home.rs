@@ -25,6 +25,7 @@ pub struct HomeView {
     picked: Option<Option<ProjectId>>,
     config_touched: bool,
     sending: bool,
+    worktree: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -40,6 +41,10 @@ impl HomeView {
                     let config = config.clone();
                     this.app.update(cx, |app, _| app.send(Command::SetDefaults { config }));
                 }
+                ComposerEvent::WorktreeChosen(worktree) => {
+                    this.worktree = *worktree;
+                    this.sync_context(cx);
+                }
                 ComposerEvent::Stop => {}
             }),
             cx.observe(&app, |this, app, cx| {
@@ -52,7 +57,18 @@ impl HomeView {
                 cx.notify();
             }),
         ];
-        Self { app, workspace, composer, picked: None, config_touched: false, sending: false, _subscriptions: subs }
+        let mut home = Self {
+            app,
+            workspace,
+            composer,
+            picked: None,
+            config_touched: false,
+            sending: false,
+            worktree: false,
+            _subscriptions: subs,
+        };
+        home.sync_context(cx);
+        home
     }
 
     pub fn select_project(&mut self, project: Option<ProjectId>, cx: &mut Context<Self>) {
@@ -67,7 +83,12 @@ impl HomeView {
         let project = project.and_then(|id| state.projects.iter().find(|p| p.id == id));
         let context = Some(project.map(|_| "Current checkout".to_owned()).unwrap_or_else(|| "Scratch folder".into()));
         let branch = project.and_then(|p| p.base_branch.clone());
-        self.composer.update(cx, |c, cx| c.set_context(context, branch, cx));
+        // Worktrees need a project; the choice only shows when one is picked.
+        let choice = project.map(|_| self.worktree);
+        self.composer.update(cx, |c, cx| {
+            c.set_context(context, branch, cx);
+            c.set_worktree_choice(choice, cx);
+        });
     }
 
     pub fn focus_composer(home: &Entity<Self>, window: &mut Window, cx: &mut App) {
@@ -98,7 +119,8 @@ impl HomeView {
         let project = self.project(cx);
         let config = self.composer.read(cx).config().clone();
         let app = self.app.clone();
-        let create = app.update(cx, |app, cx| app.call(Command::CreateThread { project, config, worktree: false }, cx));
+        let worktree = self.worktree && project.is_some();
+        let create = app.update(cx, |app, cx| app.call(Command::CreateThread { project, config, worktree }, cx));
         cx.spawn_in(window, async move |this, cx| {
             let result = create.await;
             let thread = match result {

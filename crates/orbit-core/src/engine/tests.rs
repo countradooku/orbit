@@ -419,3 +419,41 @@ fn settle_snooze_and_wake() {
     h.send(id, "ask");
     h.wait("woken by the request", |h| h.thread(id).status == ThreadStatus::Waiting && h.thread(id).snoozed_until.is_none());
 }
+
+#[test]
+fn a_worktree_thread_queues_until_its_worktree_is_ready() {
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.path().join("README.md"), "hi\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"]);
+
+    let mut h = Harness::new();
+    let Reply::Project(project) = h.call(Command::AddProject { path: repo.path().display().to_string() }) else { panic!() };
+    let Reply::Thread(id) =
+        h.call(Command::CreateThread { project: Some(project), config: ThreadConfig::default(), worktree: true })
+    else {
+        panic!()
+    };
+    // Sent before the worktree exists: queued, then run in the worktree.
+    h.send(id, "write");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !(h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle) {
+        assert!(Instant::now() < deadline, "worktree turn never ran: {:?}", h.thread(id).status);
+        match h.events.try_recv() {
+            Ok(env) => h.apply(env.event),
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    let worktree = h.thread(id).workspace.worktree.clone().expect("worktree path");
+    assert!(std::path::Path::new(&worktree).join("written-by-agent.txt").exists(), "the agent ran in the worktree");
+    assert!(!repo.path().join("written-by-agent.txt").exists(), "the main checkout is untouched");
+    assert!(h.thread(id).workspace.branch.as_deref().is_some_and(|b| b.starts_with("orbit/")));
+
+    h.call(Command::DeleteThread { id });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while std::path::Path::new(&worktree).exists() {
+        assert!(Instant::now() < deadline, "worktree was not removed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
