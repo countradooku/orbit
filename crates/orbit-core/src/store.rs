@@ -3,7 +3,7 @@
 //! Layout of the data directory:
 //!
 //! ```text
-//! meta.log            projects, threads, defaults (durable envelopes)
+//! meta.log            projects, threads, defaults, drafts (durable envelopes)
 //! threads/<id>.log    one thread's timeline records
 //! blobs/<ab>/<hash>   attachments and large tool outputs, by BLAKE3 hash
 //! ```
@@ -188,6 +188,8 @@ pub struct Store {
     projects: Vec<Project>,
     threads: HashMap<ThreadId, Thread>,
     defaults: ThreadConfig,
+    /// Unsent composer messages; never empty drafts.
+    drafts: HashMap<DraftTarget, Draft>,
     open: HashMap<ThreadId, OpenTimeline>,
 }
 
@@ -213,6 +215,7 @@ impl Store {
             projects: Vec::new(),
             threads: HashMap::new(),
             defaults: ThreadConfig::default(),
+            drafts: HashMap::new(),
             open: HashMap::new(),
         };
         for env in records {
@@ -264,6 +267,10 @@ impl Store {
         &self.defaults
     }
 
+    pub fn draft(&self, target: DraftTarget) -> Option<&Draft> {
+        self.drafts.get(&target)
+    }
+
     pub fn snapshot(&self, providers: Vec<ProviderInfo>) -> Snapshot {
         let mut threads: Vec<Thread> = self.threads.values().cloned().collect();
         threads.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
@@ -274,6 +281,7 @@ impl Store {
             threads,
             providers,
             defaults: self.defaults.clone(),
+            drafts: self.drafts.iter().map(|(k, v)| (*k, v.clone())).collect(),
         }
     }
 
@@ -292,8 +300,16 @@ impl Store {
             }
             Event::ThreadRemoved(id) => {
                 self.threads.remove(&id);
+                self.drafts.remove(&DraftTarget::Thread(id));
             }
             Event::DefaultsChanged(config) => self.defaults = config,
+            Event::DraftSaved { target, draft } => {
+                if draft.is_empty() {
+                    self.drafts.remove(&target);
+                } else {
+                    self.drafts.insert(target, draft);
+                }
+            }
             _ => {}
         }
     }
@@ -411,7 +427,7 @@ impl Store {
     }
 
     fn maybe_compact_meta(&mut self) -> io::Result<()> {
-        let live = self.projects.len() + self.threads.len() + 1;
+        let live = self.projects.len() + self.threads.len() + self.drafts.len() + 1;
         if self.meta.records > 256 && self.meta.records > live * 4 {
             let seq = self.seq;
             let mut records = Vec::with_capacity(live);
@@ -422,6 +438,9 @@ impl Store {
                 records.push(Envelope { seq, event: Event::ThreadUpserted(t.clone()) });
             }
             records.push(Envelope { seq, event: Event::DefaultsChanged(self.defaults.clone()) });
+            for (target, draft) in &self.drafts {
+                records.push(Envelope { seq, event: Event::DraftSaved { target: *target, draft: draft.clone() } });
+            }
             self.meta.rewrite(records.iter())?;
         }
         Ok(())
@@ -445,8 +464,14 @@ impl Store {
 
     /// Stores `data` once by content hash and returns the attachment record.
     pub fn put_blob(&self, name: String, mime: String, data: &[u8]) -> io::Result<Attachment> {
+        Self::put_blob_in(&self.dir, name, mime, data)
+    }
+
+    /// [`put_blob`](Self::put_blob) for background tasks that hold only the
+    /// data directory.
+    pub fn put_blob_in(dir: &Path, name: String, mime: String, data: &[u8]) -> io::Result<Attachment> {
         let hash = blake3::hash(data).to_hex().to_string();
-        let path = self.blob_path(&hash);
+        let path = dir.join("blobs").join(&hash[..2]).join(&hash);
         if !path.exists() {
             fs::create_dir_all(path.parent().unwrap())?;
             let tmp = path.with_extension("tmp");
@@ -463,10 +488,13 @@ impl Store {
         fs::read(self.blob_path(hash))
     }
 
-    /// Deletes blobs that no remaining timeline references. Runs after a
-    /// thread is deleted; scans logs without keeping them loaded.
+    /// Deletes blobs that no remaining timeline or draft references. Runs
+    /// after a thread is deleted; scans logs without keeping them loaded.
     pub fn collect_garbage(&mut self) -> io::Result<usize> {
         let mut referenced = std::collections::HashSet::new();
+        for draft in self.drafts.values() {
+            referenced.extend(draft.attachments.iter().map(|a| a.hash.clone()));
+        }
         let ids: Vec<ThreadId> = self.threads.keys().copied().collect();
         for id in ids {
             let loaded = self.open.contains_key(&id);
@@ -592,6 +620,33 @@ mod tests {
 
         store.commit(Event::ThreadRemoved(id)).unwrap();
         assert!(!store.timeline_path(id).exists());
+        assert_eq!(store.collect_garbage().unwrap(), 1);
+        assert!(store.read_blob(&blob.hash).is_err());
+    }
+
+    #[test]
+    fn drafts_survive_reopen_keep_their_blobs_and_go_with_their_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = ThreadId::new();
+        let blob;
+        {
+            let mut store = Store::open(dir.path()).unwrap();
+            store.commit(Event::ThreadUpserted(thread(id))).unwrap();
+            blob = store.put_blob("notes.txt".into(), "text/plain".into(), b"half a thought").unwrap();
+            let draft = Draft { text: "Refactor the".into(), attachments: vec![blob.clone()], updated_ms: 1 };
+            store.commit(Event::DraftSaved { target: DraftTarget::Thread(id), draft }).unwrap();
+            let home = Draft { text: "New idea".into(), ..Default::default() };
+            store.commit(Event::DraftSaved { target: DraftTarget::Home, draft: home }).unwrap();
+            assert_eq!(store.collect_garbage().unwrap(), 0, "a draft keeps its attachments");
+        }
+        let mut store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.draft(DraftTarget::Thread(id)).unwrap().text, "Refactor the");
+        assert_eq!(store.draft(DraftTarget::Home).unwrap().text, "New idea");
+        assert_eq!(store.snapshot(Vec::new()).drafts.len(), 2);
+        store.commit(Event::DraftSaved { target: DraftTarget::Home, draft: Draft::default() }).unwrap();
+        assert!(store.draft(DraftTarget::Home).is_none(), "an empty draft removes it");
+        store.commit(Event::ThreadRemoved(id)).unwrap();
+        assert!(store.draft(DraftTarget::Thread(id)).is_none());
         assert_eq!(store.collect_garbage().unwrap(), 1);
         assert!(store.read_blob(&blob.hash).is_err());
     }

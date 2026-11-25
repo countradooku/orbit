@@ -120,6 +120,7 @@ pub struct Orchestrator {
     pub(crate) open: HashSet<ThreadId>,
     pub(crate) git: Git,
     pub(crate) terminals: Terminals,
+    pub(crate) files: super::files::FileIndex,
 }
 
 pub type CommandResult = Result<Reply, String>;
@@ -166,6 +167,7 @@ impl Orchestrator {
             open: HashSet::new(),
             git,
             terminals: Terminals::new(terminal_output, terminal_exits),
+            files: Default::default(),
         }
     }
 
@@ -612,6 +614,10 @@ impl Orchestrator {
     pub fn handle(&mut self, command: Command) -> Outcome {
         match command {
             Command::Search { query, limit } => Outcome::Deferred(self.search(query, limit as usize)),
+            Command::SearchFiles { thread, project, query, limit } => {
+                Outcome::Deferred(self.search_files(thread, project, query, limit))
+            }
+            Command::ExportThread { thread } => Outcome::Deferred(self.export_thread(thread)),
             command @ (Command::Diff { .. }
             | Command::RevertPatch { .. }
             | Command::RestoreCheckpoint { .. }
@@ -678,6 +684,13 @@ impl Orchestrator {
                 self.emit(Event::DefaultsChanged(config));
                 Ok(Reply::Done)
             }
+            Command::SaveDraft { target, draft } => self.save_draft(target, draft),
+            Command::MoveQueued { thread, item, to } => self.move_queued(thread, item, to),
+            Command::SteerQueued { thread, item } => self.steer_queued(thread, item),
+            Command::SearchFiles { thread, project, query, limit } => {
+                futures_block_on(self.search_files(thread, project, query, limit))
+            }
+            Command::ExportThread { thread } => futures_block_on(self.export_thread(thread)),
             Command::Diff { .. }
             | Command::RevertPatch { .. }
             | Command::RestoreCheckpoint { .. }
@@ -969,6 +982,7 @@ impl Orchestrator {
         if text.trim().is_empty() && attachments.is_empty() {
             return Err("Write a message first.".into());
         }
+        validate_message(&text, &attachments)?;
         if thread.archived {
             return Err("This thread is archived. Unarchive it to continue.".into());
         }

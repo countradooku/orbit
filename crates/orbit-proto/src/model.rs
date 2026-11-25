@@ -519,9 +519,136 @@ pub struct SlashCommand {
     pub argument_hint: String,
 }
 
+/// Which composer a draft belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Encode, Decode)]
+pub enum DraftTarget {
+    /// The composer that starts a new thread.
+    Home,
+    Thread(ThreadId),
+}
+
+/// An unsent message, kept on the host so it survives restarts and follows
+/// the user to every client of that host.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+pub struct Draft {
+    pub text: String,
+    /// Stored blobs, including context references (terminal selections,
+    /// review comments, thread digests).
+    pub attachments: Vec<Attachment>,
+    /// When the host last saved it (Unix ms).
+    pub updated_ms: u64,
+}
+
+impl Draft {
+    pub fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.attachments.is_empty()
+    }
+
+    /// Same content, whenever it was saved.
+    pub fn same_content(&self, other: &Draft) -> bool {
+        self.text == other.text && self.attachments == other.attachments
+    }
+}
+
+/// A file or folder in a project, as `@` mentions find it.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub struct FileMatch {
+    /// Relative to the workspace root, `/`-separated; folders end in `/`.
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// The longest message the composer and engine accept, in characters.
+pub const MAX_MESSAGE_CHARS: usize = 120_000;
+/// Attachments on one message.
+pub const MAX_ATTACHMENTS: usize = 100;
+/// Largest single image.
+pub const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+/// Largest single non-image file.
+pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+/// All images of one message together.
+pub const MAX_TOTAL_IMAGE_BYTES: u64 = 80 * 1024 * 1024;
+
+/// Whether `mime` is an image the agents can see.
+pub fn is_image_mime(mime: &str) -> bool {
+    mime.starts_with("image/")
+}
+
+/// Checks a message against the limits; the error is interface copy.
+pub fn validate_message(text: &str, attachments: &[Attachment]) -> Result<(), String> {
+    let chars = text.chars().count();
+    if chars > MAX_MESSAGE_CHARS {
+        return Err(format!(
+            "The message is {} characters over the {} limit. Attach long text as a file instead.",
+            group_digits((chars - MAX_MESSAGE_CHARS) as u64),
+            group_digits(MAX_MESSAGE_CHARS as u64)
+        ));
+    }
+    if attachments.len() > MAX_ATTACHMENTS {
+        return Err(format!("A message can carry up to {MAX_ATTACHMENTS} attachments."));
+    }
+    let mut images = 0u64;
+    for a in attachments {
+        validate_attachment(&a.name, &a.mime, a.size)?;
+        if is_image_mime(&a.mime) {
+            images += a.size;
+        }
+    }
+    if images > MAX_TOTAL_IMAGE_BYTES {
+        return Err(format!("Images on one message can add up to {} MB.", MAX_TOTAL_IMAGE_BYTES / (1024 * 1024)));
+    }
+    Ok(())
+}
+
+/// Checks one attachment's size; the error is interface copy.
+pub fn validate_attachment(name: &str, mime: &str, size: u64) -> Result<(), String> {
+    let (limit, what) = if is_image_mime(mime) { (MAX_IMAGE_BYTES, "Images") } else { (MAX_FILE_BYTES, "Files") };
+    if size > limit {
+        return Err(format!(
+            "“{name}” is {} MB. {what} can be up to {} MB.",
+            size.div_ceil(1024 * 1024),
+            limit / (1024 * 1024)
+        ));
+    }
+    Ok(())
+}
+
+/// `120000` → `120,000`.
+pub fn group_digits(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_limits_explain_themselves() {
+        assert!(validate_message("hi", &[]).is_ok());
+        let long = "a".repeat(MAX_MESSAGE_CHARS + 1234);
+        assert_eq!(
+            validate_message(&long, &[]).unwrap_err(),
+            "The message is 1,234 characters over the 120,000 limit. Attach long text as a file instead."
+        );
+        let photo = Attachment { name: "photo.png".into(), mime: "image/png".into(), hash: "ab".into(), size: 11 << 20 };
+        assert!(validate_message("", &[photo]).unwrap_err().contains("Images can be up to 10 MB"));
+        let many: Vec<Attachment> = (0..=MAX_ATTACHMENTS)
+            .map(|i| Attachment { name: format!("{i}"), mime: "text/plain".into(), hash: format!("{i}"), size: 1 })
+            .collect();
+        assert!(validate_message("", &many).is_err());
+        assert_eq!(group_digits(0), "0");
+        assert_eq!(group_digits(999), "999");
+        assert_eq!(group_digits(1_000), "1,000");
+        assert_eq!(group_digits(1_234_567), "1,234,567");
+    }
 
     #[test]
     fn provider_ids_become_sentence_case_copy() {

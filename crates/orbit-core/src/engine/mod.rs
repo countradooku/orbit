@@ -8,7 +8,10 @@
 
 mod bus;
 pub use bus::Bus;
+mod drafts;
+mod files;
 mod orchestrator;
+mod queue;
 
 #[cfg(test)]
 mod tests;
@@ -21,6 +24,7 @@ use crossfire::{BlockingTxTrait, MTx, mpsc};
 use orbit_proto::*;
 
 pub use bus::EventRx;
+pub use files::THREAD_DIGEST_MIME;
 pub use orchestrator::{Deferred, Internal, Launcher, Orchestrator, Outcome, prompt_uuid};
 
 use crate::provider;
