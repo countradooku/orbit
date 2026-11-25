@@ -25,6 +25,15 @@
 //!   `events` are pushed as soon as the event stream connects.
 //!
 //! Everything received is appended to `fake-agent.log.jsonl`.
+//!
+//! Three more roles for the status tests, chosen before any script is read:
+//! * with `ORBIT_FAKE_HOOK=1` it is the hook invoker (`orbit-hook`);
+//! * with `--pretend-claude` it plays Claude Code in a terminal, firing the
+//!   hooks Orbit injected the way Claude Code would;
+//! * with `ORBIT_FAKE_SLEEP_MS` it only sleeps (an orphan holding stdout).
+//!
+//! The step `{"spawnOrphan": ms}` starts such a sleeper, which inherits
+//! stdout and so keeps the pipe open after the fake exits.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -34,6 +43,17 @@ use std::sync::{Arc, Mutex};
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value, json};
 
 fn main() {
+    if std::env::var_os("ORBIT_FAKE_HOOK").is_some() {
+        std::process::exit(orbit_core::status::hook::invoker_main());
+    }
+    if let Some(ms) = std::env::var("ORBIT_FAKE_SLEEP_MS").ok().and_then(|v| v.parse().ok()) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("--pretend-claude") {
+        pretend_claude();
+        return;
+    }
     let dir: PathBuf = std::env::current_exe().unwrap().parent().unwrap().to_owned();
     let script: Value = sonic_rs::from_str(&std::fs::read_to_string(dir.join("fake-agent.json")).unwrap()).unwrap();
     let log = Arc::new(Mutex::new(
@@ -185,6 +205,12 @@ fn jsonl(pi: bool, script: Value, log: Arc<Mutex<std::fs::File>>) {
             if !fake.wait_response(id) {
                 return;
             }
+        } else if let Some(ms) = step.get("spawnOrphan").and_then(|m| m.as_u64()) {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .env("ORBIT_FAKE_SLEEP_MS", ms.to_string())
+                .stdin(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
         } else if let Some(ms) = step.get("sleepMs").and_then(|m| m.as_u64()) {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         } else if let Some(code) = step.get("exit").and_then(|c| c.as_i64()) {
@@ -289,4 +315,68 @@ fn serve(mut conn: std::net::TcpStream, script: &Value, log: &Arc<Mutex<std::fs:
             push(streams, event);
         }
     }
+}
+
+// ── Claude Code in a terminal ────────────────────────────────────────────
+
+/// Fires Claude Code's hooks through the command in the settings file Orbit
+/// injected, prompting on the terminal between them.
+fn pretend_claude() {
+    let settings = std::env::var("ORBIT_CLAUDE_SETTINGS").expect("Orbit injected no Claude settings");
+    let text = std::fs::read_to_string(&settings).unwrap();
+    let json: Value = sonic_rs::from_str(&text).unwrap();
+    let command = json
+        .pointer(&sonic_rs::pointer!["hooks", "UserPromptSubmit", 0, "hooks", 0, "command"])
+        .and_then(|c| c.as_str())
+        .expect("a UserPromptSubmit hook")
+        .to_owned();
+    let (program, args) = split_command(&command);
+    let fire = |payload: Value| {
+        let mut child = std::process::Command::new(&program)
+            .args(&args)
+            .env("ORBIT_FAKE_HOOK", "1")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(sonic_rs::to_string(&payload).unwrap().as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success(), "the hook command failed");
+    };
+    let transcript = "/home/u/.claude/projects/p/s.jsonl";
+    let mut out = std::io::stdout();
+    let mut line = String::new();
+    write!(out, "\x1b]0;\u{2733} Claude Code\x07").unwrap();
+    out.flush().unwrap();
+    fire(json!({"hook_event_name": "SessionStart", "transcript_path": transcript, "source": "startup"}));
+    fire(json!({"hook_event_name": "UserPromptSubmit", "transcript_path": transcript, "prompt": "fix it"}));
+    fire(json!({"hook_event_name": "PreToolUse", "transcript_path": transcript, "tool_name": "Bash", "tool_input": {"command": "rm -rf build"}}));
+    fire(json!({"hook_event_name": "Notification", "transcript_path": transcript, "notification_type": "permission_prompt",
+                "message": "Claude needs your permission to use Bash"}));
+    writeln!(out, "PRETEND: Do you want to proceed?").unwrap();
+    out.flush().unwrap();
+    std::io::stdin().read_line(&mut line).unwrap();
+    fire(json!({"hook_event_name": "PostToolUse", "transcript_path": transcript, "tool_name": "Bash"}));
+    fire(json!({"hook_event_name": "Stop", "transcript_path": transcript}));
+    writeln!(out, "PRETEND: done").unwrap();
+    out.flush().unwrap();
+    line.clear();
+    std::io::stdin().read_line(&mut line).unwrap();
+    fire(json!({"hook_event_name": "SessionEnd", "transcript_path": transcript, "reason": "prompt_input_exit"}));
+    writeln!(out, "PRETEND: bye").unwrap();
+}
+
+/// Splits a hook command the way a shell would for the forms Orbit writes:
+/// a quoted or bare program, then plain arguments.
+fn split_command(command: &str) -> (String, Vec<String>) {
+    let command = command.trim();
+    let (program, rest) = match command.chars().next() {
+        Some(q @ ('\'' | '"')) => {
+            let end = command[1..].find(q).expect("closing quote") + 1;
+            (command[1..end].replace("'\''", "'"), &command[end + 1..])
+        }
+        _ => match command.split_once(' ') {
+            Some((program, rest)) => (program.to_owned(), rest),
+            None => (command.to_owned(), ""),
+        },
+    };
+    (program, rest.split_whitespace().map(str::to_owned).collect())
 }
