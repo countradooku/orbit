@@ -1,0 +1,89 @@
+name: Release
+
+# Builds the release bundles (scripts/bundle.sh, scripts/bundle.ps1) on every
+# OS. A pushed `v*` tag also publishes them as a GitHub release; a manual run
+# only uploads them as workflow artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # `.cargo/config.toml` points the target dir at a path on the main
+  # developer's machine; CI builds inside the checkout instead.
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  bundle:
+    name: Bundle (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same list as ci.yml (gpui-kit's and gpui-fast's own CI).
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config gcc g++ clang \
+            libasound2-dev libfontconfig-dev libfreetype-dev libssl-dev \
+            libvulkan1 vulkan-validationlayers libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/bundle.ps1 -Target ${{ matrix.target }} -Out dist
+
+      # MACOS_SIGN_IDENTITY is empty unless the repository defines it (and
+      # imports the certificate into the keychain); then the app is ad-hoc
+      # signed.
+      - name: Bundle (Linux, macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: scripts/bundle.sh --target ${{ matrix.target }} --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orbit-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -43,4 +43,22 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-j", ToggleTerminal, Some("Workspace")),
         KeyBinding::new("ctrl-q", Quit, None),
     ]);
+    // macOS: the same commands on Cmd, as Mac apps expect (Ctrl-Tab stays).
+    // Bound after the Ctrl set, so menus and key hints show these.
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("cmd-n", NewThread, None),
+        KeyBinding::new("cmd-k", OpenPalette, None),
+        KeyBinding::new("cmd-shift-p", OpenPalette, None),
+        KeyBinding::new("cmd-i", GoInbox, None),
+        KeyBinding::new("cmd-shift-f", GoFleet, None),
+        KeyBinding::new("cmd-b", ToggleSidebar, None),
+        KeyBinding::new("cmd-r", ToggleReview, Some("Workspace")),
+        KeyBinding::new("cmd-,", OpenSettings, None),
+        KeyBinding::new("cmd-o", AddProject, None),
+        KeyBinding::new("cmd-.", StopTurn, Some("Workspace")),
+        KeyBinding::new("cmd-l", FocusComposer, Some("Workspace")),
+        KeyBinding::new("cmd-j", ToggleTerminal, Some("Workspace")),
+        KeyBinding::new("cmd-q", Quit, None),
+    ]);
 }

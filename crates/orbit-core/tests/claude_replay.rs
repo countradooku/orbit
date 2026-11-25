@@ -180,7 +180,11 @@ fn filtered(r: &Replay) -> Vec<String> {
 
 // ------------------------------------------------------------ real frames
 
+// Tests that relativize the recorded `C:\…` paths run only on Windows: on Unix
+// a backslash is not a separator, so those paths never become relative.
+
 #[test]
+#[cfg_attr(not(windows), ignore = "recorded on Windows: its paths only parse as paths there")]
 fn write_approval_streams_input_and_answers_allow() {
     let r = replay_with("write_approval.jsonl", REAL_CWD, Access::Ask, |_| {}, |_, _| Some(Decision::Allow));
     let input_json = r#"{\"file_path\": \"C:\\\\Users\\\\user\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\f8a231006ecde0e2\\\\18e3462a-fa62-46ee-99b0-90e6f7a28e81\\\\scratchpad\\\\probe2\\\\work\\\\hello.txt\", \"content\": \"hi\"}"#;
@@ -228,6 +232,7 @@ fn write_approval_streams_input_and_answers_allow() {
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "recorded on Windows: its paths only parse as paths there")]
 fn allow_for_session_on_a_file_scopes_the_rule_to_that_file() {
     let r = replay_with("write_approval.jsonl", REAL_CWD, Access::Ask, |_| {}, |_, _| Some(Decision::AllowForSession));
     let resp = reply(&r.replies[0]);
