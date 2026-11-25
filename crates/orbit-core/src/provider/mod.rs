@@ -153,10 +153,11 @@ pub fn start(kind: ProviderKind, spec: SessionSpec, events: EventSender) -> Sess
 
 /// Detects whether the runtime is installed and signed in, and reads its
 /// models, options, modes and slash commands. Cheap enough to run at startup
-/// and on demand; never blocks longer than its own timeout.
-pub async fn probe(kind: ProviderKind, binary: Option<PathBuf>) -> ProviderInfo {
+/// and on demand; never blocks longer than its own timeout. `binary` and
+/// `env` are the user's overrides, as a session would get them.
+pub async fn probe(kind: ProviderKind, binary: Option<PathBuf>, env: Vec<(String, String)>) -> ProviderInfo {
     match kind {
-        ProviderKind::Claude => claude::probe(binary).await,
-        ProviderKind::Codex => codex::probe(binary).await,
+        ProviderKind::Claude => claude::probe(binary, env).await,
+        ProviderKind::Codex => codex::probe(binary, env).await,
     }
 }

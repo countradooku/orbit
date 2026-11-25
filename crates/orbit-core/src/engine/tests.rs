@@ -6,7 +6,7 @@ use crossfire::{BlockingTxTrait, mpsc};
 use orbit_proto::*;
 
 use super::*;
-use crate::provider::{AgentEvent, BlockKind, SessionHandle, SessionInput, TurnOutcome};
+use crate::provider::{AgentEvent, BlockKind, SessionHandle, SessionInput, SessionSpec, TurnOutcome};
 
 /// A fake agent whose behavior is chosen by the prompt text:
 /// `ask` raises an approval, `crash` exits mid-turn, `slow` streams until
@@ -103,6 +103,7 @@ struct Harness {
     events: EventRx,
     threads: std::collections::HashMap<ThreadId, Thread>,
     items: std::collections::HashMap<ItemId, Item>,
+    settings: Settings,
     _dir: Option<tempfile::TempDir>,
 }
 
@@ -115,8 +116,11 @@ impl Harness {
     }
 
     fn open(path: std::path::PathBuf) -> Self {
-        let engine =
-            EngineHandle::start_with(EngineOptions { data_dir: path, probe_providers: false }, fake_launcher()).unwrap();
+        Self::open_with(path, fake_launcher())
+    }
+
+    fn open_with(path: std::path::PathBuf, launcher: Launcher) -> Self {
+        let engine = EngineHandle::start_with(EngineOptions { data_dir: path, probe_providers: false }, launcher).unwrap();
         let sub = engine.subscribe(0, 0).recv().unwrap();
         let snapshot = sub.snapshot.expect("fresh clients get a snapshot");
         Self {
@@ -124,6 +128,7 @@ impl Harness {
             events: sub.events,
             threads: snapshot.threads.into_iter().map(|t| (t.id, t)).collect(),
             items: Default::default(),
+            settings: snapshot.settings,
             _dir: None,
         }
     }
@@ -166,6 +171,7 @@ impl Harness {
             Event::ItemRemoved { item, .. } => {
                 self.items.remove(&item);
             }
+            Event::SettingsChanged(settings) => self.settings = settings,
             _ => {}
         }
     }
@@ -389,4 +395,50 @@ fn terminals_round_trip_through_the_engine() {
         }
     }
     h.call(Command::CloseTerminal { term });
+}
+
+#[test]
+fn settings_persist_across_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    settings.appearance.mode = ColorMode::Dark;
+    settings.appearance.chat_width = ChatWidth::Wide;
+    settings.composer.submit = SubmitKey::ModEnter;
+    settings.workspace.worktree_root = dir.path().join("trees").display().to_string();
+    // Sanitized on the way in: a new thread never defaults to full access.
+    settings.agents.default_access = Access::Full;
+    {
+        let mut h = Harness::open(dir.path().to_owned());
+        assert_eq!(h.settings, Settings::default());
+        h.call(Command::UpdateSettings { settings: settings.clone() });
+        h.wait("settings", |h| h.settings.composer.submit == SubmitKey::ModEnter);
+        assert_eq!(h.settings.agents.default_access, Access::AutoEdit);
+        h.engine.shutdown();
+    }
+    let h = Harness::open(dir.path().to_owned());
+    assert_eq!(h.settings, settings.sanitized());
+}
+
+#[test]
+fn a_provider_binary_override_reaches_the_session() {
+    let (specs, launched) = std::sync::mpsc::channel::<SessionSpec>();
+    let mut inner = fake_launcher();
+    let launcher: Launcher = Box::new(move |kind, spec, events| {
+        let _ = specs.send(spec.clone());
+        inner(kind, spec, events)
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Harness::open_with(dir.path().to_owned(), launcher);
+    let mut settings = Settings::default();
+    let claude = settings.provider_mut(ProviderKind::Claude);
+    claude.binary = "/opt/agents/claude".into();
+    claude.env.push(EnvVar::new("CLAUDE_CONFIG_DIR", "/tmp/claude-home"));
+    h.call(Command::UpdateSettings { settings });
+
+    let id = h.new_thread();
+    h.send(id, "hello");
+    let spec = launched.recv_timeout(Duration::from_secs(2)).expect("a session starts");
+    assert_eq!(spec.binary, Some(std::path::PathBuf::from("/opt/agents/claude")));
+    assert!(spec.env.contains(&("CLAUDE_CONFIG_DIR".to_owned(), "/tmp/claude-home".to_owned())), "{:?}", spec.env);
+    h.wait("turn", |h| h.thread(id).turns == 1 && h.thread(id).status == ThreadStatus::Idle);
 }

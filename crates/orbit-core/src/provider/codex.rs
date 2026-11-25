@@ -71,7 +71,7 @@ pub fn start(spec: SessionSpec, events: EventSender) -> SessionHandle {
 
 /// Detects Codex: installed, version, sign-in, models and modes. Bounded by
 /// [`PROBE_TIMEOUT`] end to end.
-pub async fn probe(binary: Option<PathBuf>) -> ProviderInfo {
+pub async fn probe(binary: Option<PathBuf>, env: Vec<(String, String)>) -> ProviderInfo {
     let Some(path) = resolve(binary.as_deref()) else {
         return ProviderInfo {
             binary: binary.as_ref().map(|b| b.display().to_string()),
@@ -79,7 +79,7 @@ pub async fn probe(binary: Option<PathBuf>) -> ProviderInfo {
             ..provider_info(None)
         };
     };
-    match tokio::time::timeout(PROBE_TIMEOUT, probe_at(&path)).await {
+    match tokio::time::timeout(PROBE_TIMEOUT, probe_at(&path, &env)).await {
         Ok(info) => info,
         Err(_) => ProviderInfo {
             installed: true,
@@ -152,7 +152,7 @@ fn initialize_params() -> sonic_rs::Value {
 
 /// Initialize, then `model/list` (all pages), `account/read` and
 /// `collaborationMode/list` in parallel.
-async fn probe_at(path: &Path) -> ProviderInfo {
+async fn probe_at(path: &Path, env: &[(String, String)]) -> ProviderInfo {
     #[derive(PartialEq)]
     enum Probe {
         Initialize,
@@ -162,7 +162,7 @@ async fn probe_at(path: &Path) -> ProviderInfo {
     }
     let base = provider_info(Some(path));
     let cwd = std::env::temp_dir();
-    let (mut conn, mut lines) = match Connection::spawn(path, &cwd, &[]) {
+    let (mut conn, mut lines) = match Connection::spawn(path, &cwd, env) {
         Ok(conn) => conn,
         Err(err) => return ProviderInfo { message: Some(format!("Couldn't start Codex: {err}")), ..base },
     };

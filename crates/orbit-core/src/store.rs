@@ -3,7 +3,7 @@
 //! Layout of the data directory:
 //!
 //! ```text
-//! meta.log            projects, threads, defaults (durable envelopes)
+//! meta.log            projects, threads, defaults, settings (durable envelopes)
 //! threads/<id>.log    one thread's timeline records
 //! blobs/<ab>/<hash>   attachments and large tool outputs, by BLAKE3 hash
 //! ```
@@ -186,6 +186,7 @@ pub struct Store {
     projects: Vec<Project>,
     threads: HashMap<ThreadId, Thread>,
     defaults: ThreadConfig,
+    settings: Settings,
     open: HashMap<ThreadId, OpenTimeline>,
 }
 
@@ -203,6 +204,7 @@ impl Store {
             projects: Vec::new(),
             threads: HashMap::new(),
             defaults: ThreadConfig::default(),
+            settings: Settings::default(),
             open: HashMap::new(),
         };
         for env in records {
@@ -254,6 +256,10 @@ impl Store {
         &self.defaults
     }
 
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
     pub fn snapshot(&self, providers: Vec<ProviderInfo>) -> Snapshot {
         let mut threads: Vec<Thread> = self.threads.values().cloned().collect();
         threads.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
@@ -264,6 +270,7 @@ impl Store {
             threads,
             providers,
             defaults: self.defaults.clone(),
+            settings: self.settings.clone(),
         }
     }
 
@@ -284,6 +291,7 @@ impl Store {
                 self.threads.remove(&id);
             }
             Event::DefaultsChanged(config) => self.defaults = config,
+            Event::SettingsChanged(settings) => self.settings = settings,
             _ => {}
         }
     }
@@ -395,7 +403,7 @@ impl Store {
     }
 
     fn maybe_compact_meta(&mut self) -> io::Result<()> {
-        let live = self.projects.len() + self.threads.len() + 1;
+        let live = self.projects.len() + self.threads.len() + 2;
         if self.meta.records > 256 && self.meta.records > live * 4 {
             let seq = self.seq;
             let mut records = Vec::with_capacity(live);
@@ -406,6 +414,7 @@ impl Store {
                 records.push(Envelope { seq, event: Event::ThreadUpserted(t.clone()) });
             }
             records.push(Envelope { seq, event: Event::DefaultsChanged(self.defaults.clone()) });
+            records.push(Envelope { seq, event: Event::SettingsChanged(self.settings.clone()) });
             self.meta.rewrite(records.iter())?;
         }
         Ok(())
@@ -518,6 +527,29 @@ mod tests {
         assert_eq!(store.thread(id).unwrap().title, "Fix the build");
         assert!(store.timeline(id).is_none(), "timeline must not load at startup");
         assert_eq!(store.load_timeline(id).unwrap().items(), &[item]);
+    }
+
+    #[test]
+    fn settings_survive_reopen_and_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.appearance.ui_scale = 125;
+        settings.provider_mut(ProviderKind::Claude).binary = "/opt/claude/bin/claude".into();
+        {
+            let mut store = Store::open(dir.path()).unwrap();
+            store.commit(Event::SettingsChanged(settings.clone())).unwrap();
+            // Enough unrelated records to force a meta-log rewrite.
+            let id = ThreadId::new();
+            for n in 0..300 {
+                let mut t = thread(id);
+                t.turns = n;
+                store.commit(Event::ThreadUpserted(t)).unwrap();
+            }
+            assert!(store.meta.records < 300, "the meta log was compacted");
+        }
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.settings(), &settings);
+        assert_eq!(store.snapshot(Vec::new()).settings, settings);
     }
 
     #[test]
