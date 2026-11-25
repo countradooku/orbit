@@ -5037,6 +5037,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "orbit-bench"
+version = "0.1.0"
+dependencies = [
+ "crossfire",
+ "mimalloc",
+ "orbit-core",
+ "orbit-net",
+ "orbit-proto",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "orbit-core"
 version = "0.1.0"
 dependencies = [

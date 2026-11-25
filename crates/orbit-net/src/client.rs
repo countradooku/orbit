@@ -88,6 +88,7 @@ async fn run(
                     format!("The host closed the connection: {e}")
                 } else {
                     let mut welcomed = false;
+                    let mut codec = Codec::new();
                     let reason = loop {
                         tokio::select! {
                             msg = reader.next() => {
@@ -97,7 +98,7 @@ async fn run(
                                     Some(Ok(_)) => continue,
                                     Some(Err(e)) => break format!("Connection lost: {e}"),
                                 };
-                                match decode::<ServerMsg>(&data) {
+                                match codec.decode::<ServerMsg>(&data) {
                                     Ok(ServerMsg::Welcome { snapshot, .. }) => {
                                         welcomed = true;
                                         if let Some(snapshot) = snapshot {

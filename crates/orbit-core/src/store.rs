@@ -40,6 +40,7 @@ struct Log {
     /// Records written since the last compaction (including replayed ones).
     records: usize,
     buf: Vec<u8>,
+    codec: Codec,
 }
 
 impl Log {
@@ -76,12 +77,15 @@ impl Log {
         }
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         let records = out.len();
-        Ok((Self { path: path.to_owned(), file: Some(file), records, buf: Vec::with_capacity(4096) }, out))
+        Ok((
+            Self { path: path.to_owned(), file: Some(file), records, buf: Vec::with_capacity(4096), codec: Codec::new() },
+            out,
+        ))
     }
 
     fn append<T: Encode>(&mut self, record: &T) -> io::Result<()> {
         self.buf.clear();
-        write_frame(record, &mut self.buf);
+        self.codec.write_frame(record, &mut self.buf);
         self.file.as_mut().expect("log file is open").write_all(&self.buf)?;
         self.records += 1;
         Ok(())
@@ -93,7 +97,7 @@ impl Log {
         let mut out = Vec::new();
         let mut count = 0;
         for record in records {
-            write_frame(record, &mut out);
+            self.codec.write_frame(record, &mut out);
             count += 1;
         }
         {

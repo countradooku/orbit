@@ -40,6 +40,41 @@ impl std::fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
+/// A reusable encoder/decoder. One-shot [`encode`] rebuilds bitcode's
+/// column encoders on every call; a `Codec` keeps them, which makes small
+/// hot-path messages (streamed deltas) several times cheaper. Keep one per
+/// connection or log writer.
+#[derive(Default)]
+pub struct Codec {
+    buf: bitcode::Buffer,
+}
+
+impl Codec {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Encodes `value`; the bytes are valid until the next call.
+    pub fn encode<T: Encode + ?Sized>(&mut self, value: &T) -> &[u8] {
+        self.buf.encode(value)
+    }
+
+    pub fn decode<'a, T: Decode<'a>>(&mut self, bytes: &'a [u8]) -> Result<T, FrameError> {
+        self.buf.decode(bytes).map_err(FrameError::Decode)
+    }
+
+    /// Appends one framed value to `out`. Returns the number of bytes written.
+    pub fn write_frame<T: Encode + ?Sized>(&mut self, value: &T, out: &mut Vec<u8>) -> usize {
+        let payload = self.buf.encode(value);
+        let start = out.len();
+        out.reserve(FRAME_HEADER + payload.len());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&crc32fast::hash(payload).to_le_bytes());
+        out.extend_from_slice(payload);
+        out.len() - start
+    }
+}
+
 /// Encodes `value` as a bare `bitcode` payload (no frame header).
 pub fn encode<T: Encode + ?Sized>(value: &T) -> Vec<u8> {
     bitcode::encode(value)

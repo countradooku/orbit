@@ -19,7 +19,7 @@ pub mod ids;
 pub mod model;
 pub mod wire;
 
-pub use codec::{FRAME_HEADER, FrameError, FrameReader, decode, encode, write_frame};
+pub use codec::{Codec, FRAME_HEADER, FrameError, FrameReader, decode, encode, write_frame};
 pub use ids::*;
 pub use model::*;
 pub use wire::*;

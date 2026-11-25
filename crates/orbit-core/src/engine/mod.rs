@@ -7,6 +7,7 @@
 //! any thread, including the UI thread, without blocking.
 
 mod bus;
+pub use bus::Bus;
 mod orchestrator;
 
 #[cfg(test)]

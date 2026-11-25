@@ -61,6 +61,11 @@ fn frame(msg: &ServerMsg) -> Message {
     Message::Binary(Bytes::from(encode(msg)))
 }
 
+/// Frames with a reused codec, for the hot event path.
+fn frame_with(codec: &mut Codec, msg: &ServerMsg) -> Message {
+    Message::Binary(Bytes::copy_from_slice(codec.encode(msg)))
+}
+
 /// Constant-time comparison, so the token cannot be guessed byte by byte
 /// from response timing.
 fn same_token(a: &str, b: &str) -> bool {
@@ -109,6 +114,7 @@ where
     // Replies are produced by spawned tasks and written by the writer loop.
     let (reply_tx, reply_rx) = mpsc::unbounded_async::<ServerMsg>();
     let events = sub.events;
+    let mut codec = Codec::new();
     let reader_task = {
         let engine = engine.clone();
         tokio::spawn(async move {
@@ -149,7 +155,7 @@ where
                             Err(_) => break,
                         }
                     }
-                    if let Err(e) = writer.send(frame(&ServerMsg::Events(batch))).await {
+                    if let Err(e) = writer.send(frame_with(&mut codec, &ServerMsg::Events(batch))).await {
                         break Err(e.to_string());
                     }
                 }
