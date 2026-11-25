@@ -8,6 +8,7 @@ use orbit_proto::*;
 use super::*;
 use crate::provider::{AgentEvent, BlockKind, SessionHandle, SessionInput, SessionSpec, TurnOutcome};
 
+mod automations;
 mod review;
 mod status;
 

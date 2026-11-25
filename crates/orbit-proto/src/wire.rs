@@ -2,6 +2,7 @@
 
 use bitcode::{Decode, Encode};
 
+use crate::automation::*;
 use crate::bots::{BotCommand, BotReply, BotsState, Via, ViaAction};
 use crate::forge::{ForgeCommand, ForgeReply};
 use crate::guard::GuardSettings;
@@ -51,6 +52,9 @@ pub struct Snapshot {
     pub settings: Box<Settings>,
     /// Live status evidence of threads that have any (see [`ThreadLive`]).
     pub live: Vec<(ThreadId, ThreadLive)>,
+    pub automations: Vec<Automation>,
+    /// The newest runs of each automation, newest first.
+    pub automation_runs: Vec<AutomationRun>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -97,6 +101,12 @@ pub enum Event {
     /// An agent started, changed state or ended (`None`) in a terminal,
     /// whether or not the terminal belongs to a thread. Ephemeral.
     TerminalAgent { term: TermId, agent: Option<TerminalAgent> },
+    /// An automation was created, edited, paused or its state advanced.
+    AutomationUpserted(Box<Automation>),
+    /// An automation and its run history were deleted.
+    AutomationRemoved(AutomationId),
+    /// A run was queued, started, finished or skipped (the whole record).
+    AutomationRun(Box<AutomationRun>),
     /// The chat bots' settings, pairings or connections changed. Ephemeral;
     /// read the current state with [`BotCommand::State`].
     Bots(BotsState),
@@ -290,6 +300,9 @@ pub enum Command {
     /// Returns [`Reply::Terminals`].
     ListTerminals,
 
+    /// Create, edit, pause, run and read automations; see
+    /// [`AutomationCommand`]. Replies [`Reply::Automation`] or `Done`.
+    Automation(AutomationCommand),
     // ── Chat bots and the guard ──────────────────────────────────────────
     /// Bot settings, pairing and status; see [`BotCommand`]. Replies
     /// [`Reply::Bots`] or `Done`. Fails when the host runs no bots.
@@ -366,6 +379,7 @@ pub enum Reply {
     /// what is kept.
     TerminalTail { info: TerminalInfo, data: Vec<u8>, dropped: u64 },
     Terminals(Vec<TerminalInfo>),
+    Automation(AutomationReply),
     Bots(BotReply),
     Guard(GuardSettings),
 }
@@ -505,6 +519,72 @@ mod tests {
                 Event::ThreadRemoved(ThreadId(5)),
             ]
         );
+    }
+
+    #[test]
+    fn events_logged_before_automations_still_decode() {
+        // `Event` as meta schema 4 wrote it (19 variants). The automation
+        // variants keep it in the same packing class, so no schema bump.
+        #[derive(Encode)]
+        #[allow(dead_code)]
+        enum V4Event {
+            ProjectUpserted(Project),
+            ProjectRemoved(ProjectId),
+            ThreadUpserted(Thread),
+            ThreadRemoved(ThreadId),
+            ItemUpserted { thread: ThreadId, item: Item },
+            ItemDelta { thread: ThreadId, item: ItemId, delta: Delta },
+            ItemRemoved { thread: ThreadId, item: ItemId },
+            Providers(Vec<ProviderInfo>),
+            DefaultsChanged(ThreadConfig),
+            SettingsChanged(Settings),
+            WorkspaceChanged { thread: ThreadId, files: Vec<FileChange> },
+            UsageChanged { thread: ThreadId, usage: Usage },
+            Conflicts(Vec<Conflict>),
+            TerminalOutput { term: TermId, data: Vec<u8> },
+            TimelineMark { thread: ThreadId, mark: u64 },
+            TerminalExited { term: TermId, code: Option<i32> },
+            DraftSaved { target: DraftTarget, draft: Draft },
+            ThreadLive { thread: ThreadId, live: ThreadLive },
+            TerminalAgent { term: TermId, agent: Option<TerminalAgent> },
+        }
+        let thread = Thread { id: ThreadId(8), title: "Before automations".into(), ..Default::default() };
+        let old = vec![V4Event::ThreadUpserted(thread.clone()), V4Event::ThreadRemoved(ThreadId(8))];
+        let back: Vec<Event> = bitcode::decode(&bitcode::encode(&old)).unwrap();
+        assert_eq!(back, vec![Event::ThreadUpserted(thread), Event::ThreadRemoved(ThreadId(8))]);
+    }
+
+    #[test]
+    fn automation_events_are_durable_and_round_trip() {
+        let automation = Automation {
+            id: AutomationId(3),
+            spec: AutomationSpec {
+                name: "Nightly deps".into(),
+                triggers: vec![
+                    Trigger::Cron { expr: "0 2 * * *".into(), tz: "Europe/Bucharest".into() },
+                    Trigger::Event(EventTrigger::ChecksFailed { mine: true }),
+                ],
+                ..Default::default()
+            },
+            state: AutomationState { next_ms: vec![42, 0], ..Default::default() },
+            ..Default::default()
+        };
+        let run = AutomationRun {
+            id: RunId(4),
+            automation: AutomationId(3),
+            status: RunStatus::Skipped(Skip::Missed { count: 2 }),
+            ..Default::default()
+        };
+        for event in [
+            Event::AutomationUpserted(Box::new(automation)),
+            Event::AutomationRun(Box::new(run)),
+            Event::AutomationRemoved(AutomationId(3)),
+        ] {
+            assert!(event.is_durable());
+            let env = Envelope { seq: 1, event };
+            let back: Envelope = decode(&encode(&env)).unwrap();
+            assert_eq!(back, env);
+        }
     }
 
     #[test]

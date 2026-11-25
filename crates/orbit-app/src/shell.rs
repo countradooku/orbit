@@ -22,6 +22,7 @@ use orbit_proto::*;
 use crate::actions::*;
 use crate::app_state::AppState;
 use crate::assets::Lucide;
+use crate::automations::{AutomationsView, NewAutomation};
 use crate::fleet::FleetView;
 use crate::forge::{ForgeView, GoPullRequests};
 use crate::home::HomeView;
@@ -42,6 +43,8 @@ pub enum Route {
     Fleet,
     /// Pull requests and issues.
     Forge,
+    /// Scheduled and triggered agent runs.
+    Automations,
     /// Full-window settings, with their own navigation in place of the
     /// sidebar.
     Settings,
@@ -69,6 +72,7 @@ pub struct Workspace {
     inbox: Entity<InboxView>,
     fleet: Entity<FleetView>,
     forge: Entity<ForgeView>,
+    automations: Entity<AutomationsView>,
     threads: Vec<(ThreadId, Entity<ThreadView>)>,
     /// Threads shown side by side, in grid order; empty or two or more.
     tiles: Vec<ThreadId>,
@@ -103,6 +107,7 @@ impl Workspace {
         let inbox = cx.new(|cx| InboxView::new(app.clone(), weak.clone(), window, cx));
         let fleet = cx.new(|cx| FleetView::new(app.clone(), weak.clone(), cx));
         let forge = cx.new(|cx| ForgeView::new(app.clone(), weak.clone(), window, cx));
+        let automations = cx.new(|cx| AutomationsView::new(app.clone(), weak.clone(), cx));
         let split = cx.new(|_| ResizableState::default());
         let subs = vec![
             cx.observe_window_appearance(window, |_, window, cx| {
@@ -168,6 +173,7 @@ impl Workspace {
             inbox,
             fleet,
             forge,
+            automations,
             threads: Vec::new(),
             tiles: Vec::new(),
             shown_threads: Vec::new(),
@@ -213,6 +219,12 @@ impl Workspace {
             "inbox" => self.navigate(Route::Inbox, window, cx),
             "fleet" => self.navigate(Route::Fleet, window, cx),
             "forge" => self.navigate(Route::Forge, window, cx),
+            "automations" => self.navigate(Route::Automations, window, cx),
+            "automation-editor" | "automation-new" => {
+                self.navigate(Route::Automations, window, cx);
+                let (view, editing) = (self.automations.clone(), route == "automation-editor");
+                window.defer(cx, move |window, cx| view.update(cx, |view, cx| view.debug_open_editor(editing, window, cx)));
+            }
             "latest" | "terminal" => {
                 if let Some(id) = recent.first() {
                     self.navigate(Route::Thread(*id), window, cx);
@@ -410,6 +422,11 @@ impl Workspace {
         }
         if route == Route::Forge {
             self.forge.update(cx, |forge, cx| forge.shown(window, cx));
+        }
+        if route == Route::Automations {
+            self.automations.update(cx, |view, cx| view.shown(cx));
+            let view = self.automations.clone();
+            window.defer(cx, move |window, cx| AutomationsView::focus(&view, window, cx));
         }
         match route {
             Route::Home => {
@@ -665,6 +682,17 @@ impl Workspace {
 
     fn go_pull_requests(&mut self, _: &GoPullRequests, window: &mut Window, cx: &mut Context<Self>) {
         self.navigate(Route::Forge, window, cx);
+    }
+
+    fn go_automations(&mut self, _: &GoAutomations, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate(Route::Automations, window, cx);
+    }
+
+    fn new_automation(&mut self, _: &NewAutomation, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route != Route::Automations {
+            self.navigate(Route::Automations, window, cx);
+        }
+        self.automations.update(cx, |view, cx| view.open_new(window, cx));
     }
 
     fn go_fleet(&mut self, _: &GoFleet, window: &mut Window, cx: &mut Context<Self>) {
@@ -926,6 +954,16 @@ impl Workspace {
                             .tooltip_with_action("Pull requests and issues", &GoPullRequests, None)
                             .on_click(|_, window, cx| window.dispatch_action(Box::new(GoPullRequests), cx)),
                     )
+                    .child(
+                        Button::new("title-automations")
+                            .ghost()
+                            .small()
+                            .icon(Lucide::CalendarClock)
+                            .label("Automations")
+                            .selected(self.route == Route::Automations)
+                            .tooltip_with_action("Scheduled and triggered runs", &GoAutomations, None)
+                            .on_click(|_, window, cx| window.dispatch_action(Box::new(GoAutomations), cx)),
+                    )
                 })
                 .when(in_settings, |el| {
                     el.child(
@@ -1033,6 +1071,7 @@ impl Workspace {
             Route::Inbox => self.inbox.clone().into_any_element(),
             Route::Fleet => self.fleet.clone().into_any_element(),
             Route::Forge => self.forge.clone().into_any_element(),
+            Route::Automations => self.automations.clone().into_any_element(),
             Route::Settings => div().into_any_element(),
             Route::Thread(_) if self.tiled() => self.render_tiles(window, cx),
             Route::Thread(_) => match self.current_thread_view() {
@@ -1111,6 +1150,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::go_inbox))
             .on_action(cx.listener(Self::go_fleet))
             .on_action(cx.listener(Self::go_pull_requests))
+            .on_action(cx.listener(Self::go_automations))
+            .on_action(cx.listener(Self::new_automation))
             .on_action(cx.listener(Self::go_home))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_review))

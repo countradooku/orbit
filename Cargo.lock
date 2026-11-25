@@ -6102,6 +6102,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "ignore",
+ "jiff",
  "log",
  "memchr",
  "notify 9.0.0",

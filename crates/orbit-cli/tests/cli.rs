@@ -542,3 +542,55 @@ fn mcp_in_process_runs_calls_concurrently() {
         assert_eq!((reply["error"]["code"].clone(), reply["id"].clone()), (json!(-32700), Value::Null));
     });
 }
+
+#[test]
+fn automations_are_created_run_paused_and_deleted_from_the_command_line() {
+    let h = Harness::new();
+    h.add_project();
+    assert_eq!(h.json("automation list", 0), json!([]));
+
+    // A schedule in a time zone, run in the project folder.
+    let created = h.json(
+        "automation create \"Standup for {date}\" --name Standup --rule \"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9\" --tz Europe/London --target project --notify failures",
+        0,
+    );
+    let id = created["id"].as_str().unwrap().to_owned();
+    assert_eq!(created["name"], "Standup");
+    assert_eq!(created["triggers"][0], "rule FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9 (Europe/London)");
+    assert!(created["next_run_ms"].as_u64().unwrap() > now_ms());
+    assert_eq!(created["agent"]["access"], "auto-edit", "unattended runs don't wait for approvals");
+    assert_eq!(created["on_finish"]["notify"], "failures");
+
+    // Bad input is refused with a reason.
+    let error = h.json("automation create hi --cron \"61 * * * *\"", 1);
+    assert!(error["message"].as_str().unwrap().contains("minute"), "{error}");
+    assert_eq!(h.json("automation create hi", 2)["code"], "usage");
+    assert_eq!(h.json("automation create hi --on issue-labeled", 2)["code"], "usage");
+
+    // Run now, wait, and read the history; by name.
+    let run = h.json("automation run standup --wait", 0);
+    assert_eq!(run["status"], "succeeded");
+    assert_eq!(run["reason"], "run now");
+    assert_eq!(run["tokens"], 15);
+    assert!(run["summary"].as_str().unwrap().starts_with("echo: Standup for 20"), "{run}");
+    let history = h.json("automation history Standup", 0);
+    assert_eq!(history.as_array().unwrap().len(), 1);
+    let (code, text, _) = h.run("automation show Standup");
+    assert_eq!(code, 0);
+    assert!(text.contains("✓") && text.contains("Standup for {date}"), "{text}");
+
+    // A recipe, with its placeholder filled in, created paused.
+    let triage = h.json("automation create --recipe triage-issues --label bug --paused", 0);
+    assert_eq!(triage["triggers"][0], "on new issues labeled bug");
+    assert_eq!(triage["paused"], true);
+    assert_eq!(triage["agent"]["access"], "readonly", "the recipe's own access");
+    assert_eq!(triage["recipe"], "triage-issues");
+
+    // Pause, resume, delete.
+    assert_eq!(h.json(&format!("automation pause {id}"), 0)["paused"], true);
+    assert_eq!(h.json("automation list", 0)[0]["paused"], true);
+    assert_eq!(h.json(&format!("automation resume {id}"), 0)["paused"], false);
+    assert_eq!(h.json(&format!("automation delete {id}"), 0)["deleted"], true);
+    assert_eq!(h.json("automation list", 0).as_array().unwrap().len(), 1);
+    assert_eq!(h.json("automation show nothing-like-this", 4)["code"], "not_found");
+}

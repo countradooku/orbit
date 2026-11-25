@@ -9,6 +9,7 @@
 mod actions;
 mod app_state;
 mod assets;
+mod automations;
 mod bots;
 mod composer;
 #[cfg(debug_assertions)]
