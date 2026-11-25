@@ -352,7 +352,6 @@ pub fn undo_restore(app: Entity<AppState>, thread: ThreadId, window: &mut Window
 /// workspace first goes back to how it was before that message's turn, so
 /// the new reply starts from the same files the original did. For the
 /// thread view's "Edit" on a message.
-#[allow(dead_code)]
 pub fn edit_message(
     app: Entity<AppState>,
     thread: ThreadId,

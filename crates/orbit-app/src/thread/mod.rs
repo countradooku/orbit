@@ -51,7 +51,18 @@ use crate::{format, ui};
 
 pub use rows::Row;
 
-gpui_kit::actions!(thread, [FindInThread, FindNext, FindPrevious, PreviousMessage, NextMessage]);
+gpui_kit::actions!(
+    thread,
+    [
+        FindInThread,
+        FindNext,
+        FindPrevious,
+        PreviousMessage,
+        NextMessage,
+        /// Puts the terminal's selected output in the thread's composer.
+        AddSelectionToComposer,
+    ]
+);
 
 /// Binds the thread's keys.
 pub fn init(cx: &mut App) {
@@ -61,6 +72,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-f3", FindPrevious, Some("Thread")),
         KeyBinding::new("alt-up", PreviousMessage, Some("Thread")),
         KeyBinding::new("alt-down", NextMessage, Some("Thread")),
+        KeyBinding::new(crate::actions::platform("cmd-shift-l", "ctrl-shift-l"), AddSelectionToComposer, Some(orbit_terminal::KEY_CONTEXT)),
     ]);
     #[cfg(target_os = "macos")]
     cx.bind_keys([
@@ -223,6 +235,12 @@ impl ThreadView {
         let panel = cx.new(|cx| TerminalPanel::new(self.app.clone(), cwd, window, cx));
         let sub = cx.subscribe_in(&panel, window, |this, _, event: &TerminalPanelEvent, window, cx| match event {
             TerminalPanelEvent::Close => this.toggle_terminal(window, cx),
+            TerminalPanelEvent::AddToComposer { text, cwd } => {
+                let chip = crate::composer::ContextChip::TerminalSelection { text: text.clone(), cwd: Some(cwd.clone()) };
+                let composer = this.composer.clone();
+                composer.update(cx, |composer, cx| composer.add_context(chip, window, cx));
+                Composer::focus(&composer, window, cx);
+            }
         });
         self._subscriptions.push(sub);
         let focus = panel.clone();
@@ -514,7 +532,7 @@ impl ThreadView {
 
     /// Opens a step in the inspector; `diff` opens it on its changes.
     pub(crate) fn inspect(&mut self, item: ItemId, diff: bool, window: &mut Window, cx: &mut Context<Self>) {
-        inspector::open(self.app.clone(), self.id, item, diff, cx.entity().downgrade(), window, cx);
+        inspector::open(self.app.clone(), self.id, item, diff, window, cx);
     }
 
     /// Quotes the selected part of a reply (or all of it) into the composer.

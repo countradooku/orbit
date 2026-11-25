@@ -43,7 +43,6 @@ use gpui_kit::*;
 use orbit_proto::diff::Side;
 use orbit_proto::*;
 
-#[allow(unused_imports)] // for the thread view's turn and message actions
 pub use dialogs::{confirm_restore, edit_message};
 use model::{Comment, ReviewData};
 use state::{ReviewMarks, prefs, update_prefs};
@@ -140,6 +139,9 @@ pub struct ReviewView {
     /// Indexes into `data.files` shown after filtering, in order.
     visible: Vec<usize>,
     hide_tests: bool,
+    /// A file to select once the first files arrive, as a tool reported it
+    /// (absolute or relative to the repository).
+    reveal: Option<String>,
     /// The colour-blind palette is in use (follows the saved setting).
     colorblind: bool,
     selected: Option<SharedString>,
@@ -245,6 +247,7 @@ impl ReviewView {
             split: panes,
             visible: Vec::new(),
             hide_tests: p.hide_tests,
+            reveal: None,
             colorblind: p.colorblind,
             selected: None,
             hovered: Rc::default(),
@@ -461,6 +464,18 @@ impl ReviewView {
                     d.set_file_collapsed(path, true, cx);
                 }
             });
+        }
+        if let Some(wanted) = self.reveal.take() {
+            let wanted = wanted.replace('\\', "/");
+            let found = self.visible.iter().copied().find(|&ix| {
+                let path = self.data.files[ix].path();
+                wanted == path || wanted.ends_with(&format!("/{path}"))
+            });
+            if let Some(ix) = found {
+                let path = self.data.path(ix);
+                self.diff.update(cx, |d, cx| d.set_file_collapsed(&path, false, cx));
+                self.select_file(path, cx);
+            }
         }
         cx.notify();
     }
@@ -792,6 +807,40 @@ impl ReviewView {
             });
         })
         .detach();
+    }
+
+    /// Puts every comment (and any draft with text) in the thread's
+    /// composer as chips, to send with a message of your own. They leave
+    /// the review, as when sent.
+    fn add_comments_to_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids: Vec<u64> = self.drafts.iter().map(|d| d.comment.id).collect();
+        for id in ids {
+            self.save_draft(id, window, cx);
+        }
+        if self.comments.is_empty() {
+            return;
+        }
+        let chips: Vec<crate::composer::ContextChip> = self
+            .comments
+            .iter()
+            .map(|c| crate::composer::ContextChip::ReviewComment {
+                path: c.path.clone(),
+                line: c.start.map(|(_, line)| line),
+                quote: c.excerpt.clone(),
+                comment: c.text.clone(),
+            })
+            .collect();
+        let count = chips.len();
+        if crate::composer::Composer::add_context_to(self.thread, chips, window, cx) {
+            self.store_comments(Vec::new(), cx);
+            let what = if count == 1 { "1 comment".to_owned() } else { format!("{count} comments") };
+            window.push_notification(Notification::success(format!("Added {what} to the composer")), cx);
+        } else {
+            window.push_notification(
+                Notification::warning("Open the thread to add comments to its composer.").title("The composer isn’t open"),
+                cx,
+            );
+        }
     }
 
     // ── Navigation ───────────────────────────────────────────────────────
@@ -1558,6 +1607,16 @@ impl ReviewView {
                         })),
                 )
                 .child(
+                    Button::new("comments-to-composer")
+                        .small()
+                        .outline()
+                        .icon(Lucide::MessageSquarePlus)
+                        .label("Add to composer")
+                        .disabled(saved == 0)
+                        .tooltip("Put them in the message you are writing, to send with your own words")
+                        .on_click(cx.listener(|this, _, window, cx| this.add_comments_to_composer(window, cx))),
+                )
+                .child(
                     Button::new("send-comments")
                         .small()
                         .primary()
@@ -1830,8 +1889,30 @@ pub fn open(app: Entity<AppState>, thread: ThreadId, window: &mut Window, cx: &m
 /// Opens the review sheet on a given scope (a turn's diff from its
 /// summary, for example).
 pub fn open_at(app: Entity<AppState>, thread: ThreadId, scope: Option<DiffScope>, window: &mut Window, cx: &mut App) {
+    open_with(app, thread, scope, None, window, cx);
+}
+
+/// Opens the review sheet on a scope with one file selected and expanded
+/// (a step's file from the inspector). `path` may be absolute or relative
+/// to the repository, as tools report it.
+pub fn open_file(app: Entity<AppState>, thread: ThreadId, scope: Option<DiffScope>, path: String, window: &mut Window, cx: &mut App) {
+    open_with(app, thread, scope, Some(path), window, cx);
+}
+
+fn open_with(
+    app: Entity<AppState>,
+    thread: ThreadId,
+    scope: Option<DiffScope>,
+    reveal: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     bind_keys(cx);
-    let view = cx.new(|cx| ReviewView::new(app, thread, scope, window, cx));
+    let view = cx.new(|cx| {
+        let mut view = ReviewView::new(app, thread, scope, window, cx);
+        view.reveal = reveal;
+        view
+    });
     cx.set_global(OpenSheet(Some((thread, view.downgrade()))));
     let focus = view.read(cx).focus.clone();
     window.open_sheet_at(Placement::Right, cx, move |sheet, _, _| {

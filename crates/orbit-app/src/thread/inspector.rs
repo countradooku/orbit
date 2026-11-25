@@ -21,7 +21,6 @@ use gpui_kit::*;
 use orbit_proto::*;
 use sonic_rs::{JsonContainerTrait as _, JsonValueTrait as _};
 
-use super::{ThreadView, ThreadViewEvent};
 use crate::app_state::{AppEvent, AppState};
 use crate::assets::Lucide;
 use crate::format;
@@ -86,7 +85,6 @@ pub struct InspectorView {
     app: Entity<AppState>,
     thread: ThreadId,
     item: ItemId,
-    view: WeakEntity<ThreadView>,
     output: Entity<EditorState>,
     /// What the output editor shows, so live updates only replace changed text.
     shown: String,
@@ -103,7 +101,6 @@ impl InspectorView {
         app: Entity<AppState>,
         thread: ThreadId,
         item: ItemId,
-        view: WeakEntity<ThreadView>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -118,7 +115,6 @@ impl InspectorView {
             app,
             thread,
             item,
-            view,
             output,
             shown: String::new(),
             full: Full::None,
@@ -301,16 +297,21 @@ impl InspectorView {
 
         let changes = (!call.files.is_empty()).then(|| {
             let view = cx.entity().downgrade();
-            let review = self.view.clone();
+            let (app, thread, turn) = (self.app.clone(), self.thread, item.turn);
+            let first = call.files[0].path.clone();
             v_flex()
                 .gap_1()
                 .child(
                     Self::section("Changes", cx).child(div().flex_1()).child(
-                        Button::new("review-all").ghost().xsmall().icon(Lucide::FileDiff).label("Review all changes").on_click(
-                            move |_, _, cx| {
-                                let _ = review.update(cx, |_, cx| cx.emit(ThreadViewEvent::Review));
-                            },
-                        ),
+                        Button::new("open-in-review")
+                            .ghost()
+                            .xsmall()
+                            .icon(Lucide::FileDiff)
+                            .label("Open in review")
+                            .tooltip(format!("Turn {turn}’s changes in the review, at this step’s first file"))
+                            .on_click(move |_, window, cx| {
+                                crate::review::open_file(app.clone(), thread, Some(DiffScope::Turn(turn)), first.clone(), window, cx)
+                            }),
                     ),
                 )
                 .children(call.files.iter().map(|f| {
@@ -323,7 +324,7 @@ impl InspectorView {
                 }))
                 .child(match &self.diff {
                     DiffLoad::Idle => h_flex()
-                        .child(Button::new("open-diff").small().icon(Lucide::FileDiff).label("Open diff").on_click(move |_, _, cx| {
+                        .child(Button::new("show-diff").small().icon(Lucide::FileDiff).label("Show diff here").on_click(move |_, _, cx| {
                             let _ = view.update(cx, |this, cx| this.load_diff(cx));
                         }))
                         .into_any_element(),
@@ -420,11 +421,10 @@ pub fn open(
     thread: ThreadId,
     item: ItemId,
     diff: bool,
-    view: WeakEntity<ThreadView>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let inspector = cx.new(|cx| InspectorView::new(app, thread, item, view, window, cx));
+    let inspector = cx.new(|cx| InspectorView::new(app, thread, item, window, cx));
     if diff {
         inspector.update(cx, |this, cx| this.load_diff(cx));
     }

@@ -360,7 +360,7 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
         Row::User(id) => {
             let Some(item) = item(*id) else { return empty() };
             let ItemBody::User(message) = &item.body else { return empty() };
-            render_user(this, &weak, item.id, message, busy, now, &theme).into_any_element()
+            render_user(this, &weak, item, message, busy, now, &theme).into_any_element()
         }
         Row::Assistant(id) => {
             let Some(item) = item(*id) else { return empty() };
@@ -590,7 +590,7 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
         Row::TurnEnd(id) => {
             let Some(item) = item(*id) else { return empty() };
             let ItemBody::TurnEnd(summary) = &item.body else { return empty() };
-            render_turn_end(this, &weak, item, summary, busy, &theme).into_any_element()
+            render_turn_end(this, item, summary, busy, &theme).into_any_element()
         }
     };
     column(content, crate::settings::chat_column(cx)).into_any_element()
@@ -599,12 +599,13 @@ pub fn render_row(view: &Entity<ThreadView>, row: &Row, _: &mut Window, cx: &mut
 fn render_user(
     this: &ThreadView,
     weak: &WeakEntity<ThreadView>,
-    id: ItemId,
+    item: &Item,
     message: &UserMessage,
     busy: bool,
     now: u64,
     theme: &gpui_kit::component::Theme,
 ) -> impl IntoElement {
+    let (id, turn) = (item.id, item.turn);
     let text = message.text.clone();
     let long = text.len() > LONG_MESSAGE_CHARS || text.lines().count() > LONG_MESSAGE_LINES;
     let expanded = this.expanded.contains(&id);
@@ -676,7 +677,9 @@ fn render_user(
                             .xsmall()
                             .icon(Lucide::Pencil)
                             .tooltip("Edit and resend from here")
-                            .on_click(move |_, window, cx| edit_and_resend(&app, thread_id, id, text.clone(), window, cx)),
+                            .on_click(move |_, window, cx| {
+                                crate::review::edit_message(app.clone(), thread_id, id, turn, text.clone(), window, cx)
+                            }),
                     )
                 }),
         )
@@ -1089,7 +1092,6 @@ fn render_fold(
 
 fn render_turn_end(
     this: &ThreadView,
-    weak: &WeakEntity<ThreadView>,
     item: &Item,
     summary: &TurnSummary,
     busy: bool,
@@ -1112,7 +1114,7 @@ fn render_turn_end(
     let (adds, dels) = summary.files.iter().fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions));
     let restorable = summary.base_checkpoint.is_some() && files > 0 && !busy;
     let (app, thread_id, turn) = (this.app.clone(), this.id, item.turn);
-    let review = weak.clone();
+    let review_app = app.clone();
     v_flex()
         .mt_1()
         .gap_1()
@@ -1148,8 +1150,9 @@ fn render_turn_end(
                             .xsmall()
                             .icon(Lucide::FileDiff)
                             .label("Review changes")
-                            .on_click(move |_, _, cx| {
-                                let _ = review.update(cx, |_, cx| cx.emit(super::ThreadViewEvent::Review));
+                            .tooltip("This turn’s changes, file by file")
+                            .on_click(move |_, window, cx| {
+                                crate::review::open_at(review_app.clone(), thread_id, Some(DiffScope::Turn(turn)), window, cx)
                             }),
                     )
                     .when(restorable, |el| {
@@ -1158,13 +1161,9 @@ fn render_turn_end(
                                 .ghost()
                                 .xsmall()
                                 .icon(Lucide::RotateCcw)
-                                .label("Undo turn")
+                                .label("Undo turn…")
                                 .tooltip("Put the files back the way they were before this turn. You can undo this too.")
-                                .on_click(move |_, window, cx| {
-                                    app.update(cx, |app, cx| {
-                                        app.run(Command::RestoreCheckpoint { thread: thread_id, turn }, window, cx)
-                                    })
-                                }),
+                                .on_click(move |_, window, cx| crate::review::confirm_restore(app.clone(), thread_id, turn, window, cx)),
                         )
                     }),
             )
@@ -1308,50 +1307,6 @@ fn render_request(
         })
         .child(actions)
         .into_any_element()
-}
-
-fn edit_and_resend(
-    app: &Entity<crate::app_state::AppState>,
-    thread: ThreadId,
-    item: ItemId,
-    text: String,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    use gpui_kit::component::WindowExt as _;
-    use gpui_kit::component::input::{Textarea, TextareaState};
-    let input = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 16).default_value(text));
-    let app = app.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
-        let (input, app) = (input.clone(), app.clone());
-        dialog
-            .title("Edit message")
-            .w(px(600.))
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(Textarea::new(&input))
-                    .child(div().text_xs().child("Later messages in this thread are replaced by the new reply.")),
-            )
-            .footer(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .child(gpui_kit::component::dialog::DialogClose::new().child(Button::new("cancel").outline().label("Cancel")))
-                    .child(
-                        gpui_kit::component::dialog::DialogAction::new()
-                            .child(Button::new("resend").primary().label("Resend")),
-                    ),
-            )
-            .on_ok(move |_, window, cx| {
-                let text = input.read(cx).value().trim().to_owned();
-                if text.is_empty() {
-                    return false;
-                }
-                app.update(cx, |app, cx| app.run(Command::EditAndResend { thread, item, text }, window, cx));
-                true
-            })
-    });
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     ShieldCheck, ShieldAlert, Zap, Pencil, Command, Layers, Gauge, FolderPlus, Archive, Pin,
     GitFork, Hourglass, FilePen, FileSearch, Plug, ListTodo, RotateCcw, GitMerge, Orbit,
     CirclePause, Sparkle, AppWindow, SearchCode, Trash, Keyboard, Reply, ScanSearch, OctagonX,
+    MessageSquarePlus,
 ]);
 
 /// Orbit's icons first, then GPUI Kit's defaults.
