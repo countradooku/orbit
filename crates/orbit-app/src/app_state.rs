@@ -57,10 +57,6 @@ impl AppState {
         &self.state
     }
 
-    pub fn backend(&self) -> &Backend {
-        &self.backend
-    }
-
     pub fn connection(&self) -> Option<&ConnectionStatus> {
         self.state.connection.as_ref()
     }

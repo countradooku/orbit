@@ -217,7 +217,7 @@ impl Sidebar {
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let state = self.app.read(cx).state();
         let mut threads: Vec<&Thread> = state.threads.values().filter(|t| !t.archived).collect();
-        threads.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+        threads.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
 
         // Track section changes for arrival animations.
         let now = Instant::now();
