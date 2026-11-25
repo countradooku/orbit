@@ -183,7 +183,7 @@ impl TeamsPage {
         let galaxy = cx.new(|cx| Constellation::new(app.clone(), workspace.clone(), ConstellationMode::Galaxy, cx));
         let mini = cx.new(|cx| Constellation::new(app.clone(), workspace.clone(), ConstellationMode::Mini, cx));
         let race_prompt = cx.new(|cx| InputState::new(window, cx).placeholder("A prompt to race…"));
-        let race_control = cx.new(|cx| RaceControl::new(app.clone(), cx).with_count(3));
+        let race_control = cx.new(|cx| RaceControl::new(app.clone(), cx).with_count(3).placed(Anchor::TopLeft, "Default agent"));
         let subs = vec![
             cx.subscribe(&app, |this, _, event: &AppEvent, cx| {
                 if matches!(event, AppEvent::Teams) {
@@ -303,6 +303,10 @@ impl TeamsPage {
             "team" => state.teams.values().max_by_key(|t| t.workers.len()).map(|t| TeamsPageKind::Team(t.id)),
             "compare" => state.races.values().next().map(|r| TeamsPageKind::Race(r.id)),
             "galaxy" => Some(TeamsPageKind::Galaxy),
+            "race" => {
+                self.race_control.update(cx, |c, cx| c.debug_open(cx));
+                Some(TeamsPageKind::Overview)
+            }
             _ => Some(TeamsPageKind::Overview),
         };
         self.show(page.unwrap_or(TeamsPageKind::Overview), cx);

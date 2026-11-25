@@ -1,7 +1,7 @@
 //! Writes a data folder and real git repositories for checking agent teams
 //! and races by eye:
 //!
-//! `cargo run -p orbit-core --example seed_teams -- <data dir> <work dir>`
+//! `cargo run -p orbit-core --example seed_teams -- <data dir> <work dir> [--light]`
 //!
 //! `<work dir>/shop` is a project on `main` with a `test` run script. Team
 //! "Add user accounts" has an architect in its own worktree and eight
@@ -91,6 +91,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let data = PathBuf::from(args.next().expect("usage: seed_teams <data dir> <work dir>"));
     let work = PathBuf::from(args.next().expect("usage: seed_teams <data dir> <work dir>"));
+    let light = args.any(|a| a == "--light");
     let repo = work.join("shop");
     std::fs::create_dir_all(&repo).unwrap();
     sh(&repo, &["init", "-q", "-b", "main"]);
@@ -126,6 +127,11 @@ fn main() {
         base_branch: Some("main".into()),
     };
     store.commit(Event::ProjectUpserted(project.clone())).unwrap();
+    if light {
+        let mut settings = store.settings().clone();
+        settings.appearance.mode = ColorMode::Light;
+        store.commit(Event::SettingsChanged(settings)).unwrap();
+    }
     let opus = ThreadConfig { provider: ProviderKind::Claude, model: "opus".into(), access: Access::AutoEdit, ..Default::default() };
     let sonnet = ThreadConfig { model: "sonnet".into(), ..opus.clone() };
     let codex = ThreadConfig { provider: ProviderKind::Codex, model: "gpt-5-codex".into(), access: Access::AutoEdit, ..Default::default() };

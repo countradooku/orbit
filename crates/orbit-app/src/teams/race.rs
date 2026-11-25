@@ -37,17 +37,43 @@ pub struct RaceControl {
     agents: Vec<Option<ThreadConfig>>,
     judge: bool,
     open: bool,
+    /// Where the popover opens from its trigger.
+    anchor: Anchor,
+    /// What a candidate without an agent of its own runs on.
+    base_label: SharedString,
 }
 
 impl RaceControl {
     pub fn new(app: Entity<AppState>, _: &mut Context<Self>) -> Self {
-        Self { app, count: 1, agents: Vec::new(), judge: true, open: false }
+        Self {
+            app,
+            count: 1,
+            agents: Vec::new(),
+            judge: true,
+            open: false,
+            anchor: Anchor::BottomLeft,
+            base_label: "Composer’s agent".into(),
+        }
+    }
+
+    /// Opens the popover from `anchor` (default: above, for a composer at
+    /// the bottom of the window) and names the agent candidates share.
+    pub fn placed(mut self, anchor: Anchor, base_label: impl Into<SharedString>) -> Self {
+        self.anchor = anchor;
+        self.base_label = base_label.into();
+        self
     }
 
     /// Starts with `count` candidates (2 or more races right away).
     pub fn with_count(mut self, count: usize) -> Self {
         self.count = count.clamp(1, MAX_CANDIDATES);
         self
+    }
+
+    /// Debug builds: shows the popover (visual checks).
+    pub fn debug_open(&mut self, cx: &mut Context<Self>) {
+        self.open = true;
+        cx.notify();
     }
 
     /// Whether the next send starts a race.
@@ -94,9 +120,9 @@ impl RaceControl {
             let chosen = self.agents.get(ix).cloned().flatten();
             let name = match &chosen {
                 Some(config) => crate::ui::model_label(config, &state.providers),
-                None => "Composer’s agent".to_owned(),
+                None => self.base_label.to_string(),
             };
-            let (installed, this) = (installed.clone(), this.clone());
+            let (installed, this, base_label) = (installed.clone(), this.clone(), self.base_label.clone());
             h_flex()
                 .gap_2()
                 .when(count < 2, |el| el.opacity(0.5))
@@ -119,7 +145,7 @@ impl RaceControl {
                         .label(name)
                         .dropdown_menu(move |mut menu, _, _| {
                             let this2 = this.clone();
-                            menu = menu.item(PopupMenuItem::new("Composer’s agent").checked(chosen.is_none()).on_click(move |_, _, cx| {
+                            menu = menu.item(PopupMenuItem::new(base_label.clone()).checked(chosen.is_none()).on_click(move |_, _, cx| {
                                 let _ = this2.update(cx, |this, cx| this.set_agent(ix, None, cx));
                             }));
                             for p in &installed {
@@ -199,7 +225,7 @@ impl Render for RaceControl {
         let count = self.count;
         let content = cx.weak_entity();
         Popover::new("race-control")
-            .anchor(Anchor::BottomLeft)
+            .anchor(self.anchor)
             .open(self.open)
             .on_open_change(cx.listener(|this, open: &bool, _, cx| {
                 this.open = *open;

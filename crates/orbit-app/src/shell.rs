@@ -228,7 +228,7 @@ impl Workspace {
             "inbox" => self.navigate(Route::Inbox, window, cx),
             "fleet" => self.navigate(Route::Fleet, window, cx),
             "forge" => self.navigate(Route::Forge, window, cx),
-            "teams" | "team" | "compare" | "galaxy" => {
+            "teams" | "team" | "compare" | "galaxy" | "race" => {
                 self.teams.update(cx, |page, cx| page.debug_show(&route, cx));
                 self.navigate(Route::Teams, window, cx);
             }
