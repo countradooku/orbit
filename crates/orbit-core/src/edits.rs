@@ -222,7 +222,7 @@ pub fn scope_patch(
                     .filter(|e| e.2)
                     .map(|e| Item { id: orbit_proto::ItemId(0), turn: 0, status: orbit_proto::ItemStatus::Done, body: ItemBody::Tool(e.3.clone()) })
                     .collect();
-                if let Some(patch) = turn_patch(&calls, root) {
+                if let Some(patch) = turn_patch_in(&calls, root, &read) {
                     out.push_str(&patch);
                 }
             }
@@ -235,6 +235,18 @@ pub fn scope_patch(
 /// file in the order files were first changed. `None` when they changed
 /// nothing the agent described.
 pub fn turn_patch<'a>(items: impl IntoIterator<Item = &'a Item>, root: Option<&Path>) -> Option<String> {
+    turn_patch_in(items, root, |_| None)
+}
+
+/// [`turn_patch`], with each file's hunks placed where their text is in
+/// the file's current content (`read`), or else one after another: snippet
+/// hunks are all numbered from line 1, and a diff viewer drops hunks that
+/// overlap.
+fn turn_patch_in<'a>(
+    items: impl IntoIterator<Item = &'a Item>,
+    root: Option<&Path>,
+    read: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
     let mut files: Vec<(String, String)> = Vec::new();
     for item in items {
         let ItemBody::Tool(call) = &item.body else { continue };
@@ -253,9 +265,49 @@ pub fn turn_patch<'a>(items: impl IntoIterator<Item = &'a Item>, root: Option<&P
     for (path, hunks) in files {
         out.push_str(&format!("diff --git a/{path} b/{path}\n"));
         out.push_str(&header(&path));
-        out.push_str(&hunks);
+        out.push_str(&renumber(&hunks, read(&path).as_deref()));
     }
     Some(out)
+}
+
+/// Rewrites `@@` headers so hunks follow each other: each starts where its
+/// new-side text is found in `current` (after the previous hunk), or right
+/// after the previous hunk.
+fn renumber(hunks: &str, current: Option<&str>) -> String {
+    let file: Vec<&str> = current.map(|c| c.lines().collect()).unwrap_or_default();
+    // Split into (body lines) per hunk.
+    let mut parsed: Vec<Vec<&str>> = Vec::new();
+    for line in hunks.split_inclusive('\n') {
+        if line.starts_with("@@ ") {
+            parsed.push(Vec::new());
+        } else if let Some(body) = parsed.last_mut() {
+            body.push(line);
+        }
+    }
+    let mut out = String::new();
+    // Next free line on the new side, and old minus new so far.
+    let (mut next_new, mut shift) = (1usize, 0isize);
+    for body in parsed {
+        let old_len = body.iter().filter(|l| l.starts_with(' ') || l.starts_with('-')).count();
+        let new_len = body.iter().filter(|l| l.starts_with(' ') || l.starts_with('+')).count();
+        let new_side: Vec<&str> = body
+            .iter()
+            .filter(|l| l.starts_with(' ') || l.starts_with('+'))
+            .map(|l| l[1..].trim_end_matches(['\n', '\r']))
+            .collect();
+        let found = (!new_side.is_empty())
+            .then(|| (next_new.saturating_sub(1)..file.len()).find(|&i| file[i..].starts_with(&new_side)))
+            .flatten();
+        let new_start = found.map_or(next_new, |i| i + 1);
+        let old_start = (new_start as isize + shift).max(1) as usize;
+        out.push_str(&format!("@@ -{old_start},{old_len} +{new_start},{new_len} @@\n"));
+        for line in &body {
+            out.push_str(line);
+        }
+        next_new = new_start + new_len;
+        shift += old_len as isize - new_len as isize;
+    }
+    out
 }
 
 /// `(path, hunks)` per file section of a patch made by [`patch`].
@@ -372,10 +424,20 @@ mod tests {
         assert!(both.contains("+line five") && both.contains("+line nine"));
         assert_eq!(orbit_proto::diff::parse(&both).len(), 1, "one file, not one per edit");
 
-        // Changed since by something else: the edits' own hunks instead.
+        // Changed since by something else: the edits' own hunks instead,
+        // numbered so they follow each other (a viewer drops overlaps).
         let other = |_: &str| Some("unrelated\n".to_owned());
         let fallback = scope_patch(&items, |t| t == 1, None, other).unwrap();
         assert!(fallback.contains("-line 5\n+line five\n"));
+        let both = scope_patch(&items, |_| true, None, other).unwrap();
+        let file = orbit_proto::diff::parse(&both).remove(0);
+        assert_eq!(file.hunks.len(), 2, "{both}");
+        assert!(file.hunks[1].new_start > file.hunks[0].new_start + file.hunks[0].new_len - 1, "{both}");
+
+        // Hunks found in the current file take their real place.
+        let moved: String = (1..=30).map(|i| format!("row {i}\n")).collect::<String>().replace("row 20", "line five");
+        let placed = scope_patch(&items, |t| t == 1, None, |_| Some(moved.clone())).unwrap();
+        assert!(placed.contains("+20,"), "{placed}");
     }
 
     #[test]
