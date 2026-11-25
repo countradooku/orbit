@@ -28,6 +28,7 @@ mimalloc = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sonic-rs = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

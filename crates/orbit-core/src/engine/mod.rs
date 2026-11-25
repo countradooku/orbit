@@ -12,6 +12,7 @@ mod orchestrator;
 mod sessions;
 mod settings;
 mod textgen;
+mod timeline;
 
 pub use sessions::{CLEAR_COMMANDS, HANDOFF_TOKENS, build_handoff};
 

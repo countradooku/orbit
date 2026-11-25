@@ -163,6 +163,13 @@ pub enum Command {
     /// Remove the timeline after `item` and send `text` in its place.
     EditAndResend { thread: ThreadId, item: ItemId, text: String },
     Interrupt { thread: ThreadId },
+    /// End the agent's process now, for when Stop did not take. The turn
+    /// ends as stopped; the next message resumes the session.
+    ForceStop { thread: ThreadId },
+    /// Run the thread's last failed or rate-limited turn again. The
+    /// provider's history is rewound to before the turn and its message is
+    /// sent again; the failed attempt stays in the timeline.
+    Retry { thread: ThreadId },
     Resolve { thread: ThreadId, request: RequestId, decision: Decision },
 
     Diff { thread: ThreadId, scope: DiffScope },
@@ -179,6 +186,9 @@ pub enum Command {
     Search { query: String, limit: u32 },
     /// Store bytes in the blob store; returns [`Reply::Blob`].
     PutBlob { name: String, mime: String, data: Vec<u8> },
+    /// Read a stored blob by its hash (full tool output, an attachment).
+    /// Returns [`Reply::Bytes`].
+    ReadBlob { hash: String },
 
     OpenTerminal { cwd: String, cols: u16, rows: u16 },
     TerminalInput { term: TermId, data: Vec<u8> },
@@ -225,6 +235,7 @@ pub enum Reply {
     Branches { current: Option<String>, all: Vec<String> },
     SearchHits(Vec<SearchHit>),
     Blob(Attachment),
+    Bytes(Vec<u8>),
     Terminal(TermId),
     PullRequest { url: String },
     Text(String),
