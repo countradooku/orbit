@@ -18,6 +18,7 @@
 
 mod banners;
 pub(crate) mod browser;
+pub(crate) mod edits;
 mod find;
 mod inspector;
 mod minimap;
@@ -101,6 +102,9 @@ struct Find {
     _subscription: Subscription,
 }
 
+/// An edit step's diff with the input length and status it was made for.
+type CachedDiff = (usize, ItemStatus, Option<Rc<edits::EditDiff>>);
+
 pub struct ThreadView {
     id: ThreadId,
     app: Entity<AppState>,
@@ -115,6 +119,13 @@ pub struct ThreadView {
     /// Rows the reader expanded (work logs, reasoning, tool output, long
     /// messages) by key.
     expanded: HashSet<ItemId>,
+    /// Edit diffs the reader opened past their preview.
+    diffs_open: HashSet<ItemId>,
+    /// Diffs computed from edit steps, by item, with the input length and
+    /// status they were computed for (a streaming edit is recomputed).
+    edit_diffs: std::cell::RefCell<HashMap<ItemId, CachedDiff>>,
+    /// The thread's folder (worktree or project), for relative paths.
+    root: Option<std::path::PathBuf>,
     /// Folds (a turn's work, an earlier attempt) the reader opened.
     folds: HashSet<ItemId>,
     /// Items inside a closed fold → its key.
@@ -218,6 +229,9 @@ impl ThreadView {
             item_row: HashMap::new(),
             markdown: HashMap::new(),
             expanded: HashSet::new(),
+            diffs_open: HashSet::new(),
+            edit_diffs: Default::default(),
+            root: None,
             folds: HashSet::new(),
             folded: HashMap::new(),
             composer,
@@ -517,6 +531,7 @@ impl ThreadView {
         let state = self.app.read(cx).state();
         let usage = state.usage(self.id);
         let project = thread.project.and_then(|p| state.projects.iter().find(|x| x.id == p));
+        self.root = thread.workspace.worktree.clone().or_else(|| project.map(|p| p.path.clone())).map(Into::into);
         let context = Some(match (&thread.workspace.worktree, project) {
             (Some(_), _) => "Own worktree".to_owned(),
             (None, Some(p)) => p.name.clone(),
@@ -754,6 +769,37 @@ impl ThreadView {
             });
         }
         cx.notify();
+    }
+
+    /// Opens or closes an edit diff past its preview.
+    pub(crate) fn toggle_diff(&mut self, key: ItemId, cx: &mut Context<Self>) {
+        if !self.diffs_open.remove(&key) {
+            self.diffs_open.insert(key);
+        }
+        if let Some(&row) = self.item_row.get(&key) {
+            self.scroller.update(cx, |s, cx| {
+                let _ = s.remeasure_items(row..row + 1, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    /// The diff an edit step made, computed once per input and status.
+    pub(crate) fn edit_diff(&self, item: &Item) -> Option<Rc<edits::EditDiff>> {
+        let ItemBody::Tool(call) = &item.body else { return None };
+        if call.kind != ToolKind::Edit {
+            return None;
+        }
+        let key = (call.input.len(), item.status);
+        let mut cache = self.edit_diffs.borrow_mut();
+        if let Some((len, status, diff)) = cache.get(&item.id)
+            && (*len, *status) == key
+        {
+            return diff.clone();
+        }
+        let diff = edits::from_call(call, self.root.as_deref()).map(Rc::new);
+        cache.insert(item.id, (key.0, key.1, diff.clone()));
+        diff
     }
 
     pub(crate) fn toggle_fold(&mut self, key: ItemId, cx: &mut Context<Self>) {
