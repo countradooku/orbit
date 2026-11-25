@@ -333,6 +333,7 @@ pub async fn run(spec: SessionSpec, events: EventSender, inputs: Inputs) {
         modes: modes(),
         ..Default::default()
     }));
+    let mut exit = server.process.exit_watch();
     let error = loop {
         let deadline = session.turn.as_ref().and_then(|t| t.abort_deadline);
         tokio::select! {
@@ -343,20 +344,18 @@ pub async fn run(spec: SessionSpec, events: EventSender, inputs: Inputs) {
             event = stream.recv() => match event {
                 Some(data) => session.on_event(&data).await,
                 None => {
-                    let status = tokio::time::timeout(Duration::from_millis(500), server.process.wait()).await;
-                    let tail = server.process.stderr_tail();
-                    let mut reason = match status {
-                        Ok(Ok(status)) => format!("OpenCode exited ({status})"),
-                        _ => "OpenCode's event stream ended".to_owned(),
-                    };
-                    if !tail.is_empty() {
-                        reason.push_str(": ");
-                        reason.push_str(&tail);
-                    }
+                    let reason = ended(&mut server).await;
                     session.finish(TurnOutcome::Failed { message: reason.clone() }).await;
                     break Some(reason);
                 }
             },
+            // The server died but something it started keeps the event
+            // stream's socket open: do not wait for the stream.
+            _ = exit.drained() => {
+                let reason = ended(&mut server).await;
+                session.finish(TurnOutcome::Failed { message: reason.clone() }).await;
+                break Some(reason);
+            }
             _ = async { match deadline { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {
                 session.finish(TurnOutcome::Interrupted).await;
                 server.process.kill();
@@ -365,6 +364,21 @@ pub async fn run(spec: SessionSpec, events: EventSender, inputs: Inputs) {
         }
     };
     session.emit(AgentEvent::Exited { error });
+}
+
+/// Why the server stopped: its exit status and the tail of stderr.
+async fn ended(server: &mut Server) -> String {
+    let status = tokio::time::timeout(Duration::from_millis(500), server.process.wait()).await;
+    let tail = server.process.stderr_tail();
+    let mut reason = match status {
+        Ok(Ok(status)) => format!("OpenCode exited ({status})"),
+        _ => "OpenCode's event stream ended".to_owned(),
+    };
+    if !tail.is_empty() {
+        reason.push_str(": ");
+        reason.push_str(&tail);
+    }
+    reason
 }
 
 impl Session {

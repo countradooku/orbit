@@ -339,8 +339,9 @@ impl Session {
         // A task owns the reader: `read_until` is not cancel-safe, so it
         // cannot sit in the session's `select!`.
         let (tx, lines) = mpsc::channel(256);
+        let exit = process.exit_watch();
         tokio::spawn(async move {
-            let mut reader = JsonlReader::new(stdout);
+            let mut reader = JsonlReader::new(stdout).until_exit(exit);
             while let Ok(Some(line)) = reader.next_line().await {
                 if tx.send(line.to_vec()).await.is_err() {
                     break;

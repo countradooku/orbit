@@ -6,6 +6,7 @@ use crate::forge::{ForgeCommand, ForgeReply};
 use crate::ids::*;
 use crate::model::*;
 use crate::settings::Settings;
+use crate::status::*;
 
 /// Client → engine.
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -46,6 +47,8 @@ pub struct Snapshot {
     pub drafts: Vec<(DraftTarget, Draft)>,
     /// Boxed: the snapshot travels inside small enums.
     pub settings: Box<Settings>,
+    /// Live status evidence of threads that have any (see [`ThreadLive`]).
+    pub live: Vec<(ThreadId, ThreadLive)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -85,6 +88,13 @@ pub enum Event {
     TerminalExited { term: TermId, code: Option<i32> },
     /// A composer's unsent message changed; an empty draft means none.
     DraftSaved { target: DraftTarget, draft: Draft },
+    /// A thread's live status evidence changed: its session went quiet or
+    /// unverified, or an agent in one of its terminals changed state.
+    /// Ephemeral; the latest value is in the snapshot.
+    ThreadLive { thread: ThreadId, live: ThreadLive },
+    /// An agent started, changed state or ended (`None`) in a terminal,
+    /// whether or not the terminal belongs to a thread. Ephemeral.
+    TerminalAgent { term: TermId, agent: Option<TerminalAgent> },
 }
 
 impl Event {
@@ -99,6 +109,8 @@ impl Event {
                 | Event::Providers(_)
                 | Event::TerminalOutput { .. }
                 | Event::TimelineMark { .. }
+                | Event::ThreadLive { .. }
+                | Event::TerminalAgent { .. }
         )
     }
 }
@@ -208,6 +220,10 @@ pub enum Command {
     TerminalInput { term: TermId, data: Vec<u8> },
     ResizeTerminal { term: TermId, cols: u16, rows: u16 },
     CloseTerminal { term: TermId },
+    /// Say which thread a terminal belongs to (`None`: no thread), so the
+    /// agents running in it count toward that thread's status. Terminals
+    /// opened in a thread's own folder are bound to it automatically.
+    BindTerminal { term: TermId, thread: Option<ThreadId> },
 
     RefreshProviders,
     SetDefaults { config: ThreadConfig },
@@ -316,6 +332,7 @@ pub struct SearchHit {
 mod tests {
     use super::*;
     use crate::codec::{decode, encode};
+    use bitcode::Encode;
 
     #[test]
     fn command_round_trips() {
@@ -342,6 +359,74 @@ mod tests {
         assert!(!delta.is_durable());
         assert!(Event::ThreadRemoved(ThreadId::new()).is_durable());
         assert!(Event::SettingsChanged(Settings::default()).is_durable());
+    }
+
+    #[test]
+    fn live_status_is_ephemeral_and_round_trips() {
+        let live = Event::ThreadLive {
+            thread: ThreadId(3),
+            live: ThreadLive {
+                liveness: Liveness::Quiet { since_ms: 9, tool: Some("cargo test".into()) },
+                last_signal_ms: 9,
+                terminals: vec![TerminalAgent {
+                    term: TermId(4),
+                    agent: "claude".into(),
+                    state: AgentState::NeedsYou(NeedKind::Permission),
+                    evidence: Evidence::Hook,
+                    since_ms: 1,
+                    last_signal_ms: 2,
+                    detail: "Bash".into(),
+                }],
+            },
+        };
+        assert!(!live.is_durable());
+        assert!(!Event::TerminalAgent { term: TermId(4), agent: None }.is_durable());
+        let env = Envelope { seq: 0, event: live };
+        let back: Envelope = decode(&encode(&env)).unwrap();
+        assert_eq!(back, env);
+    }
+
+    #[test]
+    fn durable_events_logged_before_live_status_still_decode() {
+        // `Event` as meta schema 3 wrote it (17 variants). The two live
+        // status variants keep it in the same packing class, so logged
+        // records read unchanged and no schema bump is needed.
+        #[derive(Encode)]
+        #[allow(dead_code)]
+        enum V3Event {
+            ProjectUpserted(Project),
+            ProjectRemoved(ProjectId),
+            ThreadUpserted(Thread),
+            ThreadRemoved(ThreadId),
+            ItemUpserted { thread: ThreadId, item: Item },
+            ItemDelta { thread: ThreadId, item: ItemId, delta: Delta },
+            ItemRemoved { thread: ThreadId, item: ItemId },
+            Providers(Vec<ProviderInfo>),
+            DefaultsChanged(ThreadConfig),
+            SettingsChanged(Settings),
+            WorkspaceChanged { thread: ThreadId, files: Vec<FileChange> },
+            UsageChanged { thread: ThreadId, usage: Usage },
+            Conflicts(Vec<Conflict>),
+            TerminalOutput { term: TermId, data: Vec<u8> },
+            TimelineMark { thread: ThreadId, mark: u64 },
+            TerminalExited { term: TermId, code: Option<i32> },
+            DraftSaved { target: DraftTarget, draft: Draft },
+        }
+        let thread = Thread { id: ThreadId(5), title: "Before live status".into(), ..Default::default() };
+        let old = vec![
+            V3Event::ThreadUpserted(thread.clone()),
+            V3Event::DraftSaved { target: DraftTarget::Home, draft: Draft::default() },
+            V3Event::ThreadRemoved(ThreadId(5)),
+        ];
+        let back: Vec<Event> = bitcode::decode(&bitcode::encode(&old)).unwrap();
+        assert_eq!(
+            back,
+            vec![
+                Event::ThreadUpserted(thread),
+                Event::DraftSaved { target: DraftTarget::Home, draft: Draft::default() },
+                Event::ThreadRemoved(ThreadId(5)),
+            ]
+        );
     }
 
     #[test]
