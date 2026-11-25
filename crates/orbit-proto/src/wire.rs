@@ -41,7 +41,8 @@ pub struct Snapshot {
     pub threads: Vec<Thread>,
     pub providers: Vec<ProviderInfo>,
     pub defaults: ThreadConfig,
-    pub settings: Settings,
+    /// Boxed: the snapshot travels inside small enums.
+    pub settings: Box<Settings>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]

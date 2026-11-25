@@ -44,8 +44,9 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-shift-tab", PreviousThread, None),
         KeyBinding::new("ctrl-l", FocusComposer, Some("Workspace")),
         KeyBinding::new("ctrl-q", Quit, None),
-        KeyBinding::new(platform("cmd-=", "ctrl-="), ZoomIn, None),
         KeyBinding::new(platform("cmd-+", "ctrl-+"), ZoomIn, None),
+        // Bound last, so menus and the keyboard page show it.
+        KeyBinding::new(platform("cmd-=", "ctrl-="), ZoomIn, None),
         KeyBinding::new(platform("cmd--", "ctrl--"), ZoomOut, None),
         KeyBinding::new(platform("cmd-0", "ctrl-0"), ResetZoom, None),
         KeyBinding::new("escape", CloseSettings, Some("SettingsPage")),

@@ -31,7 +31,7 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
     div().size_full().child(SettingsView::new("orbit-settings").pages([
         general(),
         appearance(cx),
-        composer(),
+        composer(cx),
         agents(&app, cx),
         workspace(cx),
         notifications(),
@@ -156,8 +156,9 @@ fn appearance(cx: &App) -> SettingPage {
     ])
 }
 
-fn composer() -> SettingPage {
+fn composer(cx: &App) -> SettingPage {
     let m = super::mod_key();
+    let (_, alternate) = super::send_keys(cx);
     SettingPage::new("Composer").icon(Icon::new(Lucide::SquarePen)).group(
         SettingGroup::new().title("Sending").items([
             SettingItem::new(
@@ -185,9 +186,7 @@ fn composer() -> SettingPage {
                     FollowUp::Queue,
                 ),
             )
-            .description(format!(
-                "What sending does during a turn. {m}+Enter (or {m}+Shift+Enter when {m}+Enter sends) does the other."
-            ))
+            .description(format!("What sending does during a turn; {alternate} does the other."))
             .keywords(["steer", "queue", "follow-up"]),
         ]),
     )
@@ -220,7 +219,7 @@ fn provider_group(app: &Entity<AppState>, kind: ProviderKind, cx: &App) -> Setti
     }
     let found = match (&info.binary, info.installed) {
         (Some(path), true) => format!("Found {path}."),
-        _ => format!("Not found on PATH or in the usual install locations."),
+        _ => "Not found on PATH or in the usual install locations.".to_owned(),
     };
     let key = |part: &str| SharedString::from(format!("agent-{program}-{part}"));
     let detected: SharedString = info.binary.clone().unwrap_or_else(|| program.to_owned()).into();

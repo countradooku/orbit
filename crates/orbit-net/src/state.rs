@@ -221,7 +221,7 @@ impl ClientState {
                     self.threads = snapshot.threads.into_iter().map(|t| (t.id, t)).collect();
                     self.providers = snapshot.providers;
                     self.defaults = snapshot.defaults;
-                    self.settings = snapshot.settings;
+                    self.settings = *snapshot.settings;
                     self.live_usage.clear();
                     // Open timelines may be stale; the UI refetches them.
                     self.timelines.clear();
@@ -390,7 +390,7 @@ mod tests {
         let mut state = ClientState::default();
         let mut settings = Settings::default();
         settings.appearance.ui_scale = 110;
-        state.apply(vec![Update::Reset(Snapshot { settings: settings.clone(), ..Default::default() })]);
+        state.apply(vec![Update::Reset(Snapshot { settings: Box::new(settings.clone()), ..Default::default() })]);
         assert_eq!(state.settings, settings);
         settings.composer.submit = SubmitKey::ModEnter;
         let changes = state.apply(events(vec![Event::SettingsChanged(settings.clone())]));

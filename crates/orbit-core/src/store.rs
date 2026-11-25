@@ -270,7 +270,7 @@ impl Store {
             threads,
             providers,
             defaults: self.defaults.clone(),
-            settings: self.settings.clone(),
+            settings: Box::new(self.settings.clone()),
         }
     }
 
@@ -549,7 +549,7 @@ mod tests {
         }
         let store = Store::open(dir.path()).unwrap();
         assert_eq!(store.settings(), &settings);
-        assert_eq!(store.snapshot(Vec::new()).settings, settings);
+        assert_eq!(*store.snapshot(Vec::new()).settings, settings);
     }
 
     #[test]

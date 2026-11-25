@@ -128,7 +128,7 @@ impl Harness {
             events: sub.events,
             threads: snapshot.threads.into_iter().map(|t| (t.id, t)).collect(),
             items: Default::default(),
-            settings: snapshot.settings,
+            settings: *snapshot.settings,
             _dir: None,
         }
     }
