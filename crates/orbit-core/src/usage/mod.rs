@@ -10,6 +10,7 @@
 //! * [`ledger`]: one record per finished turn, and the stats and CSV built
 //!   from it.
 //! * [`failover`]: which account a thread at its limit can continue on.
+//! * [`saved`]: settings, last readings and history in `usage.bin`.
 //!
 //! Nothing here refreshes a token or signs in: Orbit only reads what the
 //! agents' own sign-in left on disk, so it can never log a CLI out.
@@ -18,6 +19,7 @@ pub mod burn;
 pub mod claude;
 pub mod failover;
 pub mod ledger;
+pub mod saved;
 
 use orbit_proto::*;
 
@@ -52,6 +54,12 @@ impl ReadError {
     pub fn transient(message: impl Into<String>) -> Self {
         Self { status: QuotaStatus::Unavailable(message.into()), retry_after: None, transient: true }
     }
+}
+
+/// The IANA name of this machine's time zone (`Europe/Bucharest`), for
+/// [`UsageQuery::tz`]; empty when the system does not say.
+pub fn local_time_zone() -> String {
+    jiff::tz::TimeZone::system().iana_name().unwrap_or_default().to_owned()
 }
 
 /// Whether a provider exposes plan limits Orbit can read on its own.

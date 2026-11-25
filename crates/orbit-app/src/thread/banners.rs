@@ -54,7 +54,9 @@ pub fn banner(status: &ThreadStatus, stop_waited: Option<Duration>) -> Option<Ba
     }
 }
 
-pub fn render(banner: &Banner, cx: &mut Context<ThreadView>) -> AnyElement {
+/// `offer` holds extra actions for a usage limit: continuing on another
+/// account (`crate::usage::failover`).
+pub fn render(banner: &Banner, offer: Option<AnyElement>, cx: &mut Context<ThreadView>) -> AnyElement {
     let theme = cx.theme().clone();
     let (icon, color, title, detail): (Icon, Hsla, String, Option<String>) = match banner {
         Banner::Unresponsive(waited) => (
@@ -119,6 +121,7 @@ pub fn render(banner: &Banner, cx: &mut Context<ThreadView>) -> AnyElement {
                         .label("Retry now")
                         .on_click(cx.listener(|this, _, window, cx| this.retry(window, cx))),
                 )
+                .children(offer)
         }
         Banner::Failed(message) => h_flex()
             .gap_1()

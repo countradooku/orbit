@@ -61,6 +61,8 @@ fn commands() -> Vec<CommandDef> {
         command("Pull requests", Lucide::GitPullRequest, "forge issues github pr", crate::forge::GoPullRequests),
         command("Automations", Lucide::CalendarClock, "schedule cron recurring triggers recipes", GoAutomations),
         command("New automation…", Lucide::CalendarClock, "schedule cron create recipe", crate::automations::NewAutomation),
+        command("Usage", Lucide::ChartColumn, "limits quota rate tokens cost accounts export csv", crate::usage::GoUsage),
+        command("Refresh usage limits", Lucide::Gauge, "quota rate limits accounts", crate::usage::RefreshUsage),
         command("Add project…", Lucide::FolderPlus, "folder open repository", AddProject),
         command("Open beside", Lucide::Columns2, "tile split side by side", OpenBeside),
         command("Maximize or restore the tile", Lucide::Maximize2, "tile zoom", MaximizeTile),

@@ -21,6 +21,8 @@ gpui_kit::assets::icon_assets!(pub OrbitIcons, [
     Mail,
     // Automations.
     CalendarClock, Package, Sunrise, CircleMinus,
+    // Usage: the page, failover, export.
+    ChartColumn, ArrowLeftRight, Download,
 ]);
 
 /// Orbit's icons first, then GPUI Kit's defaults.

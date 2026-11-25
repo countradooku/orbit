@@ -47,10 +47,9 @@ use crate::provider::{Launch, presets};
 use crate::usage::burn::{self, Sample};
 use crate::usage::failover::{self, Decision};
 use crate::usage::ledger::{self, Labels, Ledger};
+use crate::usage::saved::{self, Saved, SavedAccount};
 use crate::usage::{ReadError, Reading};
 
-const FILE: &str = "usage.bin";
-const VERSION: u8 = 1;
 /// How long a client counts as in front after it said so.
 const LEASE: Duration = Duration::from_secs(30 * 60);
 /// A reading older than this is refreshed when a client comes to the front.
@@ -101,22 +100,6 @@ fn reader_for(_: &Path) -> Reader {
 }
 
 // ── State ────────────────────────────────────────────────────────────────
-
-#[derive(Default, wincode::SchemaWrite, wincode::SchemaRead)]
-struct Saved {
-    settings: UsageSettings,
-    accounts: Vec<SavedAccount>,
-}
-
-#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
-struct SavedAccount {
-    instance: String,
-    plan: Option<String>,
-    windows: Vec<QuotaWindow>,
-    updated_ms: u64,
-    source: QuotaSource,
-    history: Vec<(String, Vec<Sample>)>,
-}
 
 #[derive(Default)]
 struct Account {
@@ -176,25 +159,6 @@ pub(crate) struct UsageState {
     pub(crate) reader: Option<Reader>,
 }
 
-fn load(path: &Path) -> Saved {
-    let Ok(bytes) = std::fs::read(path) else { return Saved::default() };
-    match bytes.split_first() {
-        Some((&VERSION, rest)) => decode(rest).unwrap_or_else(|e| {
-            log::warn!("{}: unreadable ({e}); starting over", path.display());
-            Saved::default()
-        }),
-        _ => Saved::default(),
-    }
-}
-
-fn save(path: &Path, saved: &Saved) -> std::io::Result<()> {
-    let mut bytes = vec![VERSION];
-    encode_into(saved, &mut bytes);
-    let tmp = path.with_extension("bin.tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
-}
-
 fn display_title(thread: &Thread) -> String {
     if thread.title.trim().is_empty() { "New thread".into() } else { thread.title.clone() }
 }
@@ -207,7 +171,7 @@ impl Orchestrator {
         if !self.usage.loaded {
             self.usage.loaded = true;
             let dir = self.store.dir().to_owned();
-            let saved = load(&dir.join(FILE));
+            let saved = saved::load(&dir);
             self.usage.settings = saved.settings.sanitized();
             for a in saved.accounts {
                 let account = Account {
@@ -268,7 +232,7 @@ impl Orchestrator {
                 })
                 .collect(),
         };
-        if let Err(e) = save(&self.store.dir().join(FILE), &saved) {
+        if let Err(e) = saved::save(self.store.dir(), &saved) {
             log::warn!("couldn’t save usage history: {e}");
         }
     }
@@ -284,7 +248,7 @@ impl Orchestrator {
     /// Accounts shown: instances of agents with readable plans that are
     /// installed, and any instance a session reported windows for.
     fn usage_instances(&self) -> Vec<ProviderInstance> {
-        presets::effective(&self.store.settings().agents.instances)
+        let mut instances: Vec<ProviderInstance> = presets::effective(&self.store.settings().agents.instances)
             .into_iter()
             .map(|(i, _)| i)
             .filter(|i| {
@@ -292,7 +256,10 @@ impl Orchestrator {
                 let reported = self.usage.accounts.get(&i.id).is_some_and(|a| !a.windows.is_empty());
                 (crate::usage::readable(i.kind) && installed) || reported
             })
-            .collect()
+            .collect();
+        // One agent's accounts side by side, in the presets' order.
+        instances.sort_by_key(|i| ProviderKind::ALL.iter().position(|k| *k == i.kind));
+        instances
     }
 
     /// The board clients draw.
