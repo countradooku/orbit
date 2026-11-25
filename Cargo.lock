@@ -6008,6 +6008,7 @@ name = "orbit-browser"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "env_logger",
  "futures",
  "gpui-kit",
  "gpui-webview",

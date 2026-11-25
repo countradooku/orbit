@@ -113,7 +113,8 @@ pub fn detect_urls(text: &str) -> Vec<Url> {
                 continue;
             }
         };
-        let candidate_len = after_scheme.find(|c: char| c.is_whitespace() || is_url_terminator(c)).unwrap_or(after_scheme.len());
+        let candidate_len =
+            after_scheme.find(|c: char| c.is_whitespace() || is_url_terminator(c)).unwrap_or(after_scheme.len());
         let candidate = trim_trailing_punctuation(&after_scheme[..candidate_len]);
         let consumed = plain.len() - after_scheme.len() + candidate_len.max(1);
         if let Some(url) = dev_server_url(scheme, candidate)
@@ -443,7 +444,10 @@ mod tests {
 
     #[test]
     fn suggests_a_url_from_the_port_variable() {
-        assert_eq!(port_url([("NODE_ENV", "development"), ("PORT", "4000")]).map(String::from), Some("http://localhost:4000/".into()));
+        assert_eq!(
+            port_url([("NODE_ENV", "development"), ("PORT", "4000")]).map(String::from),
+            Some("http://localhost:4000/".into())
+        );
         assert_eq!(port_url([("PORT", " 8080 ")]).map(String::from), Some("http://localhost:8080/".into()));
         assert_eq!(port_url([("PORT", "abc")]), None);
         assert_eq!(port_url([("PORT", "0")]), None);
