@@ -5982,6 +5982,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "env_logger",
+ "futures",
  "gpui-kit",
  "log",
  "mimalloc",
@@ -5989,6 +5990,7 @@ dependencies = [
  "orbit-net",
  "orbit-proto",
  "orbit-terminal",
+ "raw-window-handle",
  "serde",
  "sonic-rs",
  "tempfile",

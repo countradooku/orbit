@@ -41,16 +41,6 @@ impl Attention {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Attention::Waiting => "Needs you",
-            Attention::Failed => "Failed",
-            Attention::RateLimited => "Waiting for quota",
-            Attention::Working => "Working",
-            Attention::Unread => "New result",
-            Attention::Idle => "Idle",
-        }
-    }
 }
 
 /// The one status vocabulary. Every state has its own shape as well as its

@@ -114,8 +114,18 @@ pub fn build(menu: PopupMenu, app: &Entity<AppState>, thread: &Thread, project_p
     let item = |label: &'static str, icon: Lucide, f: Box<dyn Fn(&mut Window, &mut App)>| {
         PopupMenuItem::new(label).icon(icon).on_click(move |_, window, cx| f(window, cx))
     };
+    let beside = id.0;
+    let mut menu = menu
+        .item(
+            PopupMenuItem::new("Open beside")
+                .icon(Lucide::Columns2)
+                .on_click(move |_, window, cx| {
+                    window.dispatch_action(Box::new(crate::actions::OpenThreadBeside { thread: beside }), cx)
+                }),
+        )
+        .separator();
     let a = app.clone();
-    let mut menu = menu.item(item(
+    menu = menu.item(item(
         "Rename…",
         Lucide::Pencil,
         Box::new({

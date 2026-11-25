@@ -86,6 +86,14 @@ pub struct JumpToThread {
     pub index: usize,
 }
 
+/// Opens a given thread beside the others, as a tile (the thread menu's
+/// "Open beside").
+#[derive(Clone, PartialEq, Debug, gpui_kit::Action)]
+#[action(namespace = orbit, no_json)]
+pub struct OpenThreadBeside {
+    pub thread: u64,
+}
+
 /// Where a binding applies. Deck letters and `?` never fire while a text
 /// field or the terminal has focus.
 pub const IN_WORKSPACE: Option<&str> = Some("Workspace");
