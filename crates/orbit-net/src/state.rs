@@ -149,6 +149,11 @@ pub struct Changes {
     pub runs: HashSet<ThreadId>,
     /// The quota board changed.
     pub quota: bool,
+    /// The plugins changed (installed, enabled, a catalog read), or one's
+    /// storage did.
+    pub plugins: bool,
+    /// Notifications plugins asked for: (plugin, title, body).
+    pub plugin_notices: Vec<(String, String, String)>,
 }
 
 impl Changes {
@@ -179,6 +184,8 @@ impl Changes {
             && self.git.is_empty()
             && self.runs.is_empty()
             && !self.quota
+            && !self.plugins
+            && self.plugin_notices.is_empty()
     }
 
     /// The shell (sidebar, inbox, fleet) needs a render.
@@ -196,6 +203,7 @@ impl Changes {
             || self.project_configs
             || !self.git.is_empty()
             || self.quota
+            || self.plugins
     }
 }
 
@@ -242,6 +250,8 @@ pub struct ClientState {
     pub runs: HashMap<(ThreadId, String), TargetRun>,
     /// Every account's quota and the usage settings.
     pub quota: QuotaBoard,
+    /// Installed plugins, their contributions and the catalogs.
+    pub plugins: PluginsState,
     timelines: HashMap<ThreadId, Timeline>,
     /// Timelines being fetched: the reply and the stream are separate
     /// channels, so events are held until both the reply and its mark have
@@ -413,6 +423,7 @@ impl ClientState {
                     self.git = snapshot.git.into_iter().collect();
                     self.runs = snapshot.runs.into_iter().map(|r| ((r.thread, r.target.clone()), r)).collect();
                     self.quota = *snapshot.quota;
+                    self.plugins = *snapshot.plugins;
                     self.live_usage.clear();
                     // Open timelines may be stale; the UI refetches them.
                     self.timelines.clear();
@@ -580,6 +591,17 @@ impl ClientState {
                 self.quota = *board;
                 changes.quota = true;
             }
+            Event::Plugins(state) => {
+                self.plugins = *state;
+                changes.plugins = true;
+            }
+            Event::PluginStorage { plugin, storage } => {
+                if let Some(p) = self.plugins.plugins.iter_mut().find(|p| p.id == plugin) {
+                    p.ui.storage = storage;
+                    changes.plugins = true;
+                }
+            }
+            Event::PluginNotice { plugin, title, body } => changes.plugin_notices.push((plugin, title, body)),
             Event::DraftSaved { target, draft } => {
                 if draft.is_empty() {
                     self.drafts.remove(&target);

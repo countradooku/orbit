@@ -7,6 +7,7 @@ use crate::bots::{BotCommand, BotReply, BotsState, Via, ViaAction};
 use crate::forge::{ForgeCommand, ForgeReply};
 use crate::guard::GuardSettings;
 use crate::host::{HostCommand, HostReply};
+use crate::plugin::{PluginCommand, PluginReply, PluginsState};
 use crate::ids::*;
 use crate::model::*;
 use crate::settings::Settings;
@@ -74,6 +75,9 @@ pub struct Snapshot {
     /// Every account's quota and the usage settings (see [`crate::usage`]).
     /// Boxed like `settings`.
     pub quota: Box<QuotaBoard>,
+    /// Installed plugins, their contributions and the catalogs (see
+    /// [`crate::plugin`]). Boxed like `settings`.
+    pub plugins: Box<PluginsState>,
 }
 
 #[derive(Clone, Debug, PartialEq, Encode, Decode)]
@@ -153,6 +157,15 @@ pub enum Event {
     /// A terminal's shell was stopped to save resources (its scrollback is
     /// kept) or started again. Ephemeral; see [`HostCommand::Terminals`].
     TerminalSleep { term: TermId, sleeping: bool },
+    /// The plugins changed: installed, enabled, granted, reloaded, or a
+    /// catalog was read. Ephemeral; the latest state is in the snapshot.
+    Plugins(Box<PluginsState>),
+    /// One plugin's storage changed (a panel action, its own logic): the
+    /// new JSON object. Ephemeral.
+    PluginStorage { plugin: String, storage: String },
+    /// A plugin asked to show a notification (it holds
+    /// [`crate::Capability::Notifications`]). Ephemeral.
+    PluginNotice { plugin: String, title: String, body: String },
 }
 
 impl Event {
@@ -176,6 +189,9 @@ impl Event {
                 | Event::RunChanged(_)
                 | Event::Quota(_)
                 | Event::TerminalSleep { .. }
+                | Event::Plugins(_)
+                | Event::PluginStorage { .. }
+                | Event::PluginNotice { .. }
         )
     }
 }
@@ -375,6 +391,7 @@ pub enum Command {
     Usage(UsageCommand),
     /// The background host and its terminals; see [`HostCommand`].
     Host(HostCommand),
+    Plugin(Box<PluginCommand>),
 }
 
 impl From<TeamCommand> for Command {
@@ -456,6 +473,7 @@ pub enum Reply {
     Workspace(WorkspaceReply),
     Usage(Box<UsageReply>),
     Host(HostReply),
+    Plugin(Box<PluginReply>),
 }
 
 /// A local merge of a thread's branch, previewed or done.

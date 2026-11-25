@@ -510,6 +510,8 @@ pub struct Parser {
     /// Tool calls matching it are held for a person through the
     /// `PreToolUse` hook (see [`guard_hooks`]), in every permission mode.
     pub guard: GuardSettings,
+    /// Plugin hooks that veto tool calls through the same hook.
+    pub tool_policy: crate::provider::ToolPolicy,
 }
 
 impl Parser {
@@ -534,6 +536,7 @@ impl Parser {
             rejected_reset_ms: None,
             interrupting: false,
             guard: GuardSettings { enabled: false, rules: Vec::new() },
+            tool_policy: Default::default(),
         }
     }
 
@@ -1242,6 +1245,12 @@ impl Parser {
         let tool = hook.tool_name.to_string();
         let input = hook.tool_input.as_ref().map(|i| i.as_raw_str().to_owned()).unwrap_or_else(|| "{}".to_owned());
         let kind = tools::request_kind(&tool, &input, None, &self.cwd);
+        // A plugin's veto applies in every mode, before anyone is asked.
+        if let Some(reason) = self.tool_policy.check(&kind) {
+            out.replies.push(hook_reply(id, "deny", &reason));
+            out.events.push(AgentEvent::Notice { level: NoticeLevel::Warning, text: reason });
+            return;
+        }
         // Read-only threads are refused by the permission check; let it.
         if self.access == Access::Readonly || self.guard.check(&kind).is_none() {
             out.replies.push(success_reply(id, "{}"));
@@ -1433,9 +1442,13 @@ pub const GUARD_HOOK: &str = "orbit_guard";
 /// The `hooks` value of the `initialize` request: a `PreToolUse` hook on
 /// the tools that can do harm, when a guard is active. A hook's decision
 /// applies in every permission mode, `bypassPermissions` included, so a
-/// guarded call reaches a person even under Full access.
-pub fn guard_hooks(guard: &GuardSettings, access: Access) -> &'static str {
-    if guard.active() && access != Access::Readonly {
+/// guarded call reaches a person even under Full access. With plugin
+/// tool hooks (`plugins`) every tool call goes through it.
+pub fn guard_hooks(guard: &GuardSettings, access: Access, plugins: bool) -> &'static str {
+    if plugins {
+        // Plugin hooks see every tool call: no matcher.
+        concat!(r#"{"PreToolUse":[{"hookCallbackIds":[""#, "orbit_guard", r#""]}]}"#)
+    } else if guard.active() && access != Access::Readonly {
         concat!(
             r#"{"PreToolUse":[{"matcher":"Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Read","hookCallbackIds":[""#,
             "orbit_guard",
@@ -1552,8 +1565,8 @@ mod tests {
     fn the_guard_hook_holds_matching_calls_in_every_mode() {
         let mut parser = Parser::new("/repo".into(), "s".into(), Access::Full, None);
         parser.guard = GuardSettings::default();
-        assert!(guard_hooks(&parser.guard, Access::Full).contains(GUARD_HOOK));
-        assert_eq!(guard_hooks(&parser.guard, Access::Readonly), "null");
+        assert!(guard_hooks(&parser.guard, Access::Full, false).contains(GUARD_HOOK));
+        assert_eq!(guard_hooks(&parser.guard, Access::Readonly, false), "null");
         let hook = |id: &str, command: &str| {
             format!(
                 r#"{{"type":"control_request","request_id":"{id}","request":{{"subtype":"hook_callback","callback_id":"orbit_guard","tool_use_id":"tu_{id}","input":{{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{{"command":"{command}"}}}}}}}}"#
@@ -1578,6 +1591,32 @@ mod tests {
         let mut out = Output::default();
         parser.resolve("h3", &Decision::Deny { feedback: "no".into() }, &mut out);
         assert!(out.replies[0].contains(r#""permissionDecision":"deny""#) && out.replies[0].contains("said: no"));
+    }
+
+    #[test]
+    fn plugin_policies_veto_every_tool_through_the_hook() {
+        let mut parser = Parser::new("/repo".into(), "s".into(), Access::Full, None);
+        parser.tool_policy = crate::provider::ToolPolicy::new(
+            |kind| match kind {
+                RequestKind::Command { command, .. } if command.contains("rm -rf /") => Some("Blocked by the Guard plugin: no".into()),
+                _ => None,
+            },
+            true,
+        );
+        let hooks = guard_hooks(&parser.guard, Access::Readonly, true);
+        assert!(hooks.contains(GUARD_HOOK) && !hooks.contains("matcher"), "every tool, every mode: {hooks}");
+        let hook = |id: &str, command: &str| {
+            format!(
+                r#"{{"type":"control_request","request_id":"{id}","request":{{"subtype":"hook_callback","callback_id":"orbit_guard","input":{{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{{"command":"{command}"}}}}}}}}"#
+            )
+        };
+        let mut out = Output::default();
+        parser.feed(hook("p1", "rm -rf /").as_bytes(), &mut out);
+        assert!(out.replies[0].contains(r#""permissionDecision":"deny""#) && out.replies[0].contains("Guard plugin"), "{}", out.replies[0]);
+        assert!(matches!(&out.events[..], [AgentEvent::Notice { level: NoticeLevel::Warning, .. }]));
+        let mut out = Output::default();
+        parser.feed(hook("p2", "ls").as_bytes(), &mut out);
+        assert!(out.replies[0].contains(r#""request_id":"p2","response":{}"#), "{}", out.replies[0]);
     }
 
     #[test]

@@ -435,6 +435,7 @@ impl Store {
             git: Vec::new(),
             runs: Vec::new(),
             quota: Default::default(),
+            plugins: Default::default(),
         }
     }
 

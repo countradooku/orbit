@@ -1,0 +1,36 @@
+# Agent manifests: two agent CLIs described as data. One speaks ACP and
+# appears in the model picker; one runs in a terminal tab, with status from
+# Orbit's terminal heuristics.
+id = "more-agents"
+name = "Gemini Flash and Aider"
+version = "1.0.0"
+description = "Gemini CLI pinned to Flash over ACP, and Aider in a terminal."
+publisher = "Orbit examples"
+license = "MIT"
+categories = ["agents"]
+engines = { orbit = ">=0.1.0" }
+# Running a program needs consent: the dialog shows both command lines.
+capabilities = ["agents"]
+
+[[agents]]
+id = "gemini-flash"
+name = "Gemini Flash"
+protocol = "acp"
+command = "gemini"
+args = ["--experimental-acp", "--model", "gemini-2.5-flash"]
+install = "npm install -g @google/gemini-cli"
+models = [{ id = "gemini-2.5-flash", name = "Gemini 2.5 Flash", default = true, context_window = 1048576 }]
+modes = [{ id = "build" }, { id = "plan", label = "Plan" }]
+
+[[agents]]
+id = "aider"
+name = "Aider"
+protocol = "terminal"
+command = "aider"
+args = ["--no-auto-commits"]
+install = "python -m pip install aider-install && aider-install"
+
+[[commands]]
+id = "start-aider"
+title = "Start Aider in a terminal"
+agent = "aider"

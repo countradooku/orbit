@@ -629,6 +629,13 @@ impl Session {
             self.answer(raw_id, None);
             return;
         }
+        if let Some(reason) = self.spec.tool_policy.check(&tool.request_kind(&self.cwd())) {
+            // A plugin's veto: refused before anyone is asked.
+            let option = map::pick_option(&options, &Decision::Deny { feedback: reason.clone() });
+            self.answer(raw_id, option.as_deref());
+            self.emit(AgentEvent::Notice { level: NoticeLevel::Warning, text: reason });
+            return;
+        }
         let guarded = self.spec.guard.check(&tool.request_kind(&self.cwd())).is_some();
         let decision = if guarded {
             // The guard always asks a person, whatever the access level.
