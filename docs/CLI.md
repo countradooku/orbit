@@ -25,6 +25,11 @@ writes `<data>/endpoint.json`:
   `~/.local/share/Orbit`). `--host`/`--token` (or `ORBIT_HOST`/`ORBIT_TOKEN`)
   name another engine instead, such as a remote `orbitd`.
 * Agents started by Orbit get `ORBIT_THREAD` (their thread) and `ORBIT_DATA`.
+* This is the engine's endpoint. The desktop app also keeps its
+  single-instance hand-off (`app.endpoint`), which opens a folder or thread in
+  the running window; `orbit open` uses that one, by running
+  `orbit-desktop --thread <id>`, which hands over to the running app (or
+  starts it) and exits.
 
 Startup, measured on Windows 11 with a release build against a running
 `orbitd`: first byte of `orbit threads` in 13.5 ms median from process
@@ -59,6 +64,9 @@ and `orbit agent-context` for a short guide written for agents.
 | `queue <thread> <item> --to N \| --now`, `draft <thread> --text T` | Composer queue and drafts | |
 | `generate title\|commit\|pr\|custom <input>` | One-shot text from an agent | |
 | `terminal run [--thread T \| --cwd D] [--detach] <command…>`, `terminal read <id>`, `terminal list` | Run commands in engine terminals | |
+| `pr list\|show\|merge\|checkout\|fix-checks` | Pull requests on GitHub or GitLab | `list_pull_requests`, `get_pull_request` |
+| `issue list\|show\|start` | Issues on GitHub, GitLab, Linear or Jira; start a thread from one | `list_issues`, `get_issue` |
+| `ship [thread]` | Where a thread's work stands (uncommitted → merged) | `ship_status` |
 | `search <query>` | Full-text search across threads | `search` |
 | `open [thread]` | Bring the desktop app forward (starting it if needed) and show the thread | |
 | `agent-context`, `help [--json]`, `completions <shell>` | Self-description | |
@@ -123,7 +131,8 @@ writes them).
   believes it, so a turn ending and a queued message starting are never taken
   for the end.
 * Engine additions (`crates/orbit-core/src/engine/cli.rs`): `StartThread`,
-  `ReadTimeline`, `RunInTerminal`, `ReadTerminal`, `ListTerminals` and
-  `Focus` (broadcast as `Event::FocusRequested`, which the desktop app answers).
+  `ReadTimeline`, `RunInTerminal`, `ReadTerminal` and `ListTerminals`. A
+  command terminal answers ConPTY's start-up cursor query itself, since no
+  screen is attached to it.
 * The CLI depends on `orbit-net` without its `engine` feature, so it never
   links the engine.

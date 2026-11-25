@@ -10,18 +10,27 @@ mod actions;
 mod app_state;
 mod assets;
 mod composer;
+#[cfg(debug_assertions)]
+mod demo;
 mod fleet;
+mod forge;
 mod format;
 mod home;
 mod inbox;
+mod instance;
+mod keymap;
+mod notify;
 mod palette;
+mod prefs;
 mod review;
 mod settings;
+mod shortcuts;
 mod shell;
 mod sidebar;
 mod theme;
 mod thread;
 mod thread_menu;
+mod tiles;
 mod ui;
 
 use gpui_kit::component::TitleBar;
@@ -65,6 +74,18 @@ fn control_endpoint(backend: &Backend, data_dir: &std::path::Path) -> Option<orb
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    // One Orbit per data folder: a second launch hands over and exits.
+    let launch = instance::this_launch();
+    let data_dir: std::path::PathBuf =
+        std::env::var_os("ORBIT_DATA").map(Into::into).unwrap_or_else(EngineOptions::default_data_dir);
+    let instance = match instance::claim(&data_dir, &launch) {
+        Ok(instance::Claim::Primary(instance)) => instance,
+        Ok(instance::Claim::Forwarded) => return,
+        Err(err) => {
+            eprintln!("Orbit is already running for {}, but did not answer: {err}", data_dir.display());
+            std::process::exit(1);
+        }
+    };
     let (backend, startup) = match backend() {
         Ok(started) => started,
         Err(err) => {
@@ -81,8 +102,11 @@ fn main() {
         cx.set_app_identity("dev.orbit.Orbit", "Orbit");
         orbit_terminal::init(cx);
         theme::install(cx);
-        actions::bind(cx);
+        prefs::init(&startup.data_dir, cx);
+        keymap::install(&startup.data_dir, cx);
         thread::init(cx);
+        // The user's bindings go last so they win over every default.
+        keymap::reload(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         // Orbit is one window. Windows quits when its last window closes;
         // macOS and Linux keep the process alive with nothing to show, so
@@ -107,6 +131,7 @@ fn main() {
 
         let app = cx.new(|cx| app_state::AppState::new(backend, cx));
         settings::init(app.clone(), startup, cx);
+        forge::init(app.clone(), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(820.)), cx))),
             window_min_size: Some(size(px(720.), px(480.))),
@@ -119,8 +144,22 @@ fn main() {
             cx.new(|cx| shell::Workspace::new(app, window, cx))
         });
         match opened {
-            Ok((_, workspace)) => {
-                let _ = workspace;
+            Ok((window, workspace)) => {
+                // This launch's own arguments, then later launches' as they come.
+                let mut instance = instance;
+                let _ = window.update(cx, |_, window, cx| {
+                    workspace.update(cx, |ws, cx| ws.handle_launch(launch, window, cx))
+                });
+                cx.spawn(async move |cx| {
+                    use futures::StreamExt as _;
+                    while let Some(launch) = instance.launches.next().await {
+                        let workspace = workspace.clone();
+                        let _ = window.update(cx, |_, window, cx| {
+                            workspace.update(cx, |ws, cx| ws.handle_launch(launch, window, cx))
+                        });
+                    }
+                })
+                .detach();
             }
             Err(err) => {
                 eprintln!("Orbit couldn’t open its window: {err}");

@@ -34,6 +34,7 @@ pub fn render(app: Entity<AppState>, _: &mut Window, cx: &mut App) -> impl IntoE
         composer(cx),
         agents(&app, cx),
         workspace(cx),
+        integrations(),
         notifications(),
         keyboard(),
         remote(&app, cx),
@@ -281,6 +282,80 @@ fn provider_status(app: Entity<AppState>, kind: ProviderKind) -> SettingField<Sh
     })
 }
 
+/// Hosts and issue trackers. Stored by the engine in their own file, not
+/// with these settings, so tokens never travel in the logged settings.
+fn integrations() -> SettingPage {
+    use crate::forge::integrations::{get as integ, update as set_integ};
+    SettingPage::new("Integrations").icon(Icon::new(Lucide::Plug)).groups([
+        SettingGroup::new().title("GitLab").item(
+            SettingItem::new(
+                "GitLab CLI program",
+                text_field(
+                    "glab-binary".into(),
+                    "glab",
+                    false,
+                    |cx| integ(cx).glab_binary.clone(),
+                    |v, cx| set_integ(cx, |s| s.glab_binary = v),
+                ),
+            )
+            .description("Merge requests and GitLab issues are read with your own glab sign-in (`glab auth login`). Leave empty to use glab from PATH.")
+            .keywords(["glab", "merge request", "gitlab"]),
+        ),
+        SettingGroup::new().title("Linear").item(
+            SettingItem::new(
+                "API key",
+                text_field(
+                    "linear-api-key".into(),
+                    "lin_api_…",
+                    true,
+                    |cx| integ(cx).linear_api_key.clone(),
+                    |v, cx| set_integ(cx, |s| s.linear_api_key = v),
+                ),
+            )
+            .description("A personal API key from Linear › Settings › Security & access. Orbit reads the issues assigned to you and the ones you search for; it never changes them.")
+            .keywords(["linear", "token", "issues"]),
+        ),
+        SettingGroup::new().title("Jira").items([
+            SettingItem::new(
+                "Site",
+                text_field(
+                    "jira-url".into(),
+                    "https://your-team.atlassian.net",
+                    false,
+                    |cx| integ(cx).jira_url.clone(),
+                    |v, cx| set_integ(cx, |s| s.jira_url = v),
+                ),
+            )
+            .description("Your Jira Cloud site, or the base address of Jira Server or Data Center.")
+            .keywords(["jira", "atlassian", "url"]),
+            SettingItem::new(
+                "Email",
+                text_field(
+                    "jira-email".into(),
+                    "you@company.com",
+                    false,
+                    |cx| integ(cx).jira_email.clone(),
+                    |v, cx| set_integ(cx, |s| s.jira_email = v),
+                ),
+            )
+            .description("Your Atlassian account email, for a Jira Cloud API token. Leave empty for a Server or Data Center personal access token.")
+            .keywords(["jira", "account"]),
+            SettingItem::new(
+                "API token",
+                text_field(
+                    "jira-api-token".into(),
+                    "Token",
+                    true,
+                    |cx| integ(cx).jira_api_token.clone(),
+                    |v, cx| set_integ(cx, |s| s.jira_api_token = v),
+                ),
+            )
+            .description("Create one at id.atlassian.com › Security › API tokens (Cloud) or in Jira › Profile › Personal access tokens. Stored in Orbit’s data folder and never written to logs.")
+            .keywords(["jira", "token", "pat"]),
+        ]),
+    ])
+}
+
 fn workspace(cx: &App) -> SettingPage {
     let default_root = super::data_dir(cx).join("worktrees").display().to_string();
     SettingPage::new("Workspace & Git").icon(Icon::new(Lucide::GitBranch)).groups([
@@ -360,7 +435,7 @@ fn notifications() -> SettingPage {
         SettingGroup::new()
             .title("Notifications")
             .description(
-                "Shown in the window and posted to the system notification center; clicking one opens the thread.                  Nothing is posted for the thread you are looking at.",
+                "A toast while Orbit is in front; the system notification center, and the taskbar or Dock asking for attention, while it is in the background. Clicking one opens the thread. Nothing is shown for threads on screen, and bursts arrive as one notification.",
             )
             .items([
                 SettingItem::new(
@@ -381,6 +456,16 @@ fn notifications() -> SettingPage {
                 )
                 .description("A turn failed, or an agent hit its usage limit.")
                 .keywords(["error", "rate limit", "quota"]),
+                SettingItem::new(
+                    "Play a sound",
+                    SettingField::switch(
+                        |cx| crate::prefs::get(cx).sounds,
+                        |v, cx| crate::prefs::update(cx, |p| p.sounds = v),
+                    )
+                    .default_value(true),
+                )
+                .description("The system alert sound when an agent needs you or fails while Orbit is in the background. Kept on this computer.")
+                .keywords(["sound", "audio", "beep", "bell"]),
             ]),
     )
 }
@@ -396,16 +481,37 @@ fn keyboard() -> SettingPage {
             shortcut("New thread", Box::new(NewThread)),
             shortcut("Inbox", Box::new(GoInbox)),
             shortcut("Fleet", Box::new(GoFleet)),
+            shortcut("Next thread that needs you", Box::new(NextAttention)),
             shortcut("Next thread", Box::new(NextThread)),
             shortcut("Previous thread", Box::new(PreviousThread)),
             shortcut("Add project", Box::new(AddProject)),
             shortcut("Settings", Box::new(OpenSettings)),
+            shortcut("Keyboard shortcuts", Box::new(ShowShortcuts)),
         ]),
         SettingGroup::new().title("Threads").items([
             shortcut("Focus the composer", Box::new(FocusComposer)),
             shortcut("Stop the running turn", Box::new(StopTurn)),
             shortcut("Review changes", Box::new(ToggleReview)),
+            shortcut("Rename", Box::new(RenameThread)),
+            shortcut("Settle", Box::new(SettleThread)),
+            shortcut("Pin or unpin", Box::new(PinThread)),
+            shortcut("Open beside, as a tile", Box::new(OpenBeside)),
         ]),
+        SettingGroup::new()
+            .title("Your bindings")
+            .description(format!(
+                "Rules in {} win over these defaults and take effect when Orbit comes back to the front. Problems in the file are reported; the other rules still apply.",
+                crate::keymap::FILE_NAME
+            ))
+            .item(SettingItem::new(
+                "Bindings file",
+                SettingField::render(|_, _, _| {
+                    Button::new("edit-keybindings")
+                        .small()
+                        .label("Edit…")
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenKeybindings), cx))
+                }),
+            )),
         SettingGroup::new()
             .title("Composer")
             .description("These follow Composer › Send with.")
@@ -724,9 +830,11 @@ fn env_field(key: SharedString, kind: ProviderKind) -> SettingField<SharedString
 }
 
 /// The key an action is bound to, read from the live keymap.
+/// The keys that run `action` now, from the live keymap, so the user's own
+/// bindings show here.
 fn bound_key(action: Box<dyn Action>) -> SettingField<SharedString> {
-    SettingField::render(move |_, window, cx| match Kbd::binding_for_action(action.as_ref(), Some("Workspace"), window) {
-        Some(kbd) => kbd.into_any_element(),
+    SettingField::render(move |_, _, cx| match crate::ui::keycaps(action.as_ref(), cx) {
+        Some(keys) => keys,
         None => muted_value("Not bound".to_owned(), cx).into_any_element(),
     })
 }

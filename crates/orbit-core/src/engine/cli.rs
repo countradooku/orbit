@@ -94,15 +94,6 @@ impl Orchestrator {
             Command::RunInTerminal { cwd, command, cols, rows } => self.run_in_terminal(cwd, command, cols, rows),
             Command::ReadTerminal { term, max_bytes } => self.read_terminal(term, max_bytes),
             Command::ListTerminals => Ok(Reply::Terminals(self.terminal_list())),
-            Command::Focus { thread } => {
-                if let Some(id) = thread
-                    && self.store.thread(id).is_none()
-                {
-                    return Err("That thread no longer exists.".into());
-                }
-                self.emit(Event::FocusRequested { thread });
-                Ok(Reply::Done)
-            }
             _ => Err("not an automation command".into()),
         }
     }

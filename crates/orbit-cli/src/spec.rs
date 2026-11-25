@@ -146,6 +146,15 @@ pub const ACCESS: &[&str] = &["readonly", "ask", "auto-edit", "full"];
 pub const SHELLS: &[&str] = &["bash", "zsh", "fish", "powershell", "elvish"];
 pub const CLIENTS: &[&str] = &["claude", "codex", "all"];
 pub const TASKS: &[&str] = &["title", "commit", "pr", "custom"];
+pub const PR_FILTERS: &[&str] = &["open", "mine", "merged", "closed"];
+pub const MERGE_METHODS: &[&str] = &["squash", "merge", "rebase"];
+pub const TRACKERS: &[&str] = &["github", "gitlab", "linear", "jira"];
+
+const PROJECT: Arg = arg("project", Kind::Project, "The project; default: the one containing the current folder.").short('p');
+const PR: Arg = pos("number", Kind::Str, "The pull request number (`42`, `#42`).");
+const REFRESH: Arg = arg("refresh", Kind::Flag, "Fetch fresh data instead of a seconds-old result.");
+const TRACKER: Arg = arg("tracker", Kind::Choice(TRACKERS), "The tracker; default: the project's host.");
+const KEY: Arg = pos("key", Kind::Str, "The issue (`42`, `ENG-123`, `PROJ-7`).");
 
 const THREAD: Arg = pos("thread", Kind::Thread, "The thread: its id, a unique part of its id or title, `latest`, or `self`.");
 const REQUEST: Arg = arg("request", Kind::Str, "The request id, when the thread has more than one pending.");
@@ -496,6 +505,74 @@ pub static SPECS: &[Spec] = &[
     },
     Spec { ..spec(&["terminal", "list"], "List terminals", &[]) },
     Spec {
+        tool: read("list_pull_requests", "List pull requests"),
+        examples: &["orbit pr list --filter mine"],
+        ..spec(
+            &["pr", "list"],
+            "List the project's pull requests",
+            &[PROJECT, arg("filter", Kind::Choice(PR_FILTERS), "Which ones.").default("open"), REFRESH],
+        )
+    },
+    Spec {
+        details: "Checks, reviews, mergeability and comments.",
+        tool: read("get_pull_request", "Get a pull request"),
+        ..spec(&["pr", "show"], "Show a pull request", &[PR, PROJECT, REFRESH])
+    },
+    Spec {
+        details: "Merges on the host (GitHub or GitLab), or with --auto merges once checks and reviews pass.",
+        ..spec(
+            &["pr", "merge"],
+            "Merge a pull request",
+            &[
+                PR,
+                PROJECT,
+                arg("method", Kind::Choice(MERGE_METHODS), "How.").default("squash"),
+                arg("auto", Kind::Flag, "Merge when its checks and reviews pass."),
+                arg("delete-branch", Kind::Flag, "Delete the branch after merging."),
+            ],
+        )
+    },
+    Spec {
+        details: "Opens the pull request's branch in a thread on its own worktree, or returns the thread that has it.",
+        ..spec(&["pr", "checkout"], "Work on a pull request in a thread", &[PR, PROJECT])
+    },
+    Spec {
+        details: "Sends the failing checks' names and log excerpts to a thread (the one on the branch by default) to fix.",
+        ..spec(
+            &["pr", "fix-checks"],
+            "Have an agent fix a pull request's failing checks",
+            &[PR, PROJECT, arg("thread", Kind::Thread, "Send them to this thread.").short('t')],
+        )
+    },
+    Spec {
+        details: "Issues assigned to you, or matching --query.",
+        tool: read("list_issues", "List issues"),
+        examples: &["orbit issue list", "orbit issue list --tracker linear --query \"login\""],
+        ..spec(
+            &["issue", "list"],
+            "List issues",
+            &[PROJECT, TRACKER, arg("query", Kind::Str, "Search text instead of your assigned issues.").short('q'), REFRESH],
+        )
+    },
+    Spec {
+        tool: read("get_issue", "Get an issue"),
+        ..spec(&["issue", "show"], "Show an issue", &[KEY, PROJECT, TRACKER, REFRESH])
+    },
+    Spec {
+        details: "Starts a thread on its own branch and worktree (unless --here) with the issue as its first prompt.",
+        examples: &["orbit issue start ENG-123 --tracker linear"],
+        ..spec(
+            &["issue", "start"],
+            "Start a thread from an issue",
+            &[KEY, PROJECT, TRACKER, arg("here", Kind::Flag, "Work in the project's checkout instead of a new worktree.")],
+        )
+    },
+    Spec {
+        details: "Uncommitted, committed, pushed, checks running or failing, mergeable, merged: where a thread's work stands.",
+        tool: read("ship_status", "Where a thread's work stands"),
+        ..spec(&["ship"], "Show where a thread's work stands", &[opt_pos("thread", Kind::Thread, "The thread; default: latest."), REFRESH])
+    },
+    Spec {
         tool: read("search", "Search threads"),
         examples: &["orbit search \"rate limit\""],
         ..spec(
@@ -505,7 +582,7 @@ pub static SPECS: &[Spec] = &[
         )
     },
     Spec {
-        details: "Brings the desktop app forward and shows the thread. Starts the app when it is not running.",
+        details: "Brings the desktop app forward and shows the thread, through the app's own single-instance hand-off                   (the same as launching `orbit-desktop --thread <id>`). Starts the app when it is not running.",
         examples: &["orbit open latest"],
         ..spec(&["open"], "Show a thread in the desktop app", &[opt_pos("thread", Kind::Thread, "The thread to show.")])
     },

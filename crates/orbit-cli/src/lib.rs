@@ -9,6 +9,7 @@ pub mod args;
 pub mod conn;
 pub mod error;
 pub mod exec;
+pub mod forge;
 pub mod help;
 pub mod json;
 pub mod mcp;

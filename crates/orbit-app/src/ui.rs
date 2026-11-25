@@ -3,7 +3,8 @@
 //! They carry Orbit's domain language (thread status, context fill) so the
 //! sidebar, inbox, fleet and thread views show the same state the same way.
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
@@ -40,16 +41,115 @@ impl Attention {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Attention::Waiting => "Needs you",
-            Attention::Failed => "Failed",
-            Attention::RateLimited => "Waiting for quota",
-            Attention::Working => "Working",
-            Attention::Unread => "New result",
-            Attention::Idle => "Idle",
+}
+
+/// The one status vocabulary. Every state has its own shape as well as its
+/// own color, so it reads in grayscale and for color-blind users, and it is
+/// drawn the same way on rows, cards, tiles and the title bar.
+///
+/// | Glyph       | Shape                         | Color   |
+/// | ----------- | ----------------------------- | ------- |
+/// | Approval    | shield with `!`               | warning |
+/// | Question    | filled disc with `?`          | warning |
+/// | Failed      | octagon with `!`              | danger  |
+/// | RateLimited | hourglass                     | warning |
+/// | Working     | rotating open arc             | neutral |
+/// | Unverified  | dashed ring (no live signal)  | neutral |
+/// | Unread      | small filled dot              | primary |
+/// | Settled     | check                         | neutral |
+/// | Idle        | nothing                       |         |
+///
+/// Working has no hue on purpose: color always means "look" or "act".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Glyph {
+    Approval,
+    Question,
+    Failed,
+    RateLimited,
+    Working,
+    Unverified,
+    Unread,
+    Settled,
+    Idle,
+}
+
+impl Glyph {
+    /// The glyph for a thread, telling approvals from questions.
+    pub fn of(thread: &Thread) -> Self {
+        match Attention::of(thread) {
+            Attention::Waiting => match thread.pending.first().map(|p| &p.request.kind) {
+                Some(RequestKind::Question { .. }) | None => Glyph::Question,
+                Some(_) => Glyph::Approval,
+            },
+            Attention::Idle if thread.settled_ms.is_some() => Glyph::Settled,
+            other => Glyph::from(other),
         }
     }
+
+    /// As [`Glyph::of`], but a working thread whose host is not connected is
+    /// shown as unverified: Orbit never claims work it cannot see.
+    pub fn of_live(thread: &Thread, connected: bool) -> Self {
+        match Glyph::of(thread) {
+            Glyph::Working if !connected => Glyph::Unverified,
+            glyph => glyph,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Glyph::Approval => "Needs approval",
+            Glyph::Question => "Has a question",
+            Glyph::Failed => "Failed",
+            Glyph::RateLimited => "Waiting for quota",
+            Glyph::Working => "Working",
+            Glyph::Unverified => "No signal from the host",
+            Glyph::Unread => "New result",
+            Glyph::Settled => "Settled",
+            Glyph::Idle => "Idle",
+        }
+    }
+
+    /// Calls for the user: these pulse once when they appear.
+    pub fn is_call(self) -> bool {
+        matches!(self, Glyph::Approval | Glyph::Question | Glyph::Failed)
+    }
+
+    fn color(self, theme: &gpui_kit::component::Theme) -> Hsla {
+        match self {
+            Glyph::Approval | Glyph::Question | Glyph::RateLimited => theme.warning,
+            Glyph::Failed => theme.danger,
+            Glyph::Unread => theme.primary,
+            Glyph::Working | Glyph::Unverified | Glyph::Settled | Glyph::Idle => theme.muted_foreground,
+        }
+    }
+}
+
+impl From<Attention> for Glyph {
+    fn from(attention: Attention) -> Self {
+        match attention {
+            Attention::Waiting => Glyph::Question,
+            Attention::Failed => Glyph::Failed,
+            Attention::RateLimited => Glyph::RateLimited,
+            Attention::Working => Glyph::Working,
+            Attention::Unread => Glyph::Unread,
+            Attention::Idle => Glyph::Idle,
+        }
+    }
+}
+
+/// One spin of the working arc.
+const SPIN: Duration = Duration::from_millis(1200);
+/// A glyph that changes eases in over this long.
+const GLYPH_ENTER: Duration = Duration::from_millis(180);
+/// A call for attention rings once, over this long.
+const GLYPH_PULSE: Duration = Duration::from_millis(600);
+
+/// What a glyph slot remembers between frames: the glyph it last drew and
+/// when that changed, so a change animates and a first sight does not.
+struct GlyphMemory {
+    glyph: Glyph,
+    generation: u32,
+    changed_at: Option<Instant>,
 }
 
 /// A fixed-width status slot. Every row reserves it, so titles never shift
@@ -57,47 +157,142 @@ impl Attention {
 #[derive(IntoElement)]
 pub struct StatusGlyph {
     id: ElementId,
-    attention: Attention,
+    glyph: Glyph,
+    tooltip: Option<SharedString>,
 }
 
 impl StatusGlyph {
+    /// The glyph for `thread`, with a tooltip naming the state, its age and
+    /// the tokens spent.
     pub fn new(id: impl Into<ElementId>, thread: &Thread) -> Self {
-        Self { id: id.into(), attention: Attention::of(thread) }
+        let glyph = Glyph::of(thread);
+        let tooltip = (glyph != Glyph::Idle).then(|| glyph_tooltip(glyph, thread));
+        Self { id: id.into(), glyph, tooltip }
     }
 
     pub fn attention(id: impl Into<ElementId>, attention: Attention) -> Self {
-        Self { id: id.into(), attention }
+        Self { id: id.into(), glyph: attention.into(), tooltip: None }
+    }
+
+    pub fn glyph(id: impl Into<ElementId>, glyph: Glyph) -> Self {
+        Self { id: id.into(), glyph, tooltip: None }
+    }
+
+    /// Names the state on hover.
+    pub fn tooltip(mut self, text: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(text.into());
+        self
+    }
+}
+
+fn glyph_tooltip(glyph: Glyph, thread: &Thread) -> SharedString {
+    let age = format::relative_time(thread.updated_ms, now_ms());
+    let age = if age == "now" { "just now".to_owned() } else { format!("{age} ago") };
+    let tokens = thread.usage.input_tokens + thread.usage.output_tokens;
+    if tokens > 0 {
+        format!("{} · {age} · {} tokens", glyph.label(), format::tokens(tokens)).into()
+    } else {
+        format!("{} · {age}", glyph.label()).into()
+    }
+}
+
+/// The glyph's shape, at rest.
+fn glyph_shape(glyph: Glyph, id: &ElementId, window: &Window, theme: &gpui_kit::component::Theme) -> AnyElement {
+    let color = glyph.color(theme);
+    match glyph {
+        Glyph::Working => {
+            // All arcs turn in phase, and slowly when the window is in the
+            // background, so many working rows never read as noise.
+            let mut spin = Animation::new(SPIN).repeat_synced();
+            if !window.is_window_active() {
+                spin = spin.with_max_fps(10.);
+            }
+            Icon::new(IconName::LoaderCircle)
+                .size_3p5()
+                .text_color(color)
+                .with_animation(id.clone(), spin, |icon, t| icon.transform(Transformation::rotate(percentage(t))))
+                .into_any_element()
+        }
+        Glyph::Unverified => Icon::new(Lucide::CircleDashed).size_3p5().text_color(color).into_any_element(),
+        Glyph::Question => h_flex()
+            .size_3p5()
+            .justify_center()
+            .rounded_full()
+            .bg(color)
+            .text_color(theme.warning_foreground)
+            .text_size(rems(0.6875))
+            .line_height(rems(0.6875))
+            .font_weight(FontWeight::BLACK)
+            .child("?")
+            .into_any_element(),
+        Glyph::Approval => Icon::new(Lucide::ShieldAlert).size_3p5().text_color(color).into_any_element(),
+        Glyph::Failed => Icon::new(Lucide::OctagonAlert).size_3p5().text_color(color).into_any_element(),
+        Glyph::RateLimited => Icon::new(Lucide::Hourglass).size_3p5().text_color(color).into_any_element(),
+        Glyph::Unread => div().size_2().rounded_full().bg(color).into_any_element(),
+        Glyph::Settled => Icon::new(IconName::Check).size_3().text_color(color).into_any_element(),
+        Glyph::Idle => div().into_any_element(),
     }
 }
 
 impl RenderOnce for StatusGlyph {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let memory_id = ElementId::NamedChild(Arc::new(self.id.clone()), "memory".into());
+        let glyph = self.glyph;
+        let memory = window.use_keyed_state(memory_id, cx, |_, _| GlyphMemory { glyph, generation: 0, changed_at: None });
+        let (generation, changed_at) = memory.update(cx, |memory, _| {
+            if memory.glyph != glyph {
+                memory.glyph = glyph;
+                memory.generation += 1;
+                memory.changed_at = Some(Instant::now());
+            }
+            (memory.generation, memory.changed_at)
+        });
         let theme = cx.theme();
-        let slot = h_flex().size_4().flex_none().justify_center();
-        match self.attention {
-            Attention::Working => slot.child(
-                Icon::new(IconName::LoaderCircle)
-                    .xsmall()
-                    .text_color(theme.muted_foreground)
-                    .with_animation(
-                        self.id,
-                        Animation::new(Duration::from_millis(900)).repeat(),
-                        |icon, t| icon.transform(Transformation::rotate(percentage(t))),
-                    ),
-            ),
-            // A slow pulse: waiting on you is a call to act, not progress.
-            Attention::Waiting => slot.child(
-                Icon::new(Lucide::Hand).xsmall().text_color(theme.warning).with_animation(
-                    self.id,
-                    Animation::new(Duration::from_millis(1600)).repeat().with_easing(pulsating_between(0.45, 1.0)),
-                    |icon, t| icon.opacity(t),
-                ),
-            ),
-            Attention::Failed => slot.child(Icon::new(IconName::CircleAlert).xsmall().text_color(theme.danger)),
-            Attention::RateLimited => slot.child(Icon::new(Lucide::Hourglass).xsmall().text_color(theme.warning)),
-            Attention::Unread => slot.child(div().size_1p5().rounded_full().bg(theme.primary)),
-            Attention::Idle => slot,
-        }
+        let shape = glyph_shape(glyph, &self.id, window, theme);
+        let fresh = changed_at.filter(|at| at.elapsed() < GLYPH_PULSE);
+        let color = glyph.color(theme);
+
+        let slot = h_flex().id(self.id.clone()).relative().size_4().flex_none().justify_center();
+        let slot = match fresh {
+            // A change eases in (scale and fade); a call also rings once.
+            Some(_) => {
+                let key = |part: &'static str| {
+                    ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("{part}-{generation}")))
+                };
+                let entering = div()
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .size_4()
+                    .child(shape)
+                    .with_animation(key("enter"), Animation::new(GLYPH_ENTER).with_easing(ease_out_quint()), |el, t| {
+                        el.opacity(t)
+                    });
+                slot.when(glyph.is_call(), |slot| {
+                    slot.child(
+                        div()
+                            .absolute()
+                            .rounded_full()
+                            .border_1()
+                            .border_color(color)
+                            .with_animation(
+                                key("pulse"),
+                                Animation::new(GLYPH_PULSE).with_easing(ease_out_quint()),
+                                |ring, t| {
+                                    let size = 0.75 + 0.75 * t;
+                                    let inset = (1.0 - size) / 2.0;
+                                    ring.size(rems(size)).top(rems(inset)).left(rems(inset)).opacity(0.7 * (1.0 - t))
+                                },
+                            ),
+                    )
+                })
+                .child(entering)
+            }
+            None => slot.child(shape),
+        };
+        slot.when_some(self.tooltip, |slot, text| {
+            slot.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx))
+        })
     }
 }
 
@@ -181,6 +376,84 @@ pub fn model_label(config: &ThreadConfig, providers: &[ProviderInfo]) -> String 
         Some(model) => model.name.clone(),
         None if !config.model.is_empty() => config.model.clone(),
         None => provider.map(|p| p.display_name()).unwrap_or(config.provider.label()).to_owned(),
+    }
+}
+
+/// What an agent asks for, in one short line: rows, cards, peeks and
+/// notifications all say it the same way.
+pub fn request_line(kind: &RequestKind) -> String {
+    match kind {
+        RequestKind::Command { command, .. } => {
+            format!("Wants to run {}", command.lines().next().unwrap_or_default().trim())
+        }
+        RequestKind::FileChange { path, .. } => {
+            format!("Wants to change {}", path.rsplit(['/', '\\']).next().unwrap_or(path))
+        }
+        RequestKind::Tool { name, .. } => format!("Wants to use {name}"),
+        RequestKind::Question { question, .. } => {
+            let line = question.lines().find(|l| !l.trim().is_empty()).unwrap_or("Has a question").trim();
+            line.to_owned()
+        }
+        RequestKind::Plan { .. } => "Has a plan for you to approve".into(),
+    }
+}
+
+/// The kinds of request. "Approve all of this kind" groups by these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RequestClass {
+    Command,
+    FileChange,
+    Tool,
+    Question,
+    Plan,
+}
+
+impl RequestClass {
+    pub fn of(kind: &RequestKind) -> Self {
+        match kind {
+            RequestKind::Command { .. } => RequestClass::Command,
+            RequestKind::FileChange { .. } => RequestClass::FileChange,
+            RequestKind::Tool { .. } => RequestClass::Tool,
+            RequestKind::Question { .. } => RequestClass::Question,
+            RequestKind::Plan { .. } => RequestClass::Plan,
+        }
+    }
+
+    /// A yes or no: allow, allow for the session, or deny.
+    pub fn is_approval(self) -> bool {
+        matches!(self, RequestClass::Command | RequestClass::FileChange | RequestClass::Tool)
+    }
+
+    /// "commands", "file changes": for "Approve all 3 commands".
+    pub fn plural(self) -> &'static str {
+        match self {
+            RequestClass::Command => "commands",
+            RequestClass::FileChange => "file changes",
+            RequestClass::Tool => "tool uses",
+            RequestClass::Question => "questions",
+            RequestClass::Plan => "plans",
+        }
+    }
+}
+
+/// The keys that run `action`, as keycaps, read from the live keymap so the
+/// user's own bindings show everywhere.
+pub fn keycaps(action: &dyn Action, cx: &App) -> Option<AnyElement> {
+    let strokes = crate::keymap::keystrokes_for(action, cx)?;
+    Some(
+        h_flex()
+            .gap_0p5()
+            .children(strokes.into_iter().map(|s| gpui_kit::component::kbd::Kbd::new(s).into_any_element()))
+            .into_any_element(),
+    )
+}
+
+/// A literal keycap (`"j"`, `"shift-a"`), for keys that are not one
+/// action's binding, such as 1–9.
+pub fn keycap(keys: &'static str) -> AnyElement {
+    match Keystroke::parse(keys) {
+        Ok(stroke) => gpui_kit::component::kbd::Kbd::new(stroke).into_any_element(),
+        Err(_) => div().child(keys.to_owned()).into_any_element(),
     }
 }
 

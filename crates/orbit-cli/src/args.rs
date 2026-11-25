@@ -15,6 +15,8 @@ pub const ABOUT: &str = "Drive Orbit from the command line, scripts and agents."
 fn group_about(name: &str) -> &'static str {
     match name {
         "terminal" => "Run commands in terminals and read their output",
+        "pr" => "Pull requests: list, show, merge, check out, fix failing checks",
+        "issue" => "Issues from GitHub, GitLab, Linear or Jira: list, show, start a thread",
         _ => "",
     }
 }

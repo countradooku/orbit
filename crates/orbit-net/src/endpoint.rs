@@ -11,7 +11,13 @@
 //! The `orbit` CLI and its MCP server read that file to connect. The file is
 //! readable by its owner only (mode 0600 on Unix; on Windows it inherits the
 //! per-user profile folder's ACL), it is removed on a clean exit, and a file
-//! whose process is gone is treated as absent.
+//! whose process is gone is treated as absent and removed by the reader.
+//!
+//! This is the engine's endpoint (the whole Orbit protocol, for the desktop
+//! app and `orbitd` alike). The desktop app's single-instance hand-off
+//! (`app.endpoint`, opening a folder or thread in the running window) is a
+//! separate, app-level channel; `orbit open` goes through that one by
+//! launching `orbit-desktop --thread <id>`.
 //!
 //! The endpoint costs nothing while no client is connected: one thread
 //! parked in `accept`, no timers.
@@ -69,6 +75,11 @@ pub fn read(data_dir: &Path) -> io::Result<Option<EndpointInfo>> {
     let info: EndpointInfo = serde_json::from_str(&text)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {e}", path.display())))?;
     if !process_alive(info.pid) {
+        // Left by a process that died without cleaning up. Remove it unless
+        // a new engine replaced it since it was read.
+        if std::fs::read_to_string(&path).is_ok_and(|again| again == text) {
+            let _ = std::fs::remove_file(&path);
+        }
         return Ok(None);
     }
     Ok(Some(info))
@@ -292,6 +303,7 @@ mod tests {
         };
         write_private(&dir.path().join(FILE), &serde_json::to_string(&info).unwrap()).unwrap();
         assert_eq!(read(dir.path()).unwrap(), None);
+        assert!(!dir.path().join(FILE).exists(), "the stale file is cleaned up");
         // The same file naming a live process is read back.
         let live = EndpointInfo { pid: std::process::id(), ..info };
         write_private(&dir.path().join(FILE), &serde_json::to_string(&live).unwrap()).unwrap();

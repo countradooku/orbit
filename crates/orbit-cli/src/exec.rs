@@ -40,7 +40,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn ok(value: Value, human: String) -> Self {
+    pub(crate) fn ok(value: Value, human: String) -> Self {
         Self { value, exit: exit::OK, human: Some(human) }
     }
 }
@@ -366,6 +366,7 @@ async fn run(ctx: &Ctx, conn: &Conn, spec: &Spec, args: &Map<String, Value>, out
             ))
         }
         ["terminal", "run"] => terminal_run(ctx, conn, args, out).await,
+        ["pr", _] | ["issue", _] | ["ship"] => crate::forge::run(ctx, conn, spec.path, args).await,
         ["terminal", "read"] => {
             let raw = s(args, "terminal").unwrap_or_default();
             let term: TermId = raw.parse().map_err(|_| CliError::usage(format!("“{raw}” is not a terminal id.")))?;
@@ -1171,51 +1172,67 @@ async fn terminal_run(ctx: &Ctx, conn: &Conn, args: &Map<String, Value>, out: &m
 // ── The desktop app ─────────────────────────────────────────────────────
 
 async fn open(ctx: &Ctx, args: &Map<String, Value>) -> Result<Outcome, CliError> {
-    let conn = match ctx.conn().await {
-        Ok(conn) => conn,
-        Err(err) if err.exit == exit::UNAVAILABLE && conn::resolve(&ctx.global, &ctx.env).is_err() => {
-            launch_desktop(ctx).await?;
-            ctx.conn().await?
-        }
-        Err(err) => return Err(err),
-    };
+    // Resolve the selector through the engine when one runs; a full id
+    // works without it.
+    let engine = conn::resolve(&ctx.global, &ctx.env).ok();
+    if engine.as_ref().is_some_and(|t| t.endpoint.as_ref().is_some_and(|e| e.kind == "orbitd")) {
+        return Err(CliError::unavailable("This data folder is served by orbitd, not the desktop app.")
+            .hint("Open the desktop app connected to that host (ORBIT_HOST) to see it."));
+    }
     let thread = match s(args, "thread") {
-        Some(sel) => Some(select::thread(&conn.state(), &ctx.env, sel)?),
         None => None,
+        Some(sel) if engine.is_some() => Some(select::thread(&ctx.conn().await?.state(), &ctx.env, sel)?),
+        Some(sel) => Some(sel.parse::<ThreadId>().map_err(|_| {
+            CliError::unavailable("Orbit isn’t running, so only a full thread id can be opened.")
+        })?),
     };
-    conn.call(Command::Focus { thread }).await?;
-    let desktop = conn.target.endpoint.as_ref().is_none_or(|e| e.kind == "desktop");
-    let shown = match thread {
+    launch_desktop(ctx, thread).await?;
+    let human = match thread {
         Some(id) => format!("Showing {id} in Orbit."),
         None => "Brought Orbit forward.".into(),
     };
-    let human = if desktop { shown } else { format!("{shown} (This engine is orbitd; a desktop app connected to it shows it.)") };
-    Ok(Outcome::ok(json!({"thread": thread.map(|t| t.to_string()), "focused": true}), human))
+    Ok(Outcome::ok(json!({"thread": thread.map(|t| t.to_string()), "opened": true}), human))
 }
 
-/// Starts `orbit-desktop` from next to this executable and waits for its
-/// endpoint.
-async fn launch_desktop(ctx: &Ctx) -> Result<(), CliError> {
+/// Runs `orbit-desktop [--thread <id>]` from next to this executable. When
+/// the app already runs for this data folder, that launch hands its
+/// arguments to it (the desktop's single-instance hand-off: it comes
+/// forward and shows the thread) and exits; otherwise it is the app.
+async fn launch_desktop(ctx: &Ctx, thread: Option<ThreadId>) -> Result<(), CliError> {
     let exe = std::env::current_exe().map_err(|e| CliError::unavailable(e.to_string()))?;
     let name = if cfg!(windows) { "orbit-desktop.exe" } else { "orbit-desktop" };
     let app = exe.with_file_name(name);
     if !app.is_file() {
-        return Err(CliError::unavailable("Orbit isn’t running.").hint("Start the Orbit app, then run this again."));
+        return Err(CliError::unavailable(format!("Couldn’t find the desktop app ({}).", app.display()))
+            .hint("Start Orbit yourself; `orbit` looks for orbit-desktop next to itself."));
     }
     let mut cmd = std::process::Command::new(&app);
-    if let Some(data) = ctx.global.get("data").and_then(Value::as_str) {
-        cmd.env("ORBIT_DATA", data);
+    if let Some(id) = thread {
+        cmd.arg("--thread").arg(id.to_string());
     }
-    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    cmd.spawn().map_err(|e| CliError::unavailable(format!("Couldn’t start {}: {e}", app.display())))?;
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if conn::resolve(&ctx.global, &ctx.env).is_ok() {
-            return Ok(());
+    cmd.env("ORBIT_DATA", conn::data_dir(&ctx.global, &ctx.env));
+    cmd.current_dir(&ctx.env.cwd);
+    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| CliError::unavailable(format!("Couldn’t start {}: {e}", app.display())))?;
+    // A hand-off finishes in milliseconds; a process still running after
+    // a few seconds is the app itself, now open.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => {
+                let mut message = String::new();
+                if let Some(mut stderr) = child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut stderr, &mut message);
+                }
+                let message = message.trim();
+                return Err(CliError::unavailable(if message.is_empty() { "Orbit didn’t open.".to_owned() } else { message.to_owned() }));
+            }
+            Ok(None) if Instant::now() >= deadline => return Ok(()),
+            Ok(None) => tokio::time::sleep(Duration::from_millis(25)).await,
+            Err(e) => return Err(CliError::unavailable(e.to_string())),
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Err(CliError::unavailable("Orbit started but its engine didn’t come up in 15 s."))
 }
 
 #[cfg(test)]

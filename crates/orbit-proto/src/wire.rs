@@ -2,6 +2,7 @@
 
 use bitcode::{Decode, Encode};
 
+use crate::forge::{ForgeCommand, ForgeReply};
 use crate::ids::*;
 use crate::model::*;
 use crate::settings::Settings;
@@ -84,9 +85,6 @@ pub enum Event {
     TerminalExited { term: TermId, code: Option<i32> },
     /// A composer's unsent message changed; an empty draft means none.
     DraftSaved { target: DraftTarget, draft: Draft },
-    /// Someone (the `orbit open` command) asked the desktop client to come
-    /// to the front, showing `thread` when given. Ephemeral.
-    FocusRequested { thread: Option<ThreadId> },
 }
 
 impl Event {
@@ -101,7 +99,6 @@ impl Event {
                 | Event::Providers(_)
                 | Event::TerminalOutput { .. }
                 | Event::TimelineMark { .. }
-                | Event::FocusRequested { .. }
         )
     }
 }
@@ -240,6 +237,10 @@ pub enum Command {
     /// End the thread's agent session; the next message starts a fresh one
     /// in the same thread (what `/clear` does).
     NewSession { thread: ThreadId },
+    /// Pull requests, checks, merges, issues and tracker settings; see
+    /// [`ForgeCommand`]. Replies [`Reply::Forge`] (or `Thread`, `Text` or
+    /// `Done`, per command).
+    Forge(ForgeCommand),
 
     // ── Automation (the `orbit` CLI and MCP server) ──────────────────────
     /// Create a thread and, when `prompt` is set, send it as the first
@@ -258,9 +259,6 @@ pub enum Command {
     ReadTerminal { term: TermId, max_bytes: u32 },
     /// Returns [`Reply::Terminals`].
     ListTerminals,
-    /// Ask the desktop client to come to the front (and show `thread`).
-    /// Broadcasts [`Event::FocusRequested`].
-    Focus { thread: Option<ThreadId> },
 }
 
 /// Everything needed to start a thread in one step.
@@ -320,6 +318,7 @@ pub enum Reply {
     Merge(MergeInfo),
     Files(Vec<FileMatch>),
     Text(String),
+    Forge(ForgeReply),
     /// Raw output (with escape sequences); `dropped` bytes were older than
     /// what is kept.
     TerminalTail { info: TerminalInfo, data: Vec<u8>, dropped: u64 },

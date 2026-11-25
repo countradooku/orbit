@@ -323,6 +323,10 @@ fn worktree_children_are_linked_to_their_parent() {
     // A dry-run merge previews without changing anything.
     let preview = h.json(&format!("merge {child_id} --dry-run --into main"), 0);
     assert_eq!((preview["target"].as_str(), preview["dry_run"].as_bool()), (Some("main"), Some(true)));
+    // Forge: where the child's work stands (a local repository, no host).
+    let ship = h.json(&format!("ship {child_id}"), 0);
+    assert!(ship["stage"].is_string(), "{ship}");
+    assert_eq!(ship["branch"], status["branch"]);
     // The parent's detail lists its children.
     assert_eq!(h.json(&format!("status {parent}"), 0)["children"][0]["id"], child_id.as_str());
 }
@@ -350,24 +354,6 @@ fn terminal_run_streams_output_and_passes_the_exit_code() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(h.json("terminal list", 0)["terminals"].as_array().unwrap().iter().any(|t| t["id"] == term.as_str()));
-}
-
-#[test]
-fn open_asks_the_desktop_to_focus() {
-    let h = Harness::new();
-    let id = h.json("new hi", 0)["thread"].as_str().unwrap().to_owned();
-    let sub = h.engine.subscribe(0, 0).recv().unwrap();
-    assert_eq!(h.run(&format!("open {id}")).0, 0);
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    rt.block_on(async {
-        loop {
-            let env = tokio::time::timeout(Duration::from_secs(5), sub.events.recv()).await.expect("in time").unwrap();
-            if let Event::FocusRequested { thread } = env.event {
-                assert_eq!(thread.map(|t| t.to_string()), Some(id));
-                break;
-            }
-        }
-    });
 }
 
 #[test]

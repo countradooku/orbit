@@ -11,6 +11,7 @@ pub use bus::Bus;
 mod drafts;
 mod files;
 mod cli;
+mod forge;
 mod orchestrator;
 mod review;
 mod queue;

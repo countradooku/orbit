@@ -346,44 +346,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn version_3_records_stay_readable_after_focus_requested() {
-        // `FocusRequested` was appended within the 17–256 packing class, so
-        // records written before it decode unchanged at version 3.
-        #[derive(Encode)]
-        #[allow(dead_code)]
-        enum Before {
-            ProjectUpserted(Project),
-            ProjectRemoved(ProjectId),
-            ThreadUpserted(Thread),
-            ThreadRemoved(ThreadId),
-            ItemUpserted { thread: ThreadId, item: Item },
-            ItemDelta { thread: ThreadId, item: ItemId, delta: Delta },
-            ItemRemoved { thread: ThreadId, item: ItemId },
-            Providers(Vec<ProviderInfo>),
-            DefaultsChanged(ThreadConfig),
-            SettingsChanged(crate::settings::Settings),
-            WorkspaceChanged { thread: ThreadId, files: Vec<FileChange> },
-            UsageChanged { thread: ThreadId, usage: Usage },
-            Conflicts(Vec<Conflict>),
-            TerminalOutput { term: TermId, data: Vec<u8> },
-            TimelineMark { thread: ThreadId, mark: u64 },
-            TerminalExited { term: TermId, code: Option<i32> },
-            DraftSaved { target: DraftTarget, draft: Draft },
-        }
-        #[derive(Encode)]
-        struct BeforeEnvelope {
-            seq: u64,
-            event: Before,
-        }
-        let thread = Thread { id: ThreadId(5), title: "Parent".into(), parent: Some(ThreadId(4)), ..Default::default() };
-        let bytes = bitcode::encode(&BeforeEnvelope { seq: 8, event: Before::ThreadUpserted(thread.clone()) });
-        let env = decode_envelope(META_VERSION, &bytes).unwrap();
-        assert_eq!(env, Envelope { seq: 8, event: Event::ThreadUpserted(thread) });
-        let bytes = bitcode::encode(&BeforeEnvelope { seq: 9, event: Before::ThreadRemoved(ThreadId(5)) });
-        assert_eq!(decode_envelope(META_VERSION, &bytes).unwrap().event, Event::ThreadRemoved(ThreadId(5)));
-    }
-
-    #[test]
     fn a_version_1_thread_decodes_with_its_provider() {
         let old = v1::Envelope {
             seq: 4,

@@ -17,7 +17,8 @@ use crate::ws_lite::{self, Incoming};
 use crate::{ConnectionStatus, Update, ready};
 
 enum Outgoing {
-    Call { command: Command, reply: TxOneshot<Result<Reply, String>> },
+    /// Boxed: a command can be large (settings) and the queue holds many.
+    Call { command: Box<Command>, reply: TxOneshot<Result<Reply, String>> },
     Close,
 }
 
@@ -43,7 +44,7 @@ impl RemoteClient {
 
     pub fn call(&self, command: Command) -> RxOneshot<Result<Reply, String>> {
         let (reply, rx) = oneshot();
-        match self.outgoing.send(Outgoing::Call { command, reply }) {
+        match self.outgoing.send(Outgoing::Call { command: Box::new(command), reply }) {
             Ok(()) => rx,
             Err(_) => ready(Err("The connection to the host is closed.".into())),
         }
@@ -83,7 +84,7 @@ async fn run(
                 } else {
                     let mut welcomed = false;
                     let mut codec = Codec::new();
-                    let reason = loop {
+                    loop {
                         tokio::select! {
                             msg = reader.next() => {
                                 let data = match msg {
@@ -130,7 +131,7 @@ async fn run(
                                     }
                                     let id = next_id;
                                     next_id = next_id.wrapping_add(1).max(1);
-                                    let msg = ClientMsg::Call { id, command };
+                                    let msg = ClientMsg::Call { id, command: *command };
                                     match writer.binary(&encode(&msg)).await {
                                         Ok(()) => { pending.insert(id, reply); }
                                         Err(e) => {
@@ -145,8 +146,7 @@ async fn run(
                                 }
                             },
                         }
-                    };
-                    reason
+                    }
                 }
             }
         };

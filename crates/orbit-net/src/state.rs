@@ -130,9 +130,6 @@ pub struct Changes {
     pub loaded: Vec<ThreadId>,
     /// Composers whose saved draft changed.
     pub drafts: HashSet<DraftTarget>,
-    /// `orbit open` asked the window to come forward; see
-    /// [`ClientState::take_focus_request`].
-    pub focus: bool,
 }
 
 impl Changes {
@@ -153,7 +150,6 @@ impl Changes {
             && self.exited_terminals.is_empty()
             && self.loaded.is_empty()
             && self.drafts.is_empty()
-            && !self.focus
     }
 
     /// The shell (sidebar, inbox, fleet) needs a render.
@@ -167,7 +163,6 @@ impl Changes {
             || self.settings
             || self.conflicts
             || self.connection
-            || self.focus
     }
 }
 
@@ -192,14 +187,6 @@ pub struct ClientState {
     /// channels, so events are held until both the reply and its mark have
     /// arrived, then the ones after the mark are applied.
     fetching: HashMap<ThreadId, Fetch>,
-    focus_request: Option<FocusRequest>,
-}
-
-/// A request to bring the window forward, from `orbit open`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FocusRequest {
-    /// The thread to show, if any.
-    pub thread: Option<ThreadId>,
 }
 
 #[derive(Default)]
@@ -210,11 +197,6 @@ struct Fetch {
 }
 
 impl ClientState {
-    /// The latest unhandled focus request; taking it marks it handled.
-    pub fn take_focus_request(&mut self) -> Option<FocusRequest> {
-        self.focus_request.take()
-    }
-
     pub fn timeline(&self, thread: ThreadId) -> Option<&Timeline> {
         self.timelines.get(&thread)
     }
@@ -422,10 +404,6 @@ impl ClientState {
                     self.drafts.insert(target, draft);
                 }
                 changes.drafts.insert(target);
-            }
-            Event::FocusRequested { thread } => {
-                self.focus_request = Some(FocusRequest { thread });
-                changes.focus = true;
             }
         }
     }
