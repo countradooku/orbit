@@ -3,6 +3,9 @@
 //! repository's GitHub remote is rewritten (`insteadOf`) to a local bare
 //! repository, so pull request checkouts fetch real refs from disk.
 
+#[path = "support/exe.rs"]
+mod exe;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::sync::{Arc, Mutex};
@@ -121,7 +124,7 @@ impl World {
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let gh = bin.join(if cfg!(windows) { "gh.exe" } else { "gh" });
-        std::fs::copy(FAKE, &gh).unwrap();
+        exe::install(FAKE.as_ref(), &gh);
         std::fs::write(bin.join("fake-forge.json"), rules).unwrap();
         std::fs::write(bin.join("pr_view_7.json"), PR_VIEW).unwrap();
         std::fs::write(bin.join("pr_list.json"), PR_LIST).unwrap();

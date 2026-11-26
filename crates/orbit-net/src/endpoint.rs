@@ -97,7 +97,8 @@ pub fn read(data_dir: &Path) -> io::Result<Option<EndpointInfo>> {
     Ok(Some(info))
 }
 
-/// Whether a process with this id exists.
+/// Whether a process with this id is running. One that has exited but
+/// that its parent has not reaped yet (a zombie on Unix) is not.
 pub fn process_alive(pid: u32) -> bool {
     if pid == std::process::id() {
         return true;
@@ -111,7 +112,10 @@ pub fn process_alive(pid: u32) -> bool {
         // Signal 0 checks existence and permission without sending anything.
         // SAFETY: `kill` with signal 0 has no side effects.
         let rc = unsafe { libc::kill(pid, 0) };
-        rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        let exists = rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        // `kill` also finds a zombie: it has exited, only its exit status
+        // is left for its parent.
+        exists && !zombie(pid)
     }
     #[cfg(windows)]
     {
@@ -137,6 +141,45 @@ pub fn process_alive(pid: u32) -> bool {
         let _ = pid;
         true
     }
+}
+
+/// Whether `pid` has exited and waits to be reaped. `false` when that
+/// cannot be told.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn zombie(pid: libc::pid_t) -> bool {
+    // `/proc/<pid>/stat` reads `pid (comm) state …`; `comm` may itself
+    // hold `)`, so the state follows the last one.
+    let Ok(stat) = std::fs::read(format!("/proc/{pid}/stat")) else { return false };
+    let state = stat.iter().rposition(|&b| b == b')').and_then(|close| stat.get(close + 2));
+    matches!(state, Some(b'Z' | b'X'))
+}
+
+/// Whether `pid` has exited and waits to be reaped. `false` when that
+/// cannot be told.
+#[cfg(target_os = "macos")]
+fn zombie(pid: libc::pid_t) -> bool {
+    // `sysctl kern.proc.pid.<pid>` fills a `struct kinfo_proc` (648 bytes),
+    // which `libc` does not declare. Its first member, `struct extern_proc`,
+    // has the `char p_stat` at byte 36 and the `pid_t p_pid` at byte 40 on
+    // every 64-bit macOS; the pid is checked to be sure of the layout.
+    const P_STAT: usize = 36;
+    const P_PID: usize = 40;
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+    let mut buf = [0u8; 1024];
+    let mut len = buf.len();
+    // SAFETY: `buf` is writable for `len` bytes; sysctl writes at most that
+    // and reports how many it wrote.
+    let rc = unsafe { libc::sysctl(mib.as_mut_ptr(), 4, buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) };
+    if rc != 0 || len < P_PID + 4 {
+        return false;
+    }
+    let p_pid = libc::pid_t::from_ne_bytes(buf[P_PID..P_PID + 4].try_into().expect("four bytes"));
+    p_pid == pid && u32::from(buf[P_STAT]) == libc::SZOMB
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android", target_os = "macos"))))]
+fn zombie(_pid: libc::pid_t) -> bool {
+    false
 }
 
 /// Writes `contents` to `path` atomically (temp file and rename) so a
@@ -375,6 +418,30 @@ mod tests {
         let live = EndpointInfo { pid: std::process::id(), ..info };
         write_private(&dir.path().join(FILE), &serde_json::to_string(&live).unwrap()).unwrap();
         assert_eq!(read(dir.path()).unwrap(), Some(live));
+    }
+
+    /// A child that exited but is not reaped yet still answers
+    /// `kill(pid, 0)`; it is not running.
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+    #[test]
+    fn an_exited_unreaped_child_is_not_alive() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while process_alive(pid) {
+            assert!(std::time::Instant::now() < deadline, "an exited child still counts as running");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // It is a zombie, not gone: that is the case `kill` alone gets wrong.
+        // SAFETY: signal 0 sends nothing.
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, 0, "not reaped yet");
+        child.wait().unwrap();
+        assert!(!process_alive(pid));
+        // A running child is alive.
+        let mut sleeper = std::process::Command::new("sleep").arg("5").spawn().unwrap();
+        assert!(process_alive(sleeper.id()));
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
     }
 
     #[test]

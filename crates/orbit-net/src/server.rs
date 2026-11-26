@@ -224,8 +224,15 @@ async fn connection(
         match auth {
             Auth::Devices(share) => pair_request(&first, share, &peer, &mut reader, &mut writer).await?,
             Auth::Token(token) => {
-                let reply = control_request(&first, &engine, token, control.as_ref()).await;
+                let (reply, restart) = control_request(&first, &engine, token, control.as_ref()).await;
                 let _ = writer.send(reply).await;
+                writer.close().await;
+                // Only now: a restart can stop the host at once, and the
+                // client must have its answer first.
+                if let (Some(when), Some(control)) = (restart, &control) {
+                    control.request_restart(when);
+                }
+                return Ok(());
             }
         }
         writer.close().await;
@@ -270,9 +277,11 @@ async fn connection(
         }
     }
 
-    // Replies are produced by spawned tasks and written by the writer loop.
-    let (reply_tx, reply_rx) = mpsc::unbounded_async::<ServerMsg>();
+    // Replies are produced by spawned tasks and written by the writer loop,
+    // with a restart to request once the reply is written.
+    let (reply_tx, reply_rx) = mpsc::unbounded_async::<(ServerMsg, Option<RestartWhen>)>();
     let events = sub.events;
+    let restarts = control.clone();
     let reader_task = {
         let engine = engine.clone();
         tokio::spawn(async move {
@@ -300,8 +309,12 @@ async fn connection(
                             Some(Ok(Reply::Done))
                         }
                         HostCommand::Restart { when } => {
-                            control.request_restart(*when);
-                            Some(Ok(Reply::Done))
+                            // Requested by the writer once this reply is
+                            // out: the host may stop right away, and the
+                            // client would lose its answer.
+                            let reply = ServerMsg::Reply { id, result: Ok(Reply::Done) };
+                            let _ = crossfire::BlockingTxTrait::send(&tx, (reply, Some(*when)));
+                            continue;
                         }
                         HostCommand::Activity => {
                             let control = control.clone();
@@ -314,21 +327,21 @@ async fn connection(
                                     Ok(other) => other,
                                     Err(_) => Err("The host is shutting down.".into()),
                                 };
-                                let _ = crossfire::BlockingTxTrait::send(&tx, ServerMsg::Reply { id, result });
+                                let _ = crossfire::BlockingTxTrait::send(&tx, (ServerMsg::Reply { id, result }, None));
                             });
                             continue;
                         }
                         _ => None,
                     };
                     if let Some(result) = answered {
-                        let _ = crossfire::BlockingTxTrait::send(&tx, ServerMsg::Reply { id, result });
+                        let _ = crossfire::BlockingTxTrait::send(&tx, (ServerMsg::Reply { id, result }, None));
                         continue;
                     }
                 }
                 let reply = engine.call(command);
                 tokio::spawn(async move {
                     let result = reply.await.unwrap_or_else(|_| Err("The host is shutting down.".into()));
-                    let _ = crossfire::BlockingTxTrait::send(&tx, ServerMsg::Reply { id, result });
+                    let _ = crossfire::BlockingTxTrait::send(&tx, (ServerMsg::Reply { id, result }, None));
                 });
             }
         })
@@ -342,7 +355,7 @@ async fn connection(
                 break Ok(());
             }
             reply = reply_rx.recv() => match reply {
-                Ok(msg) => {
+                Ok((msg, restart)) => {
                     // The engine emits a command's events before it replies,
                     // so they are queued by now: send them first. A client
                     // that reads its state after a reply then sees what the
@@ -365,6 +378,10 @@ async fn connection(
                             failed = Some(e);
                             break;
                         }
+                    }
+                    // Asked for even when the client is gone meanwhile.
+                    if let (Some(when), Some(control)) = (restart, &restarts) {
+                        control.request_restart(when);
                     }
                     if let Some(e) = failed {
                         break Err(e);
@@ -406,6 +423,12 @@ async fn connection(
         }
     };
     reader_task.abort();
+    // A restart the client asked for just before it left still happens.
+    while let Ok((_, restart)) = reply_rx.try_recv() {
+        if let (Some(when), Some(control)) = (restart, &restarts) {
+            control.request_restart(when);
+        }
+    }
     writer.close().await;
     drop(device);
     result
@@ -483,22 +506,31 @@ fn fill_host(mut activity: HostActivity, control: &HostControl) -> HostActivity 
     activity
 }
 
-/// Answers a JSON control request (see [`crate::host`]).
-async fn control_request(frame: &[u8], engine: &EngineHandle, token: &str, control: Option<&Arc<HostControl>>) -> Vec<u8> {
-    let error = |message: &str| serde_json::to_vec(&ControlError { error: message.to_owned() }).unwrap_or_default();
+/// Answers a JSON control request (see [`crate::host`]): the reply, and
+/// the restart it asks for, which the caller requests once the reply is
+/// written (the host may stop at once).
+async fn control_request(
+    frame: &[u8],
+    engine: &EngineHandle,
+    token: &str,
+    control: Option<&Arc<HostControl>>,
+) -> (Vec<u8>, Option<RestartWhen>) {
+    let error = |message: &str| (serde_json::to_vec(&ControlError { error: message.to_owned() }).unwrap_or_default(), None);
     let Ok(request) = serde_json::from_slice::<ControlRequest>(frame) else { return error("bad request") };
     if !same_token(&request.token, token) {
         return error("The access token is wrong.");
     }
     let Some(control) = control else { return error("This engine runs inside the app: there is no host to control.") };
-    match request.op.as_str() {
-        "status" => {}
-        "restart" => control.request_restart(request.restart_when()),
+    let restart = match request.op.as_str() {
+        "status" => None,
+        "restart" => Some(request.restart_when()),
         _ => return error("unknown request"),
-    }
+    };
     let activity = match engine.call(Command::Host(HostCommand::Activity)).await {
         Ok(Ok(Reply::Host(HostReply::Activity(activity)))) => activity,
         _ => HostActivity::default(),
     };
-    serde_json::to_vec(&HostStatus::from_activity(&fill_host(activity, control))).unwrap_or_default()
+    let mut status = HostStatus::from_activity(&fill_host(activity, control));
+    status.restart_pending |= restart.is_some();
+    (serde_json::to_vec(&status).unwrap_or_default(), restart)
 }

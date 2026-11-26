@@ -3,6 +3,9 @@
 //! `account/read`, the windows from `account/rateLimits/read`, and the
 //! states only the user can change.
 
+#[path = "support/exe.rs"]
+mod exe;
+
 use std::path::PathBuf;
 
 use orbit_core::provider::codex::read_limits;
@@ -18,7 +21,7 @@ struct Fake {
 fn fake(handlers: Value) -> Fake {
     let dir = tempfile::tempdir().unwrap();
     let exe = dir.path().join(if cfg!(windows) { "codex.exe" } else { "codex" });
-    std::fs::copy(env!("CARGO_BIN_EXE_orbit-fake-codex"), &exe).unwrap();
+    exe::install(env!("CARGO_BIN_EXE_orbit-fake-codex").as_ref(), &exe);
     let script = json!({"runs": [{"handlers": handlers, "steps": []}]});
     std::fs::write(dir.path().join("fake-codex.json"), sonic_rs::to_string(&script).unwrap()).unwrap();
     Fake { _dir: dir, exe }

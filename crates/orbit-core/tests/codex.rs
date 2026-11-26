@@ -3,6 +3,9 @@
 //! temp dir as `codex[.exe]` with a script, drives the adapter through the
 //! public seam, and checks both the events and what the adapter sent.
 
+#[path = "support/exe.rs"]
+mod exe;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -23,7 +26,7 @@ impl Fake {
     fn new(runs: Vec<Value>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join(if cfg!(windows) { "codex.exe" } else { "codex" });
-        std::fs::copy(env!("CARGO_BIN_EXE_orbit-fake-codex"), &exe).unwrap();
+        exe::install(env!("CARGO_BIN_EXE_orbit-fake-codex").as_ref(), &exe);
         std::fs::write(dir.path().join("fake-codex.json"), sonic_rs::to_string(&json!({"runs": runs})).unwrap()).unwrap();
         Self { dir, exe }
     }
