@@ -3,6 +3,9 @@
 
 #![allow(dead_code)]
 
+#[path = "exe.rs"]
+mod exe;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -24,7 +27,7 @@ impl Fake {
     pub fn new(name: &str, script: Value) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join(if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() });
-        std::fs::copy(env!("CARGO_BIN_EXE_orbit-fake-agent"), &exe).unwrap();
+        exe::install(env!("CARGO_BIN_EXE_orbit-fake-agent").as_ref(), &exe);
         std::fs::write(dir.path().join("fake-agent.json"), sonic_rs::to_string(&script).unwrap()).unwrap();
         Self { dir, exe }
     }
@@ -68,7 +71,8 @@ impl Fake {
     }
 }
 
-/// Collects events until `done` matches one (which is included).
+/// Collects events until `done` matches one (which is included). Panics
+/// when the session ends first: a test must not carry on as if it matched.
 pub async fn until(rx: &Events, mut done: impl FnMut(&AgentEvent) -> bool) -> Vec<AgentEvent> {
     let mut seen = Vec::new();
     let collect = async {
@@ -76,14 +80,16 @@ pub async fn until(rx: &Events, mut done: impl FnMut(&AgentEvent) -> bool) -> Ve
             let stop = done(&event);
             seen.push(event);
             if stop {
-                return;
+                return true;
             }
         }
+        false
     };
-    if tokio::time::timeout(WAIT, collect).await.is_err() {
-        panic!("timed out; events so far: {seen:#?}");
+    match tokio::time::timeout(WAIT, collect).await {
+        Ok(true) => seen,
+        Ok(false) => panic!("the session ended first; its events: {seen:#?}"),
+        Err(_) => panic!("timed out; events so far: {seen:#?}"),
     }
-    seen
 }
 
 pub fn finished(e: &AgentEvent) -> bool {

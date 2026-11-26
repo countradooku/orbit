@@ -238,7 +238,10 @@ async fn probe_reads_the_handshake_without_opening_a_session() {
     };
     let info = provider::probe(Launch::of(&instance, &ProviderSettings::new(ProviderKind::Acp))).await;
     assert!(info.installed, "{info:?}");
-    assert_eq!((info.instance.as_str(), info.name.as_str(), info.version.as_deref()), ("gemini", "Gemini CLI", Some("0.9.1")));
+    assert_eq!(
+        (info.instance.as_str(), info.name.as_str(), info.version.as_deref(), info.message.as_deref()),
+        ("gemini", "Gemini CLI", Some("0.9.1"), None)
+    );
     assert_eq!(info.models.len(), 1);
     assert!(fake.sent("method", "session/new").is_empty());
 
