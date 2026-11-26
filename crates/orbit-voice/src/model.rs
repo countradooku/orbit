@@ -423,7 +423,7 @@ pub(crate) mod tests {
             Tensor::from_vec(data, shape, &dev).unwrap()
         };
         let mut put = |name: String, t: Tensor| {
-            let q = if t.rank() == 2 && t.dim(1).unwrap() % 32 == 0 && !name.contains("positions") {
+            let q = if t.rank() == 2 && t.dim(1).unwrap().is_multiple_of(32) && !name.contains("positions") {
                 QTensor::quantize(&t, GgmlDType::Q8_0).unwrap()
             } else {
                 QTensor::quantize(&t, GgmlDType::F32).unwrap()

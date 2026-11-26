@@ -214,7 +214,6 @@ pub fn init(data_dir: &std::path::Path, app: Entity<AppState>, cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(DICTATE_KEYS, Dictate, NOT_IN_TERMINAL),
         KeyBinding::new(STEER_KEYS, SteerByVoice, NOT_IN_TERMINAL),
-        KeyBinding::new("escape", CancelDictation, Some("Dictating")),
     ]);
     cx.on_action(|_: &Dictate, cx| with_active_window(cx, |window, cx| shortcut_down(Purpose::Dictate, window, cx)));
     cx.on_action(|_: &SteerByVoice, cx| with_active_window(cx, |window, cx| shortcut_down(Purpose::Steer, window, cx)));
@@ -368,6 +367,12 @@ fn activate(dictation: Entity<Dictation>, cx: &mut App) {
         }
     })
     .detach();
+    // It may have ended while starting (no microphone, access denied).
+    if dictation.read(cx).has_ended()
+        && let Some(voice) = voice_mut(cx)
+    {
+        voice.active = None;
+    }
     cx.refresh_windows();
 }
 

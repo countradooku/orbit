@@ -244,9 +244,8 @@ pub(crate) mod tests {
             let id = vocab.len() as u32;
             vocab.push((format!("{a}{b}"), id));
         }
-        let mut special = vec![];
-        let mut next = vocab.len() as u32;
-        for name in [
+        let first = vocab.len() as u32;
+        let special: Vec<String> = [
             "<|endoftext|>",
             "<|startoftranscript|>",
             "<|en|>",
@@ -257,10 +256,11 @@ pub(crate) mod tests {
             "<|startofprev|>",
             "<|nospeech|>",
             "<|notimestamps|>",
-        ] {
-            special.push(format!(r#"{{"id":{next},"content":"{name}","special":true}}"#));
-            next += 1;
-        }
+        ]
+        .iter()
+        .zip(first..)
+        .map(|(name, id)| format!(r#"{{"id":{id},"content":"{name}","special":true}}"#))
+        .collect();
         let vocab_json = vocab.iter().map(|(t, id)| format!("{}:{id}", sonic_rs::to_string(t).unwrap())).collect::<Vec<_>>();
         let merges_json = merges.iter().map(|(a, b)| format!("\"{a} {b}\"")).collect::<Vec<_>>();
         let json = format!(

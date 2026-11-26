@@ -88,6 +88,7 @@ fn commands() -> Vec<CommandDef> {
         command("Edit keybindings…", Lucide::Keyboard, "keymap shortcuts json", OpenKeybindings),
         command("Reload keybindings", IconName::RefreshCw, "keymap", ReloadKeybindings),
         command("Settings…", IconName::Settings, "preferences", OpenSettings),
+        command("Voice settings…", IconName::Mic, "dictation speech microphone whisper model", crate::voice::OpenVoiceSettings),
         command("Plugins", Lucide::Puzzle, "extensions add-ons themes agents install catalog", crate::plugins::ManagePlugins),
         command("Zoom in", IconName::Plus, "bigger", ZoomIn),
         command("Zoom out", IconName::Minus, "smaller", ZoomOut),

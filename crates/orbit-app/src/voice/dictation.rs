@@ -61,6 +61,8 @@ pub struct Dictation {
     started: Instant,
     /// Seconds shown, to redraw the timer once a second.
     shown_seconds: u64,
+    /// The recording's length once capture stopped.
+    recorded: Option<Duration>,
     warned: bool,
     stopped_by: Option<StopReason>,
     send_after: bool,
@@ -95,6 +97,7 @@ impl Render for Dictation {
 
 impl Dictation {
     /// A dictation with Whisper and the picked microphone.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn whisper(
         target: Target,
         purpose: Purpose,
@@ -155,6 +158,7 @@ impl Dictation {
             release_modifiers: release.1,
             started: now,
             shown_seconds: 0,
+            recorded: None,
             warned: false,
             stopped_by: None,
             send_after: false,
@@ -185,8 +189,13 @@ impl Dictation {
         self.target.field.entity_id()
     }
 
+    /// Time recorded: running while capturing, then fixed.
     pub fn elapsed(&self) -> Duration {
-        self.started.elapsed()
+        self.recorded.unwrap_or_else(|| self.started.elapsed())
+    }
+
+    fn mark_stopped(&mut self) {
+        self.recorded.get_or_insert_with(|| self.started.elapsed());
     }
 
     /// Recording ends soon (the five-minute cap).
@@ -196,6 +205,11 @@ impl Dictation {
 
     pub fn stopped_by(&self) -> Option<StopReason> {
         self.stopped_by
+    }
+
+    /// The session is over (inserted, cancelled or failed).
+    pub fn has_ended(&self) -> bool {
+        self.ended
     }
 
     /// Whether the session is recording or finishing.
@@ -227,6 +241,7 @@ impl Dictation {
 
     /// Stop recording and transcribe.
     pub fn stop(&mut self, cx: &mut Context<Self>) {
+        self.mark_stopped();
         self.controller.reset();
         self.state.update(cx, |s, cx| s.stop(cx));
         cx.refresh_windows();
@@ -251,6 +266,7 @@ impl Dictation {
         match action {
             Some(ControlAction::Stop(reason)) => {
                 self.stopped_by = Some(reason);
+                self.mark_stopped();
                 self.state.update(cx, |s, cx| s.stop(cx));
                 // The composer's mic button shows the change too.
                 cx.refresh_windows();

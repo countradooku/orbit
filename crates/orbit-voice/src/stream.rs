@@ -171,7 +171,7 @@ impl Session {
             let cut = self.vad.best_cut(self.open_start + CUT_SEARCH..end);
             return Some(Job::Close(self.open_start..cut));
         }
-        self.vad.has_speech_in(self.open_start..end).then(|| Job::Final(self.open_start..end))
+        self.vad.has_speech_in(self.open_start..end).then_some(Job::Final(self.open_start..end))
     }
 
     /// The audio and request for `job`: its speech, trimmed, and the context

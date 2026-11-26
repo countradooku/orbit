@@ -4,7 +4,9 @@ Orbit is a native desktop control surface for coding agents: Claude Code,
 Codex, and any agent that speaks ACP. Start several agent threads in
 parallel (each optionally on its own git worktree), answer what they ask for
 from one inbox, and review what they changed hunk by hunk, with an integrated
-terminal, checkpoints and revert, and commit/PR from the app. It is written in
+terminal, checkpoints and revert, and commit/PR from the app. Dictate prompts
+or speak to an agent by name with on-device Whisper ([docs/VOICE.md](docs/VOICE.md)).
+It is written in
 Rust on [GPUI Kit](https://github.com/longbridge/gpui-kit) and
 [GPUI Fast](https://github.com/longbridge/gpui-fast), and runs on Windows,
 macOS and Linux (X11 and Wayland). See [docs/DESIGN.md](docs/DESIGN.md).
@@ -18,6 +20,7 @@ macOS and Linux (X11 and Wayland). See [docs/DESIGN.md](docs/DESIGN.md).
 | `orbit-terminal` | The terminal view (alacritty_terminal on GPUI Kit) |
 | `orbit-app` | The desktop app (`orbit` binary) |
 | `orbit-plugin` | Plugins: manifests, consent, signed catalogs, the WebAssembly sandbox ([docs/PLUGINS.md](docs/PLUGINS.md)) |
+| `orbit-voice` | On-device dictation: Whisper on candle, VAD, model installs ([docs/VOICE.md](docs/VOICE.md)) |
 | `orbit-bench` | Benchmarks |
 
 ## Build
@@ -27,7 +30,8 @@ want to use (`claude`, `codex`) installed.
 
 - **Windows:** the MSVC toolchain.
 - **macOS:** the Xcode command line tools (`xcode-select --install`).
-- **Linux (Debian/Ubuntu):**
+- **Linux (Debian/Ubuntu):** (`libasound2-dev` is also what dictation's
+  microphone capture needs)
 
   ```sh
   sudo apt-get install -y build-essential pkg-config clang \

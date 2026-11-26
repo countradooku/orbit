@@ -134,6 +134,10 @@ impl OnboardingView {
             starting: false,
             _subscriptions: subscriptions,
         };
+        // The optional dictation download shows its progress here.
+        if let Some(models) = crate::voice::voice(cx).map(|v| v.models.clone()) {
+            view._subscriptions.push(cx.observe(&models, |_, _, cx| cx.notify()));
+        }
         view.pick_default_agent(cx);
         if view.step == Step::FirstTask {
             view.prepare_prompt(window, cx);
@@ -727,7 +731,8 @@ impl OnboardingView {
                     .gap_3()
                     .child(row("Appearance", mode_group.into_any_element()))
                     .child(row(if dark { "Dark theme" } else { "Light theme" }, theme_picker.into_any_element()))
-                    .child(row("Text size", size_group.into_any_element())),
+                    .child(row("Text size", size_group.into_any_element()))
+                    .child(row("Dictation", crate::voice::settings::onboarding_control(cx))),
             )
             .into_any_element()
     }

@@ -206,6 +206,38 @@ fn bound_key(action: Box<dyn Action>) -> SettingField<SharedString> {
 
 // ── Models ───────────────────────────────────────────────────────────────
 
+/// Onboarding's optional dictation step: download the default model in the
+/// background while setup continues.
+pub fn onboarding_control(cx: &App) -> AnyElement {
+    let Some(voice) = super::voice(cx) else { return div().into_any_element() };
+    let theme = cx.theme().clone();
+    let model = super::selected_model(cx);
+    let models = voice.models.clone();
+    let m = models.read(cx);
+    let keys = super::shortcut_label(&super::Dictate, cx).unwrap_or_else(|| "Ctrl+M".into());
+    if m.is_installed(model) {
+        return muted(&format!("Ready. Press {keys} to speak instead of typing."), cx).into_any_element();
+    }
+    if let Some(p) = m.progress(model) {
+        return h_flex()
+            .gap_3()
+            .child(div().w_32().child(ProgressBar::new("onboarding-voice-progress").value(p.fraction() * 100.0)))
+            .child(muted(&format!("Downloading Whisper {}… you can continue.", model.name), cx))
+            .into_any_element();
+    }
+    h_flex()
+        .gap_3()
+        .child(
+            Button::new("onboarding-voice")
+                .outline()
+                .icon(IconName::Mic)
+                .label(format!("Download Whisper {} · {}", model.name, size(model.download_bytes())))
+                .on_click(move |_, _, cx| models.update(cx, |m, cx| m.install(model, cx))),
+        )
+        .child(div().text_sm().text_color(theme.muted_foreground).child("Optional. Runs on this computer."))
+        .into_any_element()
+}
+
 /// An element id for a model's row or control, from the model's id.
 fn item_id(part: &str, model: &str) -> ElementId {
     ElementId::Name(format!("{part}-{model}").into())

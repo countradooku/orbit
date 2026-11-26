@@ -1465,7 +1465,7 @@ impl Render for Workspace {
             .map(crate::onboarding::register_actions)
             // Push-to-talk ends on release wherever focus is, and Escape
             // cancels dictation into any field.
-            .capture_key_up(|event, window, cx| crate::voice::key_up(event, window, cx))
+            .capture_key_up(crate::voice::key_up)
             .capture_key_down(|event, _, cx| {
                 if event.keystroke.key == "escape" && crate::voice::active(cx).is_some_and(|d| d.read(cx).is_running(cx)) {
                     crate::voice::cancel(cx);
