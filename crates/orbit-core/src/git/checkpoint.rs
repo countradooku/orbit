@@ -349,12 +349,24 @@ fn prepare_index(info: &RepoInfo, index: &Path) -> Result<()> {
     if !index.exists() {
         let user = info.git_dir.join("index");
         if user.is_file()
-            && let Err(e) = std::fs::copy(&user, index) {
+            && let Err(e) = seed_index(&user, index) {
                 log::debug!("could not seed {}: {e}", index.display());
                 let _ = std::fs::remove_file(index);
             }
     }
     Ok(())
+}
+
+/// Copies the user's index as a starting point, keeping its modification
+/// time. Git trusts an entry's cached stat only when the entry is older
+/// than the index file; a copy stamped "now" would make an entry written
+/// in the same second as the original index look trustworthy, and a file
+/// rewritten in that second with the same size would be snapshotted with
+/// its old content ("racy git").
+fn seed_index(user: &Path, index: &Path) -> std::io::Result<()> {
+    std::fs::copy(user, index)?;
+    let modified = std::fs::metadata(user)?.modified()?;
+    std::fs::File::options().write(true).open(index)?.set_modified(modified)
 }
 
 fn remove_index_files(index: &Path) {
