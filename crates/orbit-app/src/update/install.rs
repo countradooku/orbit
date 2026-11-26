@@ -809,7 +809,11 @@ mod tests {
 
     /// A program that exits at once: a new version that crashes on start.
     fn crashing_program() -> PathBuf {
-        if cfg!(windows) { PathBuf::from(std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into())) } else { "/bin/false".into() }
+        if cfg!(windows) {
+            return PathBuf::from(std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into()));
+        }
+        // macOS has only `/usr/bin/false`; some Linux systems only `/bin/false`.
+        ["/usr/bin/false", "/bin/false"].into_iter().map(PathBuf::from).find(|p| p.exists()).expect("a `false` program")
     }
 
     #[test]
@@ -817,7 +821,7 @@ mod tests {
         let (dir, layout, payload) = folder_fixture();
         let Layout::Folder { root } = &layout else { unreachable!() };
         // `cmd.exe` with no console and stdin closed exits at once, as
-        // does `/bin/false`.
+        // does `false`.
         let plan = plan(dir.path(), &layout, &payload, crashing_program());
         fs::create_dir_all(&plan.data_dir).unwrap();
         let code = run_plan(&plan, Duration::from_secs(20));
