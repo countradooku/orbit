@@ -68,7 +68,8 @@ fn lays_out_to_the_window_and_reports_its_size(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn keys_reach_the_shell_with_terminal_encodings(cx: &mut TestAppContext) {
-    let (handle, _view, events) = open(cx);
+    // Alt as Meta explicitly: macOS defaults to Option typing characters.
+    let (handle, _view, events) = open_with(cx, |view| view.alt_is_meta(true));
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.press("enter", cx);
@@ -95,6 +96,18 @@ fn keys_reach_the_shell_with_terminal_encodings(cx: &mut TestAppContext) {
             b"\x1bb".to_vec(),
         ]
     );
+}
+
+#[gpui_kit::test]
+fn alt_is_meta_by_default_except_on_macos(cx: &mut TestAppContext) {
+    let (handle, _view, events) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("alt-b", cx);
+    })
+    .unwrap();
+    let meta = inputs(&events).contains(&b"\x1bb".to_vec());
+    assert_eq!(meta, !cfg!(target_os = "macos"), "Option types characters on macOS; Alt is Meta elsewhere");
 }
 
 #[gpui_kit::test]
