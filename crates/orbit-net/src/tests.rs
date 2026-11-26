@@ -169,3 +169,52 @@ fn ordered_replies_follow_the_events_they_caused() {
         assert_eq!(state.lock().unwrap().threads[&id].title, title, "round {i}");
     }
 }
+
+/// The background host stops serving as soon as a restart is due (orbitd's
+/// lifetime loop returns and it closes its endpoint first thing). The
+/// client that asked still gets its answer, over a control request and over
+/// the binary protocol alike.
+#[test]
+fn a_restart_is_answered_before_the_host_stops() {
+    use std::sync::Arc;
+
+    use crate::endpoint::{EndpointOptions, start_with};
+    use crate::host::HostControl;
+
+    let root = tempfile::tempdir().unwrap();
+    for round in 0..12 {
+        let dir = root.path().join(round.to_string());
+        let engine = engine(&dir);
+        let control = Arc::new(HostControl::default());
+        let options = EndpointOptions { control: Some(control.clone()), local: true };
+        let endpoint = start_with(engine.clone(), &dir, "host", options).unwrap();
+        let info = endpoint.info().clone();
+        // What orbitd does once a restart is requested.
+        let closer = {
+            let control = control.clone();
+            std::thread::spawn(move || {
+                block_on(async {
+                    while control.restart().is_none() {
+                        control.changed().await;
+                    }
+                });
+                endpoint.close();
+            })
+        };
+        let when = if round % 4 < 2 { RestartWhen::Now } else { RestartWhen::WhenIdle };
+        if round % 2 == 0 {
+            let status = crate::host::control(&info, "restart", Some(when)).unwrap_or_else(|e| panic!("round {round}: {e}"));
+            assert!(status.restart_pending, "round {round}");
+        } else {
+            let backend = Backend::Remote(RemoteClient::connect(info.client_url().to_owned(), info.token.clone()).unwrap());
+            let mut feed = backend.feed();
+            collect(&mut feed, |all| all.iter().any(|u| matches!(u, Update::Status(ConnectionStatus::Connected))));
+            let reply = block_on(async { tokio::time::timeout(Duration::from_secs(10), backend.call(Command::Host(HostCommand::Restart { when }))).await });
+            assert!(matches!(reply, Ok(Ok(Ok(Reply::Done)))), "round {round}: {reply:?}");
+            backend.shutdown();
+        }
+        closer.join().unwrap();
+        assert_eq!(control.restart(), Some(when));
+        engine.shutdown();
+    }
+}
