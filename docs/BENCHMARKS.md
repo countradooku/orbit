@@ -103,3 +103,33 @@ Reproduce: `cargo run -p orbit-core --example seed_review -- <data> <work> --big
 | Idle frame | p50 6.1 ms (vsync) |
 | Wheel scrolling, 120 per 16 ms, 18 s | p50 6.1–9.8 ms, p99 ≤ 13.6 ms, 0 frames over 18 ms |
 | Fling, 360 per 10 ms | p50 6.6–8.5 ms, p95 24 ms, 88 of 600 frames over 18 ms |
+
+## Voice (dictation)
+
+Measured 2026-11-26 on `agent/voice` against its base `6e619ba`, release
+builds, CPU only (AMD Ryzen 9 7950X); details and method in
+[research/voice.md](research/voice.md).
+
+| Cost | Without voice | With voice |
+| --- | ---: | ---: |
+| `orbit-desktop.exe` | 52.8 MB | 56.5 MB (+3.7 MB, +7 %) |
+| Idle working set / private (median of 3, 10 s after an 8 s settle) | 71.3 / 98.9 MB | 71.2 / 94.6 MB |
+| Idle threads / CPU | 50 / 0.00 % | 50 / 0.00 % |
+| Clean release build of `orbit-voice` alone | | 66 s |
+
+Idle is unchanged by design: no audio stream, model or thread exists until
+dictation starts, and the model unloads after the idle timeout.
+
+Whisper on candle, 8 threads, synthesized speech; "release to text" is the
+final pass over the last window (Whisper's full 30-second context):
+
+| Model | Load | Release to text, 4.5 s / 28.5 s of speech | Live preview, 4.5 s | Peak memory while decoding | WER (short / long / code terms) |
+| --- | ---: | ---: | ---: | ---: | --- |
+| **base.en q8_0** (default) | 60–140 ms | **461 ms / 838 ms** | 98 ms | 220 MB | 8.3 / 2.7 / 30.4 % |
+| base.en q8_0 + vocabulary prompt | | 485 ms (terms clip) | | 219 MB | code terms 17.4 % |
+| tiny.en q8_0 | 82 ms | 319 ms / 477 ms | 78 ms | 132 MB | 8.3 / 4.1 / 30.4 % |
+| base.en f32 | 306 ms | 649 ms / 1,559 ms | 221 ms | 416 MB | 8.3 / 4.1 / 30.4 % |
+| base.en q4_0 | 98 ms | 738 ms / 1,127 ms | 148 ms | 141 MB | 8.3 / 4.1 / 30.4 % |
+
+A whole session on the worker (real-model test, base.en): 619 ms from
+release to the final text, 11 live previews, every word right.

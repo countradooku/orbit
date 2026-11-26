@@ -126,7 +126,12 @@ same base.en short clip went from 518 ms to 461 ms and its peak memory from
 - The benchmark executable (engine, resampler, VAD, tokenizer, WAV reader)
   is 3.4 MB; a candle-transformers Whisper benchmark was 1.5 MB larger than an
   empty program before Orbit's additions.
-- Effect on `orbit-desktop.exe`: see `docs/BENCHMARKS.md`.
+- `orbit-desktop.exe` (release): 52.8 MB without voice (base `6e619ba`),
+  56.5 MB with it: **+3.7 MB**. Part of that is GPUI Kit's `speech` feature,
+  which also compiles the system recognisers Orbit turns off.
+- Idle cost: none measurable. Working set 71.3 → 71.2 MB, private 98.9 →
+  94.6 MB, 50 threads either way, 0.00 % CPU (median of three launches,
+  10 s after an 8 s settle).
 
 ### Real-model test
 
