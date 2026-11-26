@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn command_lines_quote_what_they_must() {
         let a = AgentManifest { args: vec!["--message".into(), "it's here".into()], ..aider() };
-        let quoted = if cfg!(windows) { "'it''s here'" } else { "'it'\''s here'" };
+        let quoted = if cfg!(windows) { "'it''s here'" } else { r"'it'\''s here'" };
         assert_eq!(a.command_line(), format!("aider --message {quoted}"));
     }
 }
