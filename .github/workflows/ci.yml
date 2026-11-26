@@ -74,7 +74,7 @@ jobs:
       # `#[ignore]`d tests drive the real Claude Code and Codex CLIs and are
       # left out (they are run by hand with `-- --ignored`).
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
   build:
     name: Release build (${{ matrix.os }})
