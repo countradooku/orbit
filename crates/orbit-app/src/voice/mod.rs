@@ -47,7 +47,7 @@ use orbit_voice::worker::Worker;
 
 use crate::app_state::AppState;
 
-pub use dictation::{Dictation, DictationEvent, Purpose, Sources};
+pub use dictation::{Dictation, DictationEvent, Purpose};
 pub use mic::open_privacy_settings;
 pub use prefs::VoicePrefs;
 

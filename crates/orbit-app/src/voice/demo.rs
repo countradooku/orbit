@@ -10,7 +10,8 @@ use gpui_kit::*;
 use orbit_voice::stream::Preview;
 
 use super::recognizer::Live;
-use super::{Dictation, Purpose, Sources};
+use super::dictation::Sources;
+use super::{Dictation, Purpose};
 
 pub fn on_window_open(window: &mut Window, cx: &mut App) {
     let Ok(script) = std::env::var("ORBIT_DEBUG_DICTATION") else { return };
