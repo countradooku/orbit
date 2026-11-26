@@ -192,11 +192,80 @@ pub fn locate_binary() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// A host process started here.
+///
+/// A thread waits for it, so it is reaped the moment it exits. Holding a
+/// bare [`std::process::Child`] instead left an exited host as a zombie on
+/// Unix until something happened to call `try_wait`: a zombie still
+/// answers `kill(pid, 0)`, so the host looked alive, and a host that died
+/// without removing `endpoint.json` (killed, crashed) was never replaced
+/// while the app ran.
+pub struct HostProcess {
+    pid: u32,
+    exit: Watch,
+}
+
+enum Watch {
+    /// Published by the waiting thread.
+    Waited(std::sync::Arc<std::sync::Mutex<Option<HostExit>>>),
+    /// No thread could be started: polled instead.
+    Polled(std::sync::Mutex<std::process::Child>),
+}
+
+/// How a host process ended: its status, or why it could not be read.
+pub type HostExit = Result<std::process::ExitStatus, String>;
+
+impl HostProcess {
+    /// Takes over `child` and reaps it as soon as it exits.
+    pub fn watch(child: std::process::Child) -> Self {
+        let pid = child.id();
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (tx, rx) = std::sync::mpsc::channel::<std::process::Child>();
+        let published = slot.clone();
+        let thread = std::thread::Builder::new().name("orbit-host-wait".into()).stack_size(64 * 1024).spawn(move || {
+            let Ok(mut child) = rx.recv() else { return };
+            let status = child.wait().map_err(|e| e.to_string());
+            *published.lock().unwrap_or_else(|e| e.into_inner()) = Some(status);
+        });
+        // The child goes to the thread only once it runs, so it is never
+        // lost (and never left unreaped) when the thread cannot start.
+        let exit = match thread {
+            Ok(_) => match tx.send(child) {
+                Ok(()) => Watch::Waited(slot),
+                Err(std::sync::mpsc::SendError(child)) => Watch::Polled(std::sync::Mutex::new(child)),
+            },
+            Err(_) => Watch::Polled(std::sync::Mutex::new(child)),
+        };
+        Self { pid, exit }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.pid
+    }
+
+    /// How it ended, once it has exited (and been reaped); `None` while it
+    /// runs.
+    pub fn try_wait(&self) -> Option<HostExit> {
+        match &self.exit {
+            Watch::Waited(slot) => slot.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            Watch::Polled(child) => match child.lock().unwrap_or_else(|e| e.into_inner()).try_wait() {
+                Ok(Some(status)) => Some(Ok(status)),
+                Ok(None) => None,
+                Err(err) => Some(Err(err.to_string())),
+            },
+        }
+    }
+}
+
 /// Starts `orbitd --local` on `data_dir`, detached from this process: its
 /// own process group (and session on Unix), no console, outside this
 /// process's job on Windows, so closing the app or its terminal leaves it
 /// running.
-pub fn spawn(binary: &Path, data_dir: &Path) -> io::Result<std::process::Child> {
+pub fn spawn(binary: &Path, data_dir: &Path) -> io::Result<HostProcess> {
+    spawn_command(binary, data_dir).map(HostProcess::watch)
+}
+
+fn spawn_command(binary: &Path, data_dir: &Path) -> io::Result<std::process::Child> {
     use std::process::{Command, Stdio};
     let mut cmd = Command::new(binary);
     cmd.arg("--local").arg("--data").arg(data_dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -274,7 +343,7 @@ impl std::fmt::Display for HostError {
 pub fn ensure_running(
     data_dir: &Path,
     binary: Option<&Path>,
-    child: &mut Option<std::process::Child>,
+    child: &mut Option<HostProcess>,
 ) -> Result<EndpointInfo, HostError> {
     if let Some(info) = live_endpoint(data_dir)? {
         return Ok(info);
@@ -282,7 +351,7 @@ pub fn ensure_running(
     let started = Instant::now();
     // A host started earlier that has not served yet is waited for; one that
     // is exiting (it may still look alive for a moment) is replaced.
-    let starting = child.take().and_then(|mut c| c.try_wait().ok().flatten().is_none().then_some(c));
+    let starting = child.take().filter(|c| c.try_wait().is_none());
     let (mut spawned, mut fresh) = match starting {
         Some(starting) => (starting, false),
         None => (spawn(binary.ok_or(HostError::Missing)?, data_dir).map_err(HostError::Spawn)?, true),
@@ -293,7 +362,7 @@ pub fn ensure_running(
             *child = Some(spawned);
             return Ok(info);
         }
-        if let Ok(Some(status)) = spawned.try_wait() {
+        if let Some(status) = spawned.try_wait() {
             // Another host may have won the data folder meanwhile.
             if let Some(info) = live_endpoint(data_dir)? {
                 return Ok(info);
@@ -304,9 +373,13 @@ pub fn ensure_running(
                 fresh = true;
                 continue;
             }
+            let status = match status {
+                Ok(status) => status.to_string(),
+                Err(err) => format!("its exit couldn’t be read: {err}"),
+            };
             let why = match log_tail(data_dir) {
                 Some(line) => format!("{line} ({status})"),
-                None => status.to_string(),
+                None => status,
             };
             return Err(HostError::Exited(why));
         }
@@ -363,7 +436,7 @@ pub struct LocalHost {
 struct Inner {
     data_dir: PathBuf,
     binary: Option<PathBuf>,
-    child: Option<std::process::Child>,
+    child: Option<HostProcess>,
     link: HostLink,
     /// The outdated host's endpoint, for control requests.
     outdated: Option<EndpointInfo>,
@@ -670,6 +743,35 @@ mod tests {
         let host = LocalHost::new(dir.path().to_owned(), None);
         assert!(matches!(host.start(), Err(HostError::Missing)));
         assert!(matches!(host.link(), HostLink::Failed(_)));
+    }
+
+    #[test]
+    fn a_host_process_is_reaped_as_soon_as_it_exits() {
+        let mut cmd = if cfg!(windows) { std::process::Command::new("cmd") } else { std::process::Command::new("sh") };
+        if cfg!(windows) {
+            cmd.args(["/C", "exit 3"]);
+        } else {
+            cmd.args(["-c", "exit 3"]);
+        }
+        let process = HostProcess::watch(cmd.spawn().unwrap());
+        let pid = process.id();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = process.try_wait() {
+                break status.unwrap();
+            }
+            assert!(Instant::now() < deadline, "the exit was never seen");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(status.code(), Some(3));
+        assert!(!endpoint::process_alive(pid), "an exited host is not running");
+        // Reaped, not a zombie: the pid is gone altogether.
+        #[cfg(unix)]
+        {
+            // SAFETY: signal 0 sends nothing.
+            let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            assert_eq!((rc, io::Error::last_os_error().raw_os_error()), (-1, Some(libc::ESRCH)));
+        }
     }
 
     #[test]
