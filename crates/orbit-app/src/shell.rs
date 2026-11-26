@@ -1463,7 +1463,19 @@ impl Render for Workspace {
             .map(crate::update::register_actions)
             .map(crate::diagnostics::register_actions)
             .map(crate::onboarding::register_actions)
+            // Push-to-talk ends on release wherever focus is, and Escape
+            // cancels dictation into any field.
+            .capture_key_up(crate::voice::key_up)
+            .capture_key_down(|event, _, cx| {
+                if event.keystroke.key == "escape" && crate::voice::active(cx).is_some_and(|d| d.read(cx).is_running(cx)) {
+                    crate::voice::cancel(cx);
+                    cx.stop_propagation();
+                }
+            })
+            .on_action(|_: &crate::voice::OpenVoiceSettings, window, cx| crate::voice::settings::open(window, cx))
+            .relative()
             .child(self.render_title_bar(cx))
             .child(body)
+            .children(crate::voice::floating_pill(cx))
     }
 }

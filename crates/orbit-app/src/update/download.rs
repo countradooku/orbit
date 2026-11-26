@@ -1,5 +1,6 @@
-//! HTTPS for the updater: the manifest, and a bundle streamed to disk with
-//! progress and cancellation.
+//! HTTPS for the updater (the manifest, and a bundle streamed to disk with
+//! progress and cancellation) and for speech models (resumable ranges, see
+//! [`fetch_from`]).
 //!
 //! Each call runs on its own short-lived thread with a single-threaded Tokio
 //! runtime (the hyper and rustls stack the engine already links), so a
@@ -100,17 +101,21 @@ fn check_url(url: &str) -> Result<hyper::Uri, String> {
     match uri.scheme_str() {
         Some("https") => Ok(uri),
         Some("http") if is_loopback(&uri) => Ok(uri),
-        _ => Err(format!("Updates are only downloaded over HTTPS (got {url}).")),
+        _ => Err(format!("Downloads are only made over HTTPS (got {url}).")),
     }
 }
 
-/// GETs `url`, following redirects, and returns the final response.
-async fn get(client: &HttpsClient, url: &str) -> Result<hyper::Response<hyper::body::Incoming>, String> {
+/// GETs `url` (from byte `offset` when it is not zero), following
+/// redirects, and returns the final response.
+async fn get(client: &HttpsClient, url: &str, offset: u64) -> Result<hyper::Response<hyper::body::Incoming>, String> {
     let mut uri = check_url(url)?;
     for _ in 0..=MAX_REDIRECTS {
         let host = uri.host().unwrap_or_default().to_owned();
-        let request = Request::get(uri.clone())
-            .header("user-agent", concat!("Orbit/", env!("CARGO_PKG_VERSION")))
+        let mut request = Request::get(uri.clone()).header("user-agent", concat!("Orbit/", env!("CARGO_PKG_VERSION")));
+        if offset > 0 {
+            request = request.header("range", format!("bytes={offset}-"));
+        }
+        let request = request
             .body(Empty::new())
             .map_err(|e| format!("Couldn’t build the request: {e}"))?;
         let response = tokio::time::timeout(CONNECT, client.request(request))
@@ -139,7 +144,7 @@ async fn get(client: &HttpsClient, url: &str) -> Result<hyper::Response<hyper::b
         }
         if !status.is_success() {
             return Err(match status.as_u16() {
-                404 => format!("{host} has no update information at this address (404)."),
+                404 => format!("{host} has nothing at this address (404)."),
                 code => format!("{host} answered {code}."),
             });
         }
@@ -153,7 +158,7 @@ pub fn fetch_text(url: &str) -> Result<String, String> {
     let rt = runtime()?;
     rt.block_on(async {
         let client = client()?;
-        let response = get(&client, url).await?;
+        let response = get(&client, url, 0).await?;
         let body = http_body_util::Limited::new(response.into_body(), MAX_MANIFEST)
             .collect()
             .await
@@ -170,7 +175,7 @@ pub fn download(url: &str, dest: &Path, expected: Option<u64>, progress: &Progre
     let part = dest.with_extension("part");
     let result = runtime()?.block_on(async {
         let client = client()?;
-        let response = get(&client, url).await?;
+        let response = get(&client, url, 0).await?;
         let total = response
             .headers()
             .get("content-length")
@@ -213,6 +218,34 @@ pub fn download(url: &str, dest: &Path, expected: Option<u64>, progress: &Progre
     }
 }
 
+/// Streams `url` from byte `offset` into `sink` (blocking: run it off the
+/// UI thread). Tells `sink` first whether the server honoured the range;
+/// a server that sends the whole file instead is reported as not resumed.
+pub fn fetch_from(
+    url: &str,
+    offset: u64,
+    sink: &mut dyn FnMut(orbit_voice::store::Chunk<'_>) -> Result<(), String>,
+) -> Result<(), String> {
+    use orbit_voice::store::Chunk;
+    runtime()?.block_on(async {
+        let client = client()?;
+        let response = get(&client, url, offset).await?;
+        let resumed = offset > 0 && response.status() == hyper::StatusCode::PARTIAL_CONTENT;
+        sink(Chunk::Start { resumed })?;
+        let mut body = response.into_body();
+        loop {
+            let frame = match tokio::time::timeout(STALL, body.frame()).await {
+                Err(_) => return Err(format!("no data for {} seconds", STALL.as_secs())),
+                Ok(None) => return Ok(()),
+                Ok(Some(frame)) => frame.map_err(|e| format!("the connection broke: {e}"))?,
+            };
+            if let Ok(data) = frame.into_data() {
+                sink(Chunk::Data(&data))?;
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 pub mod testing {
     //! A loopback HTTP server serving fixed files, for the updater's tests.
@@ -242,15 +275,25 @@ pub mod testing {
                         let mut line = String::new();
                         reader.read_line(&mut line).unwrap();
                         let path = line.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                        let mut from = None;
                         loop {
                             let mut header = String::new();
                             if reader.read_line(&mut header).unwrap_or(0) <= 2 {
                                 break;
                             }
+                            if let Some(range) = header.to_ascii_lowercase().strip_prefix("range: bytes=") {
+                                from = range.trim().trim_end_matches('-').parse::<usize>().ok();
+                            }
                         }
                         let body = served.lock().unwrap().get(&path).cloned();
                         let _ = match (path.as_str(), body) {
                             ("/moved", _) => stream.write_all(b"HTTP/1.1 302 Found\r\nlocation: /bundle.zip\r\ncontent-length: 0\r\n\r\n"),
+                            (_, Some(body)) if from.is_some_and(|f| f <= body.len()) && !path.starts_with("/norange") => {
+                                let rest = &body[from.unwrap_or(0)..];
+                                stream
+                                    .write_all(format!("HTTP/1.1 206 Partial Content\r\ncontent-length: {}\r\n\r\n", rest.len()).as_bytes())
+                                    .and_then(|_| stream.write_all(rest))
+                            }
                             (_, Some(body)) => stream
                                 .write_all(format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len()).as_bytes())
                                 .and_then(|_| stream.write_all(&body)),
@@ -307,6 +350,33 @@ mod tests {
         progress.cancel();
         assert_eq!(download(&server.url("/bundle.zip"), &dest, None, &progress).unwrap_err(), "Cancelled.");
         assert!(!dest.exists());
+    }
+
+    #[test]
+    fn ranges_resume_and_servers_without_them_restart() {
+        use orbit_voice::store::Chunk;
+        let server = FixtureServer::start();
+        let body: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        server.put("/model.bin", body.clone());
+        server.put("/norange/model.bin", body.clone());
+        let fetch = |url: &str, offset| {
+            let (mut resumed, mut got) = (None, Vec::new());
+            fetch_from(url, offset, &mut |chunk| {
+                match chunk {
+                    Chunk::Start { resumed: r } => resumed = Some(r),
+                    Chunk::Data(d) => got.extend_from_slice(d),
+                }
+                Ok(())
+            })
+            .unwrap();
+            (resumed.unwrap(), got)
+        };
+        assert_eq!(fetch(&server.url("/model.bin"), 0), (false, body.clone()));
+        assert_eq!(fetch(&server.url("/model.bin"), 20_000), (true, body[20_000..].to_vec()));
+        assert_eq!(fetch(&server.url("/norange/model.bin"), 20_000), (false, body.clone()));
+        // A sink error stops the transfer and is returned.
+        let err = fetch_from(&server.url("/model.bin"), 0, &mut |_| Err("cancelled".into())).unwrap_err();
+        assert_eq!(err, "cancelled");
     }
 
     #[test]

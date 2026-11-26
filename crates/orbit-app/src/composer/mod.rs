@@ -40,7 +40,7 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use orbit_proto::*;
@@ -282,6 +282,7 @@ impl Composer {
             _subscriptions: vec![input_sub, app_sub, draft_sub, key_sub],
         };
         composer._subscriptions.push(cx.on_release(|this, cx| this.flush_draft(cx)));
+        crate::voice::register_composer(&composer.input, cx.weak_entity(), composer.voice_scope(), cx);
         composer.restore_draft(window, cx);
         composer
     }
@@ -330,7 +331,30 @@ impl Composer {
         if self.project != project {
             self.project = project;
             self.files.clear();
+            crate::voice::set_scope(&self.input, self.voice_scope(), cx);
             cx.notify();
+        }
+    }
+
+    /// What dictation into this composer draws its vocabulary from.
+    fn voice_scope(&self) -> crate::voice::Scope {
+        match (self.thread_id(), self.project) {
+            (Some(thread), _) => crate::voice::Scope::Thread(thread),
+            (None, Some(project)) => crate::voice::Scope::Project(project),
+            (None, None) => crate::voice::Scope::None,
+        }
+    }
+
+    /// Dictation into this composer finished after Send was pressed.
+    pub(crate) fn send_dictated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit(false, window, cx);
+    }
+
+    fn voice_target(&self, cx: &Context<Self>) -> crate::voice::Target {
+        crate::voice::Target {
+            field: crate::voice::Field::textarea(&self.input),
+            composer: Some(cx.weak_entity()),
+            scope: self.voice_scope(),
         }
     }
 
@@ -725,6 +749,12 @@ impl Composer {
         if !self.input_focused(window, cx) {
             return;
         }
+        // Escape cancels dictation into this composer first.
+        if crate::voice::pill_for(self.input.entity_id(), cx).is_some_and(|d| d.read(cx).is_running(cx)) {
+            crate::voice::cancel(cx);
+            cx.stop_propagation();
+            return;
+        }
         if let Some(completion) = self.completion.take() {
             self.dismissed = Some(completion.trigger.range.start);
             cx.stop_propagation();
@@ -813,6 +843,10 @@ impl Composer {
         use gpui_kit::component::WindowExt as _;
         use gpui_kit::component::notification::Notification;
         if self.has_menu() {
+            return;
+        }
+        // Dictating into this composer: send once the transcript is in.
+        if crate::voice::send_after_transcript(self.input.entity_id(), cx) {
             return;
         }
         let text = self.input.read(cx).value().trim().to_owned();
@@ -1171,6 +1205,49 @@ impl Composer {
         Some(row)
     }
 
+    /// The dictation button: a microphone at rest; while dictating into this
+    /// composer, bars that move with the voice and stop it on click.
+    fn render_mic(&self, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_kit::component::speech::{SpeechIndicator, SpeechStatus};
+        let keys = crate::voice::shortcut_label(&crate::voice::Dictate, cx);
+        let dictation = crate::voice::pill_for(self.input.entity_id(), cx);
+        let status = dictation.as_ref().map(|d| d.read(cx).state().read(cx).status());
+        let target = self.voice_target(cx);
+        let scope = self.voice_scope();
+        let button = Button::new("dictate").ghost().small();
+        let button = match (status, dictation.as_ref()) {
+            (Some(SpeechStatus::Recording | SpeechStatus::Connecting), Some(d)) => {
+                let state = d.read(cx).state().clone();
+                // As the kit's speech button does: the indicator fills a
+                // small icon button's square.
+                button
+                    .selected(true)
+                    .p_0()
+                    .size_6()
+                    .child(SpeechIndicator::new(&state).small())
+                    .tooltip("Stop dictating")
+                    .accessibility_label("Stop dictating")
+            }
+            (Some(SpeechStatus::Stopping), _) => button.icon(IconName::Mic).loading(true).tooltip("Transcribing…"),
+            _ => button
+                .icon(IconName::Mic)
+                .tooltip(match keys {
+                    Some(keys) => format!("Dictate ({keys})"),
+                    None => "Dictate".to_owned(),
+                })
+                .accessibility_label("Dictate"),
+        };
+        div()
+            .id("dictate-wrap")
+            .on_hover(move |hovered, _, cx| {
+                if *hovered {
+                    crate::voice::prewarm(scope, cx);
+                }
+            })
+            .child(button.on_click(move |_, window, cx| crate::voice::click(target.clone(), window, cx)))
+            .into_any_element()
+    }
+
     fn render_send(&self, blocker: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
         let has_content = self.has_text || !self.attachments.is_empty();
         if self.running && !has_content {
@@ -1315,6 +1392,7 @@ impl Render for Composer {
                     .bg(theme.popover)
                     .shadow_sm()
                     .children(self.render_attachments(cx))
+                    .children(crate::voice::pill_for(self.input.entity_id(), cx))
                     .child(
                         div().px_3().pt_3().child(
                             Textarea::new(&self.input)
@@ -1354,6 +1432,7 @@ impl Render for Composer {
                             .child(div().flex_1())
                             .children(self.render_status(blocker.as_deref(), cx))
                             .child(pill)
+                            .child(self.render_mic(cx))
                             .child(self.render_send(blocker.as_deref(), cx)),
                     ),
             )

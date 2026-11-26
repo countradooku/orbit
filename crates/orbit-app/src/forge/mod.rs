@@ -138,6 +138,7 @@ pub struct ForgeView {
 impl ForgeView {
     pub fn new(app: Entity<AppState>, workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search issues"));
+        crate::voice::register_field(crate::voice::Field::input(&query), cx);
         let subscriptions = vec![
             cx.subscribe_in(&query, window, |this, _, event: &InputEvent, _, cx| match event {
                 InputEvent::Change => this.search_soon(cx),

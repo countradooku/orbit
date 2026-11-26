@@ -83,6 +83,7 @@ fn field_header(label: &'static str, id: &'static str, busy: bool, muted: Hsla, 
 pub fn commit(app: Entity<AppState>, thread: ThreadId, context: String, after: super::AfterGit, window: &mut Window, cx: &mut App) {
     let initial = thread_title(&app, thread, cx);
     let message = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 10).default_value(initial.clone()));
+    crate::voice::register_field(crate::voice::Field::textarea(&message), cx);
     let push = Rc::new(Cell::new(true));
     let busy = Rc::new(Cell::new(false));
     let write = {
@@ -181,8 +182,10 @@ pub fn create_pr(
 ) {
     let initial_title = thread_title(&app, thread, cx);
     let title = cx.new(|cx| InputState::new(window, cx).default_value(initial_title.clone()));
+    crate::voice::register_field(crate::voice::Field::input(&title), cx);
     let body_text = format!("## Changes\n\n{}", files.iter().map(|f| format!("- `{f}`")).collect::<Vec<_>>().join("\n"));
     let body = cx.new(|cx| TextareaState::new(window, cx).auto_grow(6, 16).default_value(body_text.clone()));
+    crate::voice::register_field(crate::voice::Field::textarea(&body), cx);
     let busy = Rc::new(Cell::new(false));
     let write = {
         let (app, title, body, busy) = (app.clone(), title.clone(), body.clone(), busy.clone());
@@ -387,6 +390,7 @@ pub fn edit_message(
     cx: &mut App,
 ) {
     let input = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 16).default_value(text));
+    crate::voice::register_field(crate::voice::Field::textarea(&input), cx);
     let has_files = app.read(cx).state().threads.get(&thread).is_some_and(|t| t.project.is_some());
     let restore_files = std::rc::Rc::new(std::cell::Cell::new(has_files));
     window.open_dialog(cx, move |dialog, _, cx| {
@@ -545,6 +549,7 @@ pub fn merge(app: Entity<AppState>, thread: ThreadId, view: WeakEntity<super::Re
         state.conflicts.iter().filter(|c| c.threads.contains(&thread)).map(|c| c.path.clone()).collect();
     let title = thread_title(&app, thread, cx);
     let message = cx.new(|cx| InputState::new(window, cx).default_value(title));
+    crate::voice::register_field(crate::voice::Field::input(&message), cx);
     let panel = cx.new(|_| MergePanel { preview: None, message, into: into.clone(), elsewhere });
     let preview = app.update(cx, |app, cx| {
         app.call(Command::MergeLocal { thread, into: into.clone(), message: String::new(), dry_run: true }, cx)

@@ -224,6 +224,7 @@ pub struct InboxView {
 impl InboxView {
     pub fn new(app: Entity<AppState>, workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let reply = cx.new(|cx| InputState::new(window, cx).placeholder("Answer…"));
+        crate::voice::register_field(crate::voice::Field::input(&reply), cx);
         let subscriptions = vec![
             cx.observe(&app, |this, _, cx| {
                 this.sync(cx);

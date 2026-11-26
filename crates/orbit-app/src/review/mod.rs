@@ -177,6 +177,7 @@ impl ReviewView {
         });
         let tree = cx.new(|cx| TreeState::new(cx));
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files").clean_on_escape());
+        crate::voice::register_field(crate::voice::Field::input(&filter), cx);
         let panes = cx.new(|_| ResizableState::default());
         let mut subs = vec![
             cx.subscribe(&filter, |this, input, ev: &InputEvent, cx| {
@@ -716,6 +717,8 @@ impl ReviewView {
                 .placeholder("What should change? Ctrl+Enter saves")
                 .default_value(comment.text.clone())
         });
+        // Review comments take dictation too.
+        crate::voice::register_field(crate::voice::Field::textarea(&input), cx);
         let sub = cx.subscribe_in(&input, window, move |this, _, ev: &InputEvent, window, cx| {
             if let InputEvent::PressEnter { secondary: true, .. } = ev {
                 this.save_draft(id, window, cx);

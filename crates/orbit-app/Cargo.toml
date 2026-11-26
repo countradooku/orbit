@@ -21,8 +21,10 @@ fast = ["gpui-kit/gpui-fast", "orbit-terminal/fast", "orbit-browser/fast"]
 # default features are ever turned off (Wayland is always built on Linux).
 # Grammars for syntax highlighting in diffs and code blocks: the languages
 # agents most often edit. Each adds a compiled parser to the binary.
+# `speech`: the kit's speech button, waveform and session state, which
+# dictation drives with Orbit's own Whisper recognizer (`voice`).
 gpui-kit = { version = "0.11", features = [
-    "tree-sitter", "x11",
+    "tree-sitter", "x11", "speech",
     "tree-sitter-rust", "tree-sitter-typescript", "tree-sitter-tsx", "tree-sitter-javascript",
     "tree-sitter-python", "tree-sitter-go", "tree-sitter-toml", "tree-sitter-yaml",
     "tree-sitter-markdown", "tree-sitter-css", "tree-sitter-html", "tree-sitter-bash",
@@ -33,6 +35,12 @@ orbit-net = { workspace = true }
 orbit-bots = { workspace = true }
 # Panels' component trees, themes and packing plugin folders to send to a host.
 orbit-plugin = { workspace = true }
+# On-device dictation: Whisper on candle, VAD, model installs (`voice`).
+orbit-voice = { workspace = true }
+crossfire = { workspace = true }
+# Capturing from the microphone the user picked (the kit's `Microphone`
+# only opens the default one). The version the kit's speech feature uses.
+cpal = "0.15.3"
 orbit-terminal = { path = "../orbit-terminal", default-features = false }
 orbit-browser = { path = "../orbit-browser", default-features = false }
 mimalloc = { workspace = true }
@@ -66,7 +74,16 @@ tempfile = "3"
 # Signing test manifests and bundles (`update` tests).
 ring = "0.17"
 blake2 = "0.10"
-gpui-kit = { version = "0.11", features = ["tree-sitter", "x11", "test-support"] }
+gpui-kit = { version = "0.11", features = ["tree-sitter", "x11", "speech", "test-support"] }
+orbit-voice = { workspace = true, features = ["test-support"] }
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
+# Reading the microphone privacy setting (`voice::mic`).
+windows-sys = { version = "0.61", features = ["Win32_System_Registry"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Whisper on the GPU; Metal needs nothing beyond Xcode's command-line tools.
+orbit-voice = { workspace = true, features = ["metal"] }
+# Whether the user denied microphone access (`voice::mic`).
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat"] }

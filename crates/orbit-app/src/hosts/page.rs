@@ -15,7 +15,7 @@ use crate::app_state::AppState;
 use crate::assets::Lucide;
 
 /// Where Settings › Hosts is among the pages.
-pub const PAGE: usize = 11;
+pub const PAGE: usize = 12;
 
 #[derive(Default)]
 struct Request(bool);

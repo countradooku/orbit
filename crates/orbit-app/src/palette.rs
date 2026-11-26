@@ -88,6 +88,7 @@ fn commands() -> Vec<CommandDef> {
         command("Edit keybindings…", Lucide::Keyboard, "keymap shortcuts json", OpenKeybindings),
         command("Reload keybindings", IconName::RefreshCw, "keymap", ReloadKeybindings),
         command("Settings…", IconName::Settings, "preferences", OpenSettings),
+        command("Voice settings…", IconName::Mic, "dictation speech microphone whisper model", crate::voice::OpenVoiceSettings),
         command("Plugins", Lucide::Puzzle, "extensions add-ons themes agents install catalog", crate::plugins::ManagePlugins),
         command("Zoom in", IconName::Plus, "bigger", ZoomIn),
         command("Zoom out", IconName::Minus, "smaller", ZoomOut),
@@ -154,6 +155,7 @@ struct Search {
 
 pub fn open(workspace: Entity<Workspace>, initial: &'static str, window: &mut Window, cx: &mut App) {
     let state = cx.new(|cx| CommandState::new(window, cx));
+    crate::voice::register_field(crate::voice::Field::command(&state), cx);
     let app = workspace.read(cx).app().clone();
     let targets: Rc<RefCell<Vec<Vec<Target>>>> = Rc::default();
     let search: Rc<RefCell<Search>> = Rc::new(RefCell::new(Search { query: String::new(), hits: Vec::new(), generation: 0 }));
