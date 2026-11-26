@@ -222,7 +222,7 @@ pub fn onboarding_control(cx: &App) -> AnyElement {
         return h_flex()
             .gap_3()
             .child(div().w_32().child(ProgressBar::new("onboarding-voice-progress").value(p.fraction() * 100.0)))
-            .child(muted(&format!("Downloading Whisper {}… you can continue.", model.name), cx))
+            .child(muted(&format!("Downloading {}… you can continue.", super::setup::describe(model)), cx))
             .into_any_element();
     }
     h_flex()
@@ -231,7 +231,7 @@ pub fn onboarding_control(cx: &App) -> AnyElement {
             Button::new("onboarding-voice")
                 .outline()
                 .icon(IconName::Mic)
-                .label(format!("Download Whisper {} · {}", model.name, size(model.download_bytes())))
+                .label(format!("Download {} · {}", super::setup::describe(model), size(model.download_bytes())))
                 .on_click(move |_, _, cx| models.update(cx, |m, cx| m.install(model, cx))),
         )
         .child(div().text_sm().text_color(theme.muted_foreground).child("Optional. Runs on this computer."))
@@ -272,9 +272,9 @@ fn models_list(_: &mut Window, cx: &mut App) -> AnyElement {
         let progress = m.progress(model);
         let error = m.error(model).map(str::to_owned);
         let in_use = model.id == selected;
-        let languages = if model.english_only { "English" } else { "99 languages" };
+        // The name says English or 99 languages (two models share a size).
         let detail = format!(
-            "{languages} · {} download, {} on disk · {}, {}",
+            "{} download, {} on disk · {}, {}",
             size(model.download_bytes()),
             size(model.installed_bytes),
             speed(model),
@@ -348,7 +348,7 @@ fn models_list(_: &mut Window, cx: &mut App) -> AnyElement {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(format!("Whisper {}", model.name)))
+                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(super::setup::describe(model)))
                             .when(in_use && status == Status::Installed, |el| {
                                 el.child(div().text_xs().text_color(theme.muted_foreground).child("In use"))
                             })
