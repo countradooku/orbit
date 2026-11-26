@@ -179,6 +179,28 @@ impl Filter {
     }
 }
 
+/// Adds everything already inside a folder that just appeared, skipping
+/// what the filter ignores. Past `max` paths the notification overflows
+/// (the consumer rescans everything) and the walk stops.
+fn scan_new_dir(dir: &Path, filter: &Filter, changes: &mut Changes, set: &mut HashSet<PathBuf>, max: usize) {
+    let mut stack = vec![dir.to_owned()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Verdict::Path(rel) = filter.classify(&path) else { continue };
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(path);
+            }
+            if set.len() >= max {
+                changes.overflow = true;
+                return;
+            }
+            set.insert(rel);
+        }
+    }
+}
+
 fn debounce_loop(
     raw: mpsc::Receiver<notify::Result<notify::Event>>,
     tx: MTx<mpmc::Array<Changes>>,
@@ -222,6 +244,11 @@ fn debounce_loop(
                     event.kind,
                     EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Metadata(_) | ModifyKind::Other)
                 );
+                // A folder that appears (created, or moved in) may already
+                // hold files: on Linux, inotify watches a new folder only
+                // after it is reported, so files written into it before that
+                // never get events of their own.
+                let appeared = matches!(event.kind, EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_)));
                 for path in &event.paths {
                     let verdict = filter.classify(path);
                     let dir_echo = content_modify && matches!(verdict, Verdict::Path(_)) && path.is_dir();
@@ -232,6 +259,9 @@ fn debounce_loop(
                         burst_start = Instant::now();
                         (Changes::default(), HashSet::new())
                     });
+                    if appeared && matches!(verdict, Verdict::Path(_)) && path.is_dir() {
+                        scan_new_dir(path, &filter, changes, set, opts.max_paths);
+                    }
                     match verdict {
                         Verdict::GitRefs => changes.git_refs = true,
                         Verdict::Path(p) => {
